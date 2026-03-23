@@ -1320,6 +1320,18 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             yield* sessions.setPermission({ sessionID: session.id, permission: permissions })
           }
 
+          if (input.model) {
+            const s = yield* InstanceState.get(cache)
+            const runner = s.runners.get(input.sessionID)
+            if (runner?.busy) {
+              log.info("superseding busy session with model override", {
+                sessionID: input.sessionID,
+                model: input.model,
+              })
+              yield* cancel(input.sessionID)
+            }
+          }
+
           if (input.noReply === true) return message
           return yield* loop({ sessionID: input.sessionID })
         },
