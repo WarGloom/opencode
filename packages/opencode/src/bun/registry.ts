@@ -36,9 +36,14 @@ export namespace PackageRegistry {
       return false
     }
 
-    const isRange = /[\s^~*xX<>|=]/.test(cachedVersion)
-    if (isRange) return !semver.satisfies(latestVersion, cachedVersion)
+    try {
+      const isRange = /[\s^~*xX<>|=]/.test(cachedVersion)
+      if (isRange) return !semver.satisfies(latestVersion, cachedVersion)
 
-    return semver.lt(cachedVersion, latestVersion)
+      return semver.lt(cachedVersion, latestVersion)
+    } catch {
+      log.warn("Failed to compare versions", { pkg, cachedVersion, latestVersion })
+      return false
+    }
   }
 }

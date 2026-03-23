@@ -185,6 +185,16 @@ export namespace SessionPrompt {
       return message
     }
 
+    // If a model override is provided and the session is already busy (e.g. in a
+    // retry loop), cancel the current loop so a new one can start with the new model.
+    if (input.model && state()[input.sessionID]) {
+      log.info("superseding busy session with model override", {
+        sessionID: input.sessionID,
+        model: input.model,
+      })
+      await cancel(input.sessionID)
+    }
+
     return loop({ sessionID: input.sessionID })
   })
 
@@ -286,7 +296,13 @@ export namespace SessionPrompt {
       })
     }
 
-    await using _ = defer(() => cancel(sessionID))
+    const myState = state()[sessionID]
+    await using _ = defer(async () => {
+      // Only cancel if our state is still current (a new loop hasn't replaced us)
+      if (state()[sessionID] === myState) {
+        await cancel(sessionID)
+      }
+    })
 
     // Structured output state
     // Note: On session resumption, state is reset but outputFormat is preserved
