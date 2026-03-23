@@ -2,7 +2,7 @@ import { Tool } from "./tool"
 import DESCRIPTION from "./task.txt"
 import z from "zod"
 import { Session } from "../session"
-import { SessionID, MessageID } from "../session/schema"
+import { SessionID, MessageID, PartID } from "../session/schema"
 import { MessageV2 } from "../session/message-v2"
 import { Identifier } from "../id/id"
 import { Agent } from "../agent/agent"
@@ -141,6 +141,28 @@ export const TaskTool = Tool.define("task", async (ctx) => {
           ...Object.fromEntries((config.experimental?.primary_tools ?? []).map((t) => [t, false])),
         },
         parts: promptParts,
+      })
+
+      const completionMessageID = MessageID.ascending()
+      await Session.updateMessage({
+        id: completionMessageID,
+        sessionID: session.id,
+        role: "user",
+        time: { created: Date.now() },
+        agent: agent.name,
+        model,
+      })
+      await Session.updatePart({
+        id: PartID.ascending(),
+        sessionID: session.id,
+        messageID: completionMessageID,
+        type: "text",
+        text: "Task completed — result returned to parent session",
+        synthetic: true,
+      })
+      await Session.setTitle({
+        sessionID: session.id,
+        title: "✓ " + (session.title ?? params.description),
       })
 
       const text = result.parts.findLast((x) => x.type === "text")?.text ?? ""
