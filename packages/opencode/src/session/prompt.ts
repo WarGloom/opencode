@@ -1336,7 +1336,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           }
 
           if (input.model) {
-            const s = yield* InstanceState.get(cache)
+            const s = yield* InstanceState.get(state)
             const runner = s.runners.get(input.sessionID)
             if (runner?.busy) {
               log.info("superseding busy session with model override", {
