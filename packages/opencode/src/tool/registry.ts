@@ -11,6 +11,7 @@ import { WebFetchTool } from "./webfetch"
 import { WriteTool } from "./write"
 import { InvalidTool } from "./invalid"
 import { SkillDescription, SkillTool } from "./skill"
+import { Permission } from "../permission"
 import { Tool } from "./tool"
 import { Config } from "../config/config"
 import { type ToolContext as PluginToolContext, type ToolDefinition } from "@opencode-ai/plugin"
@@ -181,7 +182,7 @@ export namespace ToolRegistry {
       })
 
       const tools: Interface["tools"] = Effect.fn("ToolRegistry.tools")(function* (input) {
-        const filtered = (yield* all()).filter((tool) => {
+        let filtered = (yield* all()).filter((tool) => {
           if (tool.id === CodeSearchTool.id || tool.id === WebSearchTool.id) {
             return input.providerID === ProviderID.opencode || Flag.OPENCODE_ENABLE_EXA
           }
@@ -194,6 +195,19 @@ export namespace ToolRegistry {
 
           return true
         })
+
+        // Filter out tools that the agent's permissions globally deny.
+        // This reduces tool definitions sent to the model, saving context tokens
+        // for agents with restricted tool sets (e.g. read-only reviewers).
+        if (input.agent.permission.length) {
+          const denied = Permission.disabled(
+            filtered.map((t) => t.id),
+            input.agent.permission,
+          )
+          if (denied.size > 0) {
+            filtered = filtered.filter((t) => !denied.has(t.id))
+          }
+        }
 
         return yield* Effect.forEach(
           filtered,

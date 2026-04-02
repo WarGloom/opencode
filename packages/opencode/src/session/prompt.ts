@@ -546,6 +546,23 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           tools[key] = item
         }
 
+        // Budget-aware tool filtering: cap total tool-definition tokens to 15%
+        // of the model's input budget. Tools are kept in registration order
+        // (built-in first, plugin/MCP last), so low-priority tools trim first.
+        const inputBudget = input.model.limit.input ?? input.model.limit.context
+        if (inputBudget > 0) {
+          const toolTokenBudget = Math.floor(inputBudget * 0.15)
+          let totalEstimate = 0
+          for (const [key, t] of Object.entries(tools)) {
+            const desc = (t as any).description ?? ""
+            const schema = JSON.stringify((t as any).inputSchema ?? {})
+            totalEstimate += Math.ceil((desc.length + schema.length) / 3.5)
+            if (totalEstimate > toolTokenBudget) {
+              delete tools[key]
+            }
+          }
+        }
+
         return tools
       })
 
@@ -1321,7 +1338,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           }
 
           if (input.model) {
-            const s = yield* InstanceState.get(cache)
+            const s = yield* InstanceState.get(state)
             const runner = s.runners.get(input.sessionID)
             if (runner?.busy) {
               log.info("superseding busy session with model override", {
