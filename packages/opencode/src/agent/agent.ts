@@ -278,7 +278,29 @@ export namespace Agent {
             )
           }
 
+          const ZERO_WIDTH_RE = /[\u200B\u200C\u200D\uFEFF]/g
+          const normalize = (s: string) => s.replace(ZERO_WIDTH_RE, "").toLowerCase()
+
+          // Build a normalized-key → original-key index so that plugin-
+          // remapped display names (e.g. "​Atlas (Plan Executor)") can still
+          // be resolved from the original config key ("atlas").
+          const normalizedIndex: Record<string, string> = {}
+          for (const key of Object.keys(agents)) {
+            normalizedIndex[normalize(key)] = key
+          }
+
           const get = Effect.fnUntraced(function* (agent: string) {
+            if (agents[agent]) return agents[agent]
+            // Fallback: try normalized lookup (strips zero-width chars, case-insensitive)
+            const nk = normalize(agent)
+            const resolved = normalizedIndex[nk]
+            if (resolved) return agents[resolved]
+            // Fallback: match by prefix (e.g. "atlas" matches "​Atlas (Plan Executor)")
+            for (const [norm, key] of Object.entries(normalizedIndex)) {
+              if (norm.startsWith(nk + " ") || norm.startsWith(nk + "(")) {
+                return agents[key]
+              }
+            }
             return agents[agent]
           })
 

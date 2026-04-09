@@ -1615,6 +1615,23 @@ export type Config = {
      * Timeout in milliseconds for model context protocol (MCP) requests
      */
     mcp_timeout?: number
+    /**
+     * Tune the context-budget-aware tool filter applied before each prompt
+     */
+    tool_budget?: {
+      /**
+       * Fraction of model input budget reserved for tool definitions (default 0.15)
+       */
+      ratio?: number
+      /**
+       * Exempt all MCP-server tools from budget-based trimming
+       */
+      protect_mcp?: boolean
+      /**
+       * Tool ID prefixes that must never be trimmed by the budget filter
+       */
+      protect?: Array<string>
+    }
   }
 }
 

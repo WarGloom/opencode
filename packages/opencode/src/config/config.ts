@@ -1036,6 +1036,25 @@ export namespace Config {
             .positive()
             .optional()
             .describe("Timeout in milliseconds for model context protocol (MCP) requests"),
+          tool_budget: z
+            .object({
+              ratio: z
+                .number()
+                .min(0)
+                .max(1)
+                .optional()
+                .describe("Fraction of model input budget reserved for tool definitions (default 0.15)"),
+              protect_mcp: z
+                .boolean()
+                .optional()
+                .describe("Exempt all MCP-server tools from budget-based trimming"),
+              protect: z
+                .array(z.string())
+                .optional()
+                .describe("Tool ID prefixes that must never be trimmed by the budget filter"),
+            })
+            .optional()
+            .describe("Tune the context-budget-aware tool filter applied before each prompt"),
         })
         .optional(),
     })

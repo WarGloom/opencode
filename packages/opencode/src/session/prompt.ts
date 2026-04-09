@@ -32,6 +32,7 @@ import * as Stream from "effect/Stream"
 import { Command } from "../command"
 import { pathToFileURL, fileURLToPath } from "url"
 import { ConfigMarkdown } from "../config/markdown"
+import { Config } from "../config/config"
 import { SessionSummary } from "./summary"
 import { NamedError } from "@opencode-ai/util/error"
 import { SessionProcessor } from "./processor"
@@ -95,6 +96,7 @@ export namespace SessionPrompt {
       const lsp = yield* LSP.Service
       const filetime = yield* FileTime.Service
       const registry = yield* ToolRegistry.Service
+      const config = yield* Config.Service
       const truncate = yield* Truncate.Service
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
       const scope = yield* Scope.Scope
@@ -472,9 +474,11 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           })
         }
 
+        const mcpToolKeys = new Set<string>()
         for (const [key, item] of Object.entries(yield* mcp.tools())) {
           const execute = item.execute
           if (!execute) continue
+          mcpToolKeys.add(key)
 
           const schema = yield* Effect.promise(() => Promise.resolve(asSchema(item.inputSchema).jsonSchema))
           const transformed = ProviderTransform.schema(input.model, schema)
@@ -546,17 +550,38 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           tools[key] = item
         }
 
-        // Budget-aware tool filtering: cap total tool-definition tokens to 15%
-        // of the model's input budget. Tools are kept in registration order
-        // (built-in first, plugin/MCP last), so low-priority tools trim first.
+        // Budget-aware tool filtering: cap total tool-definition tokens at a
+        // fraction of the model's input budget. Tools are walked in insertion
+        // order; once the running estimate exceeds the cap, subsequent tools
+        // are dropped. User-configurable protections keep critical tools
+        // (e.g. MCP servers the user explicitly configured) intact.
         const inputBudget = input.model.limit.input ?? input.model.limit.context
         if (inputBudget > 0) {
-          const toolTokenBudget = Math.floor(inputBudget * 0.15)
+          const cfg = yield* config.get()
+          const tb = cfg.experimental?.tool_budget
+          const ratio = tb?.ratio ?? 0.15
+          const protectMcp = tb?.protect_mcp ?? false
+          const protectPrefixes = tb?.protect ?? []
+          const isProtected = (key: string) => {
+            if (protectMcp && mcpToolKeys.has(key)) return true
+            for (const prefix of protectPrefixes) {
+              if (key === prefix || key.startsWith(prefix)) return true
+            }
+            return false
+          }
+          const toolTokenBudget = Math.floor(inputBudget * ratio)
           let totalEstimate = 0
           for (const [key, t] of Object.entries(tools)) {
             const desc = (t as any).description ?? ""
             const schema = JSON.stringify((t as any).inputSchema ?? {})
-            totalEstimate += Math.ceil((desc.length + schema.length) / 3.5)
+            const tokens = Math.ceil((desc.length + schema.length) / 3.5)
+            if (isProtected(key)) {
+              // Protected tools always count toward the budget but are never
+              // dropped — they steal headroom from non-protected tools.
+              totalEstimate += tokens
+              continue
+            }
+            totalEstimate += tokens
             if (totalEstimate > toolTokenBudget) {
               delete tools[key]
             }
@@ -1764,6 +1789,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         Layer.provide(Agent.defaultLayer),
         Layer.provide(Bus.layer),
         Layer.provide(CrossSpawnSpawner.defaultLayer),
+        Layer.provide(Config.defaultLayer),
       ),
     ),
   )
