@@ -443,12 +443,12 @@ test("hidden files", async () => {
 
       await Filesystem.write(`${tmp.path}/.hidden`, "hidden content")
       await Filesystem.write(`${tmp.path}/.gitignore`, "*.log")
-      await Filesystem.write(`${tmp.path}/.config`, "config content")
+      await Filesystem.write(`${tmp.path}/.myrc`, "config content")
 
       const patch = await Snapshot.patch(before!)
       expect(patch.files).toContain(fwd(tmp.path, ".hidden"))
       expect(patch.files).toContain(fwd(tmp.path, ".gitignore"))
-      expect(patch.files).toContain(fwd(tmp.path, ".config"))
+      expect(patch.files).toContain(fwd(tmp.path, ".myrc"))
     },
   })
 })
