@@ -1332,17 +1332,13 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           if (input.noReply === true) return message
 
           if (input.model) {
-            const s = yield* InstanceState.get(state)
-            const runner = s.runners.get(input.sessionID)
-            if (runner?.busy) {
-              const sessionStatus = yield* status.get(input.sessionID)
-              if (sessionStatus.type === "retry") {
-                log.info("superseding retry loop with model override", {
-                  sessionID: input.sessionID,
-                  model: input.model,
-                })
-                yield* cancel(input.sessionID)
-              }
+            const sessionStatus = yield* status.get(input.sessionID)
+            if (sessionStatus.type === "retry") {
+              log.info("superseding retry loop with model override", {
+                sessionID: input.sessionID,
+                model: input.model,
+              })
+              yield* cancel(input.sessionID)
             }
           }
           return yield* loop({ sessionID: input.sessionID })
@@ -1748,8 +1744,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       Layer.provide(SessionRevert.defaultLayer),
       Layer.provide(Agent.defaultLayer),
       Layer.provide(Bus.layer),
-      Layer.provide(CrossSpawnSpawner.defaultLayer),
-      Layer.provide(Config.defaultLayer),
+      Layer.provide(Layer.merge(CrossSpawnSpawner.defaultLayer, Config.defaultLayer)),
     ),
   )
   const { runPromise } = makeRuntime(Service, defaultLayer)
