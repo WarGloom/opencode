@@ -34,6 +34,8 @@ import { createOpenAI } from "@ai-sdk/openai"
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
 import { createOpenRouter } from "@openrouter/ai-sdk-provider"
 import { createOpenaiCompatible as createGitHubCopilotOpenAICompatible } from "./sdk/copilot"
+import { createClaudeCode } from "./sdk/claude-code/provider"
+import { getClaudeCodeAuthStatus } from "./sdk/claude-code/auth-status"
 import { createXai } from "@ai-sdk/xai"
 import { createMistral } from "@ai-sdk/mistral"
 import { createGroq } from "@ai-sdk/groq"
@@ -56,6 +58,7 @@ import { GoogleAuth } from "google-auth-library"
 import { ProviderTransform } from "./transform"
 import { Installation } from "../installation"
 import { ModelID, ProviderID } from "./schema"
+import { which } from "../util/which"
 
 export namespace Provider {
   const log = Log.create({ service: "provider" })
@@ -147,6 +150,7 @@ export namespace Provider {
     "gitlab-ai-provider": createGitLab,
     "@ai-sdk/github-copilot": createGitHubCopilotOpenAICompatible,
     "venice-ai-sdk-provider": createVenice,
+    "@opencode/claude-code": createClaudeCode,
   }
 
   type CustomModelLoader = (sdk: any, modelID: string, options?: Record<string, any>) => Promise<any>
@@ -179,6 +183,38 @@ export namespace Provider {
               "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14",
             },
           },
+        }),
+      "claude-code": () =>
+        Effect.promise(async () => {
+          const binaryPath =
+            typeof undefined === "string" ? undefined : which("claude")
+          if (!binaryPath) return { autoload: false }
+
+          const list = (value: unknown) => {
+            if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string").map((item) => item.trim())
+            if (typeof value === "string") return value.split(",").map((item) => item.trim()).filter(Boolean)
+            return undefined
+          }
+
+          const status = await getClaudeCodeAuthStatus(binaryPath).catch((error) => {
+            log.warn("claude-code auth status failed", { error })
+            return undefined
+          })
+
+          if (!status?.loggedIn) return { autoload: false }
+
+          return {
+            autoload: true,
+            options: {
+              binaryPath,
+              authMethod: status.authMethod,
+              apiProvider: status.apiProvider,
+              subscriptionType: status.subscriptionType,
+            },
+            async getModel(sdk: ReturnType<typeof createClaudeCode>, modelID: string) {
+              return sdk.languageModel(modelID)
+            },
+          }
         }),
       opencode: Effect.fnUntraced(function* (input: Info) {
         const env = Env.all()
@@ -926,6 +962,61 @@ export namespace Provider {
 
   export class Service extends ServiceMap.Service<Service, Interface>()("@opencode/Provider") {}
 
+  function createClaudeCodeModel(model: Model): Model {
+    return {
+      ...model,
+      id: ModelID.make(String(model.id)),
+      providerID: ProviderID.claudeCode,
+      api: {
+        ...model.api,
+        npm: "@opencode/claude-code",
+        url: "claude://local-cli",
+      },
+      capabilities: {
+        ...model.capabilities,
+        attachment: false,
+        toolcall: false,
+        input: {
+          text: true,
+          audio: false,
+          image: false,
+          video: false,
+          pdf: false,
+        },
+        output: {
+          text: true,
+          audio: false,
+          image: false,
+          video: false,
+          pdf: false,
+        },
+      },
+      cost: {
+        ...model.cost,
+        input: 0,
+        output: 0,
+        cache: { read: 0, write: 0 },
+      },
+      options: {
+        ...model.options,
+        nativeTools: true,
+        toolRuntime: "provider-native",
+      },
+    }
+  }
+
+  function createClaudeCodeProvider(provider: Info): Info {
+    return {
+      ...provider,
+      id: ProviderID.claudeCode,
+      name: "Claude Code",
+      env: [],
+      source: "custom",
+      options: {},
+      models: mapValues(provider.models, (model) => createClaudeCodeModel(model)),
+    }
+  }
+
   function fromModelsDevModel(provider: ModelsDev.Provider, model: ModelsDev.Model): Model {
     const m: Model = {
       id: ModelID.make(model.id),
@@ -1017,6 +1108,9 @@ export namespace Provider {
           const cfg = yield* config.get()
           const modelsDev = yield* Effect.promise(() => ModelsDev.get())
           const database = mapValues(modelsDev, fromModelsDevProvider)
+          if (database[ProviderID.anthropic]) {
+            database[ProviderID.claudeCode] = createClaudeCodeProvider(database[ProviderID.anthropic])
+          }
 
           const providers: Record<ProviderID, Info> = {} as Record<ProviderID, Info>
           const languages = new Map<string, LanguageModelV3>()
@@ -1624,6 +1718,14 @@ export namespace Provider {
           (p) => !cfg.provider || Object.keys(cfg.provider).includes(p.id),
         )
         if (!provider) throw new Error("no providers found")
+        if (provider.id === ProviderID.claudeCode) {
+          const model = yield* getSmallModel(provider.id)
+          if (model)
+            return {
+              providerID: provider.id,
+              modelID: model.id,
+            }
+        }
         const [model] = sort(Object.values(provider.models))
         if (!model) throw new Error("no models found")
         return {
@@ -1683,6 +1785,8 @@ export namespace Provider {
       [(model) => model.id, "desc"],
     )
   }
+
+
 
   export function parseModel(model: string) {
     const [providerID, ...rest] = model.split("/")

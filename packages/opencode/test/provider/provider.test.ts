@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test"
+import { test, expect, spyOn } from "bun:test"
 import { mkdir, unlink } from "fs/promises"
 import path from "path"
 
@@ -10,6 +10,8 @@ import { Provider } from "../../src/provider/provider"
 import { ProviderID, ModelID } from "../../src/provider/schema"
 import { Filesystem } from "../../src/util/filesystem"
 import { Env } from "../../src/env"
+import { Process } from "../../src/util/process"
+import * as WhichModule from "../../src/util/which"
 
 function paid(providers: Awaited<ReturnType<typeof Provider.list>>) {
   const item = providers[ProviderID.make("opencode")]
@@ -949,6 +951,118 @@ test("getSmallModel returns appropriate small model", async () => {
       expect(model?.id).toContain("haiku")
     },
   })
+})
+
+test("claude-code provider autoloads when Claude CLI is logged in", async () => {
+  const whichSpy = spyOn(WhichModule, "which").mockImplementation((cmd) => {
+    if (cmd === "claude") return "/usr/bin/claude"
+    return null
+  })
+  const textSpy = spyOn(Process, "text").mockImplementation(async (cmd) => {
+    expect(cmd).toEqual(["/usr/bin/claude", "auth", "status", "--json"])
+    return {
+      code: 0,
+      stdout: Buffer.from(
+        JSON.stringify({
+          loggedIn: true,
+          authMethod: "claude.ai",
+          apiProvider: "firstParty",
+          subscriptionType: "max",
+        }),
+      ),
+      stderr: Buffer.alloc(0),
+      text: JSON.stringify({
+        loggedIn: true,
+        authMethod: "claude.ai",
+        apiProvider: "firstParty",
+        subscriptionType: "max",
+      }),
+    }
+  })
+
+  try {
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "opencode.json"),
+          JSON.stringify({
+            $schema: "https://opencode.ai/config.json",
+          }),
+        )
+      },
+    })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const providers = await Provider.list()
+        expect(providers[ProviderID.claudeCode]).toBeDefined()
+        expect(providers[ProviderID.claudeCode].name).toBe("Claude Code")
+        const model = await Provider.getSmallModel(ProviderID.claudeCode)
+        expect(model?.id).toContain("haiku")
+        expect(model?.capabilities.toolcall).toBe(false)
+        expect(model?.options.nativeTools).toBe(true)
+        expect(model?.options.toolRuntime).toBe("provider-native")
+      },
+    })
+  } finally {
+    whichSpy.mockRestore()
+    textSpy.mockRestore()
+  }
+})
+
+test("claude-code defaultModel prefers haiku for smoke testing", async () => {
+  const which = spyOn(WhichModule, "which").mockImplementation((cmd) => {
+    if (cmd === "claude") return "/usr/bin/claude"
+    return null
+  })
+  const text = spyOn(Process, "text").mockImplementation(async (cmd) => {
+    expect(cmd).toEqual(["/usr/bin/claude", "auth", "status", "--json"])
+    return {
+      code: 0,
+      stdout: Buffer.from(
+        JSON.stringify({
+          loggedIn: true,
+          authMethod: "claude.ai",
+          apiProvider: "firstParty",
+          subscriptionType: "max",
+        }),
+      ),
+      stderr: Buffer.alloc(0),
+      text: JSON.stringify({
+        loggedIn: true,
+        authMethod: "claude.ai",
+        apiProvider: "firstParty",
+        subscriptionType: "max",
+      }),
+    }
+  })
+
+  try {
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "opencode.json"),
+          JSON.stringify({
+            $schema: "https://opencode.ai/config.json",
+            enabled_providers: ["claude-code"],
+          }),
+        )
+      },
+    })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const model = await Provider.defaultModel()
+        expect(model.providerID).toBe(ProviderID.claudeCode)
+        expect(model.modelID).toContain("haiku")
+      },
+    })
+  } finally {
+    which.mockRestore()
+    text.mockRestore()
+  }
 })
 
 test("getSmallModel respects config small_model override", async () => {
