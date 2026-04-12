@@ -97,7 +97,6 @@ export namespace SessionPrompt {
       const lsp = yield* LSP.Service
       const filetime = yield* FileTime.Service
       const registry = yield* ToolRegistry.Service
-      const config = yield* Config.Service
       const truncate = yield* Truncate.Service
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
       const scope = yield* Scope.Scope
@@ -517,44 +516,6 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               }),
             )
           tools[key] = item
-        }
-
-        // Budget-aware tool filtering: cap total tool-definition tokens at a
-        // fraction of the model's input budget. Tools are walked in insertion
-        // order; once the running estimate exceeds the cap, subsequent tools
-        // are dropped. User-configurable protections keep critical tools
-        // (e.g. MCP servers the user explicitly configured) intact.
-        const inputBudget = input.model.limit.input ?? input.model.limit.context
-        if (inputBudget > 0) {
-          const cfg = yield* config.get()
-          const tb = cfg.experimental?.tool_budget
-          const ratio = tb?.ratio ?? 0.15
-          const protectMcp = tb?.protect_mcp ?? false
-          const protectPrefixes = tb?.protect ?? []
-          const isProtected = (key: string) => {
-            if (protectMcp && mcpToolKeys.has(key)) return true
-            for (const prefix of protectPrefixes) {
-              if (key === prefix || key.startsWith(prefix)) return true
-            }
-            return false
-          }
-          const toolTokenBudget = Math.floor(inputBudget * ratio)
-          let totalEstimate = 0
-          for (const [key, t] of Object.entries(tools)) {
-            const desc = (t as any).description ?? ""
-            const schema = JSON.stringify((t as any).inputSchema ?? {})
-            const tokens = Math.ceil((desc.length + schema.length) / 3.5)
-            if (isProtected(key)) {
-              // Protected tools always count toward the budget but are never
-              // dropped — they steal headroom from non-protected tools.
-              totalEstimate += tokens
-              continue
-            }
-            totalEstimate += tokens
-            if (totalEstimate > toolTokenBudget) {
-              delete tools[key]
-            }
-          }
         }
 
         return tools
@@ -1756,7 +1717,6 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           LLM.defaultLayer,
           Bus.layer,
           CrossSpawnSpawner.defaultLayer,
-          Config.defaultLayer,
         ),
       ),
     ),
