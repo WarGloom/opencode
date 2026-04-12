@@ -36,7 +36,6 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
 import { createOpenRouter } from "@openrouter/ai-sdk-provider"
 import { createOpenaiCompatible as createGitHubCopilotOpenAICompatible } from "./sdk/copilot"
 import { createClaudeCode } from "./sdk/claude-code/provider"
-import { getClaudeCodeAuthStatus } from "./sdk/claude-code/auth-status"
 import { createXai } from "@ai-sdk/xai"
 import { createMistral } from "@ai-sdk/mistral"
 import { createGroq } from "@ai-sdk/groq"
@@ -184,38 +183,6 @@ export namespace Provider {
               "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14",
             },
           },
-        }),
-      "claude-code": () =>
-        Effect.promise(async () => {
-          const binaryPath =
-            typeof undefined === "string" ? undefined : which("claude")
-          if (!binaryPath) return { autoload: false }
-
-          const list = (value: unknown) => {
-            if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string").map((item) => item.trim())
-            if (typeof value === "string") return value.split(",").map((item) => item.trim()).filter(Boolean)
-            return undefined
-          }
-
-          const status = await getClaudeCodeAuthStatus(binaryPath).catch((error) => {
-            log.warn("claude-code auth status failed", { error })
-            return undefined
-          })
-
-          if (!status?.loggedIn) return { autoload: false }
-
-          return {
-            autoload: true,
-            options: {
-              binaryPath,
-              authMethod: status.authMethod,
-              apiProvider: status.apiProvider,
-              subscriptionType: status.subscriptionType,
-            },
-            async getModel(sdk: ReturnType<typeof createClaudeCode>, modelID: string) {
-              return sdk.languageModel(modelID)
-            },
-          }
         }),
       opencode: Effect.fnUntraced(function* (input: Info) {
         const env = Env.all()
@@ -963,6 +930,14 @@ export namespace Provider {
 
   export class Service extends Context.Service<Service, Interface>()("@opencode/Provider") {}
 
+  function wantsClaudeCode(cfg: Config.Info) {
+    if (cfg.provider?.[ProviderID.claudeCode]) return true
+    if (cfg.enabled_providers?.includes(ProviderID.claudeCode)) return true
+    if (cfg.model?.startsWith(`${ProviderID.claudeCode}/`)) return true
+    if (cfg.small_model?.startsWith(`${ProviderID.claudeCode}/`)) return true
+    return false
+  }
+
   function createClaudeCodeModel(model: Model): Model {
     return {
       ...model,
@@ -1132,7 +1107,7 @@ export namespace Provider {
           const cfg = yield* config.get()
           const modelsDev = yield* Effect.promise(() => ModelsDev.get())
           const database = mapValues(modelsDev, fromModelsDevProvider)
-          if (database[ProviderID.anthropic]) {
+          if (wantsClaudeCode(cfg) && database[ProviderID.anthropic]) {
             database[ProviderID.claudeCode] = createClaudeCodeProvider(database[ProviderID.anthropic])
           }
 
@@ -1180,6 +1155,13 @@ export namespace Provider {
             if (enabled && !enabled.has(providerID)) return false
             if (disabled.has(providerID)) return false
             return true
+          }
+
+          if (wantsClaudeCode(cfg) && isProviderAllowed(ProviderID.claudeCode)) {
+            mergeProvider(ProviderID.claudeCode, {
+              source: "custom",
+              options: cfg.provider?.[ProviderID.claudeCode]?.options ?? {},
+            })
           }
 
           // extend database from config
@@ -1457,6 +1439,15 @@ export namespace Provider {
           })
           const provider = s.providers[model.providerID]
           const options = { ...provider.options }
+
+          if (model.providerID === ProviderID.claudeCode) {
+            const binaryPath =
+              typeof options["binaryPath"] === "string" && options["binaryPath"]
+                ? options["binaryPath"]
+                : which("claude")
+            if (!binaryPath) throw new Error("Claude Code binary not found")
+            options["binaryPath"] = binaryPath
+          }
 
           if (model.providerID === "google-vertex" && !model.api.npm.includes("@ai-sdk/openai-compatible")) {
             delete options.fetch
@@ -1810,8 +1801,6 @@ export namespace Provider {
       [(model) => model.id, "desc"],
     )
   }
-
-
 
   export function parseModel(model: string) {
     const [providerID, ...rest] = model.split("/")
