@@ -81,7 +81,7 @@ export namespace Runner {
         const id = next()
         const fiber = yield* work.pipe(
           Effect.onExit((exit) => finishRun(id, done, exit)),
-          Effect.forkIn(scope),
+          Effect.forkIn(scope, { startImmediately: true }),
         )
         return { id, done, fiber } satisfies RunHandle<A, E>
       })
