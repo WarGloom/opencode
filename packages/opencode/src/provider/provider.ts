@@ -930,14 +930,6 @@ export namespace Provider {
 
   export class Service extends Context.Service<Service, Interface>()("@opencode/Provider") {}
 
-  function wantsClaudeCode(cfg: Config.Info) {
-    if (cfg.provider?.[ProviderID.claudeCode]) return true
-    if (cfg.enabled_providers?.includes(ProviderID.claudeCode)) return true
-    if (cfg.model?.startsWith(`${ProviderID.claudeCode}/`)) return true
-    if (cfg.small_model?.startsWith(`${ProviderID.claudeCode}/`)) return true
-    return false
-  }
-
   function createClaudeCodeModel(model: Model): Model {
     return {
       ...model,
@@ -1107,7 +1099,7 @@ export namespace Provider {
           const cfg = yield* config.get()
           const modelsDev = yield* Effect.promise(() => ModelsDev.get())
           const database = mapValues(modelsDev, fromModelsDevProvider)
-          if (wantsClaudeCode(cfg) && database[ProviderID.anthropic]) {
+          if (database[ProviderID.anthropic]) {
             database[ProviderID.claudeCode] = createClaudeCodeProvider(database[ProviderID.anthropic])
           }
 
@@ -1157,7 +1149,7 @@ export namespace Provider {
             return true
           }
 
-          if (wantsClaudeCode(cfg) && isProviderAllowed(ProviderID.claudeCode)) {
+          if (isProviderAllowed(ProviderID.claudeCode)) {
             mergeProvider(ProviderID.claudeCode, {
               source: "custom",
               options: cfg.provider?.[ProviderID.claudeCode]?.options ?? {},

@@ -952,7 +952,7 @@ test("getSmallModel returns appropriate small model", async () => {
   })
 })
 
-test("claude-code provider is only available when explicitly enabled", async () => {
+test("claude-code provider is available by default", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
       await Bun.write(
@@ -968,12 +968,12 @@ test("claude-code provider is only available when explicitly enabled", async () 
     directory: tmp.path,
     fn: async () => {
       const providers = await Provider.list()
-      expect(providers[ProviderID.claudeCode]).toBeUndefined()
+      expect(providers[ProviderID.claudeCode]).toBeDefined()
     },
   })
 })
 
-test("claude-code provider is available when explicitly enabled", async () => {
+test("claude-code provider remains available when explicitly enabled", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
       await Bun.write(
