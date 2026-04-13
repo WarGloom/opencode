@@ -1006,7 +1006,7 @@ test("claude-code provider is available by default", async () => {
   await Instance.provide({
     directory: tmp.path,
     fn: async () => {
-      const providers = await Provider.list()
+      const providers = await list()
       expect(providers[ProviderID.claudeCode]).toBeDefined()
     },
   })
@@ -1028,10 +1028,10 @@ test("claude-code provider remains available when explicitly enabled", async () 
   await Instance.provide({
     directory: tmp.path,
     fn: async () => {
-      const providers = await Provider.list()
+      const providers = await list()
       expect(providers[ProviderID.claudeCode]).toBeDefined()
       expect(providers[ProviderID.claudeCode].name).toBe("Claude Code")
-      const model = await Provider.getSmallModel(ProviderID.claudeCode)
+      const model = await getSmallModel(ProviderID.claudeCode)
       expect(model?.id).toContain("haiku")
       expect(model?.capabilities.toolcall).toBe(false)
       expect(model?.options.nativeTools).toBe(true)
@@ -1056,7 +1056,7 @@ test("claude-code defaultModel prefers haiku for smoke testing", async () => {
   await Instance.provide({
     directory: tmp.path,
     fn: async () => {
-      const model = await Provider.defaultModel()
+      const model = await defaultModel()
       expect(model.providerID).toBe(ProviderID.claudeCode)
       expect(model.modelID).toContain("haiku")
     },

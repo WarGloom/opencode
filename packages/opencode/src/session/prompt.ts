@@ -722,9 +722,6 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           Effect.gen(function* () {
             const ctx = yield* InstanceState.context
             const session = yield* sessions.get(input.sessionID)
-            if (session.revert) {
-              yield* Effect.promise(() => SessionRevert.cleanup(session))
-            }
             const agent = yield* agents.get(input.agent)
             if (!agent) {
               const available = (yield* agents.list()).filter((a) => !a.hidden).map((a) => a.name)
