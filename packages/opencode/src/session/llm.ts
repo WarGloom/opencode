@@ -21,6 +21,7 @@ import { Wildcard } from "@/util/wildcard"
 import { SessionID } from "@/session/schema"
 import { Auth } from "@/auth"
 import { Installation } from "@/installation"
+import { AppRuntime } from "@/effect/app-runtime"
 
 export namespace LLM {
   const log = Log.create({ service: "llm" })
@@ -94,14 +95,24 @@ export namespace LLM {
       modelID: input.model.id,
       providerID: input.model.providerID,
     })
-    const [language, cfg, provider, auth] = await Promise.all([
-      Provider.getLanguage(input.model),
-      Config.get(),
-      Provider.getProvider(input.model.providerID),
-      Auth.get(input.model.providerID),
-    ])
+    const [language, cfg, provider, info] = await Effect.runPromise(
+      Effect.gen(function* () {
+        const auth = yield* Auth.Service
+        const cfg = yield* Config.Service
+        const provider = yield* Provider.Service
+        return yield* Effect.all(
+          [
+            provider.getLanguage(input.model),
+            cfg.get(),
+            provider.getProvider(input.model.providerID),
+            auth.get(input.model.providerID),
+          ],
+          { concurrency: "unbounded" },
+        )
+      }).pipe(Effect.provide(Layer.mergeAll(Auth.defaultLayer, Config.defaultLayer, Provider.defaultLayer))),
+    )
     // TODO: move this to a proper hook
-    const isOpenaiOauth = provider.id === "openai" && auth?.type === "oauth"
+    const isOpenaiOauth = provider.id === "openai" && info?.type === "oauth"
 
     const system: string[] = []
     system.push(
@@ -200,7 +211,7 @@ export namespace LLM {
       },
     )
 
-    const tools = await resolveTools(input)
+    const tools = resolveTools(input)
 
     // LiteLLM and some Anthropic proxies require the tools parameter to be present
     // when message history contains tool calls, even if no tools are being used.
@@ -295,15 +306,19 @@ export namespace LLM {
             }
           })
           const uniquePatterns = [...new Set(toolPatterns)] as string[]
-          await Permission.ask({
-            id,
-            sessionID: SessionID.make(input.sessionID),
-            permission: "workflow_tool_approval",
-            patterns: uniquePatterns,
-            metadata: { tools: approvalTools },
-            always: uniquePatterns,
-            ruleset: [],
-          })
+          await AppRuntime.runPromise(
+            Permission.Service.use((svc) =>
+              svc.ask({
+                id,
+                sessionID: SessionID.make(input.sessionID),
+                permission: "workflow_tool_approval",
+                patterns: uniquePatterns,
+                metadata: { tools: approvalTools },
+                always: uniquePatterns,
+                ruleset: [],
+              }),
+            ),
+          )
           for (const name of uniqueNames) approvedToolsForSession.add(name)
           workflowModel.sessionPreapprovedTools = [...(workflowModel.sessionPreapprovedTools ?? []), ...uniqueNames]
           return { approved: true }
