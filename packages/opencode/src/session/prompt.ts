@@ -1360,7 +1360,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               !hasToolCalls &&
               lastUser.id < lastAssistant.id
             ) {
-              yield* slog.info("exiting loop")
+              yield* slog.debug("exiting loop")
               break
             }
 
