@@ -1324,7 +1324,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
           while (true) {
             yield* status.set(sessionID, { type: "busy" })
-            yield* slog.info("loop", { step })
+            yield* slog.debug("loop", { step })
 
             let msgs = yield* MessageV2.filterCompactedEffect(sessionID)
 
