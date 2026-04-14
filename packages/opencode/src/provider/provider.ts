@@ -35,7 +35,6 @@ import { createOpenAI } from "@ai-sdk/openai"
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
 import { createOpenRouter } from "@openrouter/ai-sdk-provider"
 import { createOpenaiCompatible as createGitHubCopilotOpenAICompatible } from "./sdk/copilot"
-import { createClaudeCode } from "./sdk/claude-code/provider"
 import { createXai } from "@ai-sdk/xai"
 import { createMistral } from "@ai-sdk/mistral"
 import { createGroq } from "@ai-sdk/groq"
@@ -59,7 +58,6 @@ import { GoogleAuth } from "google-auth-library"
 import { ProviderTransform } from "./transform"
 import { Installation } from "../installation"
 import { ModelID, ProviderID } from "./schema"
-import { which } from "../util/which"
 
 export namespace Provider {
   const log = Log.create({ service: "provider" })
@@ -146,7 +144,6 @@ export namespace Provider {
     "gitlab-ai-provider": createGitLab,
     "@ai-sdk/github-copilot": createGitHubCopilotOpenAICompatible,
     "venice-ai-sdk-provider": createVenice,
-    "@opencode/claude-code": createClaudeCode,
   }
 
   type CustomModelLoader = (sdk: any, modelID: string, options?: Record<string, any>) => Promise<any>
@@ -929,61 +926,6 @@ export namespace Provider {
 
   export class Service extends Context.Service<Service, Interface>()("@opencode/Provider") {}
 
-  function createClaudeCodeModel(model: Model): Model {
-    return {
-      ...model,
-      id: ModelID.make(String(model.id)),
-      providerID: ProviderID.claudeCode,
-      api: {
-        ...model.api,
-        npm: "@opencode/claude-code",
-        url: "claude://local-cli",
-      },
-      capabilities: {
-        ...model.capabilities,
-        attachment: false,
-        toolcall: false,
-        input: {
-          text: true,
-          audio: false,
-          image: false,
-          video: false,
-          pdf: false,
-        },
-        output: {
-          text: true,
-          audio: false,
-          image: false,
-          video: false,
-          pdf: false,
-        },
-      },
-      cost: {
-        ...model.cost,
-        input: 0,
-        output: 0,
-        cache: { read: 0, write: 0 },
-      },
-      options: {
-        ...model.options,
-        nativeTools: true,
-        toolRuntime: "provider-native",
-      },
-    }
-  }
-
-  function createClaudeCodeProvider(provider: Info): Info {
-    return {
-      ...provider,
-      id: ProviderID.claudeCode,
-      name: "Claude Code",
-      env: [],
-      source: "custom",
-      options: {},
-      models: mapValues(provider.models, (model) => createClaudeCodeModel(model)),
-    }
-  }
-
   function cost(c: ModelsDev.Model["cost"]): Model["cost"] {
     const result: Model["cost"] = {
       input: c?.input ?? 0,
@@ -1104,9 +1046,6 @@ export namespace Provider {
           const cfg = yield* config.get()
           const modelsDev = yield* Effect.promise(() => ModelsDev.get())
           const database = mapValues(modelsDev, fromModelsDevProvider)
-          if (database[ProviderID.anthropic]) {
-            database[ProviderID.claudeCode] = createClaudeCodeProvider(database[ProviderID.anthropic])
-          }
 
           const providers: Record<ProviderID, Info> = {} as Record<ProviderID, Info>
           const languages = new Map<string, LanguageModelV3>()
@@ -1154,13 +1093,6 @@ export namespace Provider {
             if (enabled && !enabled.has(providerID)) return false
             if (disabled.has(providerID)) return false
             return true
-          }
-
-          if (isProviderAllowed(ProviderID.claudeCode)) {
-            mergeProvider(ProviderID.claudeCode, {
-              source: "custom",
-              options: cfg.provider?.[ProviderID.claudeCode]?.options ?? {},
-            })
           }
 
           // extend database from config
@@ -1438,15 +1370,6 @@ export namespace Provider {
           })
           const provider = s.providers[model.providerID]
           const options = { ...provider.options }
-
-          if (model.providerID === ProviderID.claudeCode) {
-            const binaryPath =
-              typeof options["binaryPath"] === "string" && options["binaryPath"]
-                ? options["binaryPath"]
-                : which("claude")
-            if (!binaryPath) throw new Error("Claude Code binary not found")
-            options["binaryPath"] = binaryPath
-          }
 
           if (model.providerID === "google-vertex" && !model.api.npm.includes("@ai-sdk/openai-compatible")) {
             delete options.fetch
@@ -1743,14 +1666,6 @@ export namespace Provider {
           (p) => !cfg.provider || Object.keys(cfg.provider).includes(p.id),
         )
         if (!provider) throw new Error("no providers found")
-        if (provider.id === ProviderID.claudeCode) {
-          const model = yield* getSmallModel(provider.id)
-          if (model)
-            return {
-              providerID: provider.id,
-              modelID: model.id,
-            }
-        }
         const [model] = sort(Object.values(provider.models))
         if (!model) throw new Error("no models found")
         return {
