@@ -8,7 +8,6 @@ import { Agent } from "../agent/agent"
 import type { SessionPrompt } from "../session/prompt"
 import { Config } from "../config/config"
 import { Effect } from "effect"
-import { Log } from "@/util/log"
 
 export interface TaskPromptOps {
   cancel(sessionID: SessionID): void
@@ -146,32 +145,26 @@ export const TaskTool = Tool.define(
             })
 
             const completionMessageID = MessageID.ascending()
-            yield* Effect.promise(() =>
-              Session.updateMessage({
+            yield* sessions.updateMessage({
                 id: completionMessageID,
                 sessionID: nextSession.id,
                 role: "user",
                 time: { created: Date.now() },
                 agent: next.name,
                 model,
-              }),
-            )
-            yield* Effect.promise(() =>
-              Session.updatePart({
+              })
+            yield* sessions.updatePart({
                 id: PartID.ascending(),
                 sessionID: nextSession.id,
                 messageID: completionMessageID,
                 type: "text",
                 text: "Task completed — result returned to parent session",
                 synthetic: true,
-              }),
-            )
-            yield* Effect.promise(() =>
-              Session.setTitle({
+              })
+            yield* sessions.setTitle({
                 sessionID: nextSession.id,
                 title: "\u2713 " + (nextSession.title ?? params.description),
-              }),
-            )
+              })
 
             return {
               title: params.description,
