@@ -122,7 +122,7 @@ export namespace SessionPrompt {
       })
 
       const cancel = Effect.fn("SessionPrompt.cancel")(function* (sessionID: SessionID) {
-        yield* elog.info("cancel", { sessionID })
+        yield* elog.debug("cancel", { sessionID })
         yield* state.cancel(sessionID)
       })
 
@@ -977,7 +977,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           if (part.type === "file") {
             if (part.source?.type === "resource") {
               const { clientName, uri } = part.source
-              log.info("mcp resource", { clientName, uri, mime: part.mime })
+              log.debug("mcp resource", { clientName, uri, mime: part.mime })
               const pieces: Draft<MessageV2.Part>[] = [
                 {
                   messageID: info.id,
@@ -1051,7 +1051,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 }
                 break
               case "file:": {
-                log.info("file", { mime: part.mime })
+                log.debug("file", { mime: part.mime })
                 const filepath = fileURLToPath(part.url)
                 if (yield* fsys.isDir(filepath)) part.mime = "application/x-directory"
 
@@ -1307,7 +1307,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           if (input.model) {
             const sessionStatus = yield* status.get(input.sessionID)
             if (sessionStatus.type === "retry") {
-              log.info("superseding retry loop with model override", {
+              log.debug("superseding retry loop with model override", {
                 sessionID: input.sessionID,
                 model: input.model,
               })
@@ -1571,7 +1571,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       )
 
       const command = Effect.fn("SessionPrompt.command")(function* (input: CommandInput) {
-        yield* elog.info("command", { sessionID: input.sessionID, command: input.command, agent: input.agent })
+        yield* elog.debug("command", { sessionID: input.sessionID, command: input.command, agent: input.agent })
         const cmd = yield* commands.get(input.command)
         if (!cmd) {
           const available = (yield* commands.list()).map((c) => c.name)
