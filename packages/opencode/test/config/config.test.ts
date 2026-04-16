@@ -1,7 +1,9 @@
 import { test, expect, describe, mock, afterEach, beforeEach, spyOn } from "bun:test"
 import { Deferred, Effect, Fiber, Layer, Option } from "effect"
 import { NodeFileSystem, NodePath } from "@effect/platform-node"
-import { Config } from "../../src/config/config"
+import { Config } from "../../src/config"
+import { EffectFlock } from "@opencode-ai/shared/util/effect-flock"
+
 import { Instance } from "../../src/project/instance"
 import { Auth } from "../../src/auth"
 import { AccessToken, Account, AccountID, OrgID } from "../../src/account"
@@ -21,9 +23,10 @@ import fs from "fs/promises"
 import { pathToFileURL } from "url"
 import { Global } from "../../src/global"
 import { ProjectID } from "../../src/project/schema"
-import { Filesystem } from "../../src/util/filesystem"
+import { Filesystem } from "../../src/util"
 import * as Network from "../../src/util/network"
 import { Npm } from "../../src/npm"
+import { ConfigPlugin } from "@/config/plugin"
 
 const emptyAccount = Layer.mock(Account.Service)({
   active: () => Effect.succeed(Option.none()),
@@ -34,7 +37,10 @@ const emptyAuth = Layer.mock(Auth.Service)({
   all: () => Effect.succeed({}),
 })
 
+const testFlock = EffectFlock.defaultLayer
+
 const layer = Config.layer.pipe(
+  Layer.provide(testFlock),
   Layer.provide(AppFileSystem.defaultLayer),
   Layer.provide(Env.defaultLayer),
   Layer.provide(emptyAuth),
@@ -333,6 +339,7 @@ test("resolves env templates in account config with account token", async () => 
   })
 
   const layer = Config.layer.pipe(
+    Layer.provide(testFlock),
     Layer.provide(AppFileSystem.defaultLayer),
     Layer.provide(Env.defaultLayer),
     Layer.provide(emptyAuth),
@@ -852,7 +859,6 @@ it.live("dedupes concurrent config dependency installs for the same dir", () =>
     let calls = 0
     const online = spyOn(Network, "online").mockReturnValue(false)
     const ready = Deferred.makeUnsafe<void>()
-    const blocked = Deferred.makeUnsafe<void>()
     const hold = Deferred.makeUnsafe<void>()
     const target = path.normalize(dir)
     const run = spyOn(Npm, "install").mockImplementation(async (d: string) => {
@@ -879,11 +885,7 @@ it.live("dedupes concurrent config dependency installs for the same dir", () =>
     yield* Deferred.await(ready)
 
     let done = false
-    const second = yield* installDeps(dir, {
-      waitTick: () => {
-        Deferred.doneUnsafe(blocked, Effect.void)
-      },
-    }).pipe(
+    const second = yield* installDeps(dir).pipe(
       Effect.tap(() =>
         Effect.sync(() => {
           done = true
@@ -892,7 +894,8 @@ it.live("dedupes concurrent config dependency installs for the same dir", () =>
       Effect.forkScoped,
     )
 
-    yield* Deferred.await(blocked)
+    // Give the second fiber time to hit the lock retry loop
+    yield* Effect.sleep(500)
     expect(done).toBe(false)
 
     yield* Deferred.succeed(hold, void 0)
@@ -918,7 +921,6 @@ it.live("serializes config dependency installs across dirs", () =>
     let open = 0
     let peak = 0
     const ready = Deferred.makeUnsafe<void>()
-    const blocked = Deferred.makeUnsafe<void>()
     const hold = Deferred.makeUnsafe<void>()
 
     const online = spyOn(Network, "online").mockReturnValue(false)
@@ -955,12 +957,9 @@ it.live("serializes config dependency installs across dirs", () =>
     const first = yield* installDeps(a).pipe(Effect.forkScoped)
     yield* Deferred.await(ready)
 
-    const second = yield* installDeps(b, {
-      waitTick: () => {
-        Deferred.doneUnsafe(blocked, Effect.void)
-      },
-    }).pipe(Effect.forkScoped)
-    yield* Deferred.await(blocked)
+    const second = yield* installDeps(b).pipe(Effect.forkScoped)
+    // Give the second fiber time to hit the lock retry loop
+    yield* Effect.sleep(500)
     expect(peak).toBe(1)
 
     yield* Deferred.succeed(hold, void 0)
@@ -1258,7 +1257,7 @@ test("keeps plugin origins aligned with merged plugin list", async () => {
       const cfg = await load()
       const plugins = cfg.plugin ?? []
       const origins = cfg.plugin_origins ?? []
-      const names = plugins.map((item) => Config.pluginSpecifier(item))
+      const names = plugins.map((item) => ConfigPlugin.pluginSpecifier(item))
 
       expect(names).toContain("shared-plugin@2.0.0")
       expect(names).not.toContain("shared-plugin@1.0.0")
@@ -1266,7 +1265,7 @@ test("keeps plugin origins aligned with merged plugin list", async () => {
       expect(names).toContain("local-only@1.0.0")
 
       expect(origins.map((item) => item.spec)).toEqual(plugins)
-      const hit = origins.find((item) => Config.pluginSpecifier(item.spec) === "shared-plugin@2.0.0")
+      const hit = origins.find((item) => ConfigPlugin.pluginSpecifier(item.spec) === "shared-plugin@2.0.0")
       expect(hit?.scope).toBe("local")
     },
   })
@@ -1801,7 +1800,7 @@ test("project config overrides remote well-known config", async () => {
   const originalFetch = globalThis.fetch
   let fetchedUrl: string | undefined
   globalThis.fetch = mock((url: string | URL | Request) => {
-    const urlStr = url.toString()
+    const urlStr = url instanceof Request ? url.url : url instanceof URL ? url.href : url
     if (urlStr.includes(".well-known/opencode")) {
       fetchedUrl = urlStr
       return Promise.resolve(
@@ -1826,6 +1825,7 @@ test("project config overrides remote well-known config", async () => {
   })
 
   const layer = Config.layer.pipe(
+    Layer.provide(testFlock),
     Layer.provide(AppFileSystem.defaultLayer),
     Layer.provide(Env.defaultLayer),
     Layer.provide(fakeAuth),
@@ -1857,7 +1857,7 @@ test("wellknown URL with trailing slash is normalized", async () => {
   const originalFetch = globalThis.fetch
   let fetchedUrl: string | undefined
   globalThis.fetch = mock((url: string | URL | Request) => {
-    const urlStr = url.toString()
+    const urlStr = url instanceof Request ? url.url : url instanceof URL ? url.href : url
     if (urlStr.includes(".well-known/opencode")) {
       fetchedUrl = urlStr
       return Promise.resolve(
@@ -1882,6 +1882,7 @@ test("wellknown URL with trailing slash is normalized", async () => {
   })
 
   const layer = Config.layer.pipe(
+    Layer.provide(testFlock),
     Layer.provide(AppFileSystem.defaultLayer),
     Layer.provide(Env.defaultLayer),
     Layer.provide(fakeAuth),
@@ -1909,8 +1910,8 @@ describe("resolvePluginSpec", () => {
   test("keeps package specs unchanged", async () => {
     await using tmp = await tmpdir()
     const file = path.join(tmp.path, "opencode.json")
-    expect(await Config.resolvePluginSpec("oh-my-opencode@2.4.3", file)).toBe("oh-my-opencode@2.4.3")
-    expect(await Config.resolvePluginSpec("@scope/pkg", file)).toBe("@scope/pkg")
+    expect(await ConfigPlugin.resolvePluginSpec("oh-my-opencode@2.4.3", file)).toBe("oh-my-opencode@2.4.3")
+    expect(await ConfigPlugin.resolvePluginSpec("@scope/pkg", file)).toBe("@scope/pkg")
   })
 
   test("resolves windows-style relative plugin directory specs", async () => {
@@ -1925,8 +1926,8 @@ describe("resolvePluginSpec", () => {
     })
 
     const file = path.join(tmp.path, "opencode.json")
-    const hit = await Config.resolvePluginSpec(".\\plugin", file)
-    expect(Config.pluginSpecifier(hit)).toBe(pathToFileURL(path.join(tmp.path, "plugin", "index.ts")).href)
+    const hit = await ConfigPlugin.resolvePluginSpec(".\\plugin", file)
+    expect(ConfigPlugin.pluginSpecifier(hit)).toBe(pathToFileURL(path.join(tmp.path, "plugin", "index.ts")).href)
   })
 
   test("resolves relative file plugin paths to file urls", async () => {
@@ -1937,8 +1938,8 @@ describe("resolvePluginSpec", () => {
     })
 
     const file = path.join(tmp.path, "opencode.json")
-    const hit = await Config.resolvePluginSpec("./plugin.ts", file)
-    expect(Config.pluginSpecifier(hit)).toBe(pathToFileURL(path.join(tmp.path, "plugin.ts")).href)
+    const hit = await ConfigPlugin.resolvePluginSpec("./plugin.ts", file)
+    expect(ConfigPlugin.pluginSpecifier(hit)).toBe(pathToFileURL(path.join(tmp.path, "plugin.ts")).href)
   })
 
   test("resolves plugin directory paths to directory urls", async () => {
@@ -1956,8 +1957,8 @@ describe("resolvePluginSpec", () => {
     })
 
     const file = path.join(tmp.path, "opencode.json")
-    const hit = await Config.resolvePluginSpec("./plugin", file)
-    expect(Config.pluginSpecifier(hit)).toBe(pathToFileURL(path.join(tmp.path, "plugin")).href)
+    const hit = await ConfigPlugin.resolvePluginSpec("./plugin", file)
+    expect(ConfigPlugin.pluginSpecifier(hit)).toBe(pathToFileURL(path.join(tmp.path, "plugin")).href)
   })
 
   test("resolves plugin directories without package.json to index.ts", async () => {
