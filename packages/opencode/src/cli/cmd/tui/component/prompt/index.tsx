@@ -638,7 +638,14 @@ export function Prompt(props: PromptProps) {
     if (autocomplete?.visible) return false
     if (!store.prompt.input) return false
     const agent = local.agent.current()
-    if (!agent) return false
+    if (!agent) {
+      toast.show({
+        variant: "warning",
+        message: "Select an agent to send prompts",
+        duration: 3000,
+      })
+      return false
+    }
     const trimmed = store.prompt.input.trim()
     if (trimmed === "exit" || trimmed === "quit" || trimmed === ":q") {
       void exit()
@@ -677,16 +684,6 @@ export function Prompt(props: PromptProps) {
       ))
       return false
     }
-    const agent = local.agent.current()
-    if (!agent) {
-      toast.show({
-        variant: "warning",
-        message: "Select an agent to send prompts",
-        duration: 3000,
-      })
-      return
-    }
-
     let sessionID = props.sessionID
     if (sessionID == null) {
       const res = await sdk.client.session.create({ workspace: props.workspaceID })
