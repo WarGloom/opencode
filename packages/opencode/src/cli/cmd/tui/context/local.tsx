@@ -86,16 +86,12 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         },
         move(direction: 1 | -1) {
           batch(() => {
-            const items = agents()
-            if (items.length === 0) {
-              if (agentStore.current !== undefined) setAgentStore("current", undefined)
-              return
-            }
-            let next = items.findIndex((x) => x.name === agentStore.current) + direction
-            if (next < 0) next = items.length - 1
-            if (next >= items.length) next = 0
-            const value = items[next]
-            if (!value) return
+            const current = this.current()
+            if (!current) return
+            let next = agents().findIndex((x) => x.name === current.name) + direction
+            if (next < 0) next = agents().length - 1
+            if (next >= agents().length) next = 0
+            const value = agents()[next]
             setAgentStore("current", value.name)
           })
         },
