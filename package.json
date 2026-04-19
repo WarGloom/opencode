@@ -127,6 +127,7 @@
     "@types/node": "catalog:"
   },
   "patchedDependencies": {
+    "@ai-sdk/anthropic@3.0.71": "patches/@ai-sdk%2Fanthropic@3.0.71.patch",
     "@standard-community/standard-openapi@0.2.9": "patches/@standard-community%2Fstandard-openapi@0.2.9.patch",
     "solid-js@1.9.10": "patches/solid-js@1.9.10.patch"
   }

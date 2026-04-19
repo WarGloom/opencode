@@ -5,7 +5,7 @@ import * as Stream from "effect/Stream"
 import { streamText, wrapLanguageModel, type ModelMessage, type Tool, tool, jsonSchema } from "ai"
 import { mergeDeep, pipe } from "remeda"
 import { GitLabWorkflowLanguageModel } from "gitlab-ai-provider"
-import { ProviderTransform } from "@/provider"
+import { AnthropicAdvisor, ProviderTransform } from "@/provider"
 import { Config } from "@/config"
 import { Instance } from "@/project/instance"
 import type { Agent } from "@/agent/agent"
@@ -193,7 +193,15 @@ const live: Layer.Layer<
         },
       )
 
+      const { advisor, providerOptions: providerToolOptions } = AnthropicAdvisor.extractAnthropicAdvisorConfig(params.options)
       const tools = resolveTools(input)
+
+      if (advisor) {
+        AnthropicAdvisor.validateAnthropicAdvisorPair(input.model, advisor)
+        if (!("advisor" in tools)) {
+          tools["advisor"] = AnthropicAdvisor.createAnthropicAdvisorTool(advisor)
+        }
+      }
 
       // LiteLLM and some Anthropic proxies require the tools parameter to be present
       // when message history contains tool calls, even if no tools are being used.
@@ -360,7 +368,7 @@ const live: Layer.Layer<
         temperature: params.temperature,
         topP: params.topP,
         topK: params.topK,
-        providerOptions: ProviderTransform.providerOptions(input.model, params.options),
+        providerOptions: ProviderTransform.providerOptions(input.model, providerToolOptions),
         activeTools: Object.keys(tools).filter((x) => x !== "invalid"),
         tools,
         toolChoice: input.toolChoice,
