@@ -50,6 +50,24 @@ export type StreamRequest = StreamInput & {
 
 export type Event = Result["fullStream"] extends AsyncIterable<infer T> ? T : never
 
+export function applyAnthropicAdvisorToRequest(args: {
+  model: Provider.Model
+  options: Record<string, any>
+  tools: Record<string, Tool>
+}) {
+  const { advisor, providerOptions } = AnthropicAdvisor.extractAnthropicAdvisorConfig(args.options)
+  const tools = { ...args.tools }
+
+  if (advisor) {
+    AnthropicAdvisor.validateAnthropicAdvisorPair(args.model, advisor)
+    if (!("advisor" in tools)) {
+      tools["advisor"] = AnthropicAdvisor.createAnthropicAdvisorTool(advisor)
+    }
+  }
+
+  return { advisor, providerOptions, tools }
+}
+
 export interface Interface {
   readonly stream: (input: StreamInput) => Stream.Stream<Event, unknown>
 }
@@ -193,15 +211,12 @@ const live: Layer.Layer<
         },
       )
 
-      const { advisor, providerOptions: providerToolOptions } = AnthropicAdvisor.extractAnthropicAdvisorConfig(params.options)
-      const tools = resolveTools(input)
-
-      if (advisor) {
-        AnthropicAdvisor.validateAnthropicAdvisorPair(input.model, advisor)
-        if (!("advisor" in tools)) {
-          tools["advisor"] = AnthropicAdvisor.createAnthropicAdvisorTool(advisor)
-        }
-      }
+      const advisorRequest = applyAnthropicAdvisorToRequest({
+        model: input.model,
+        options: params.options,
+        tools: resolveTools(input),
+      })
+      const { providerOptions: providerToolOptions, tools } = advisorRequest
 
       // LiteLLM and some Anthropic proxies require the tools parameter to be present
       // when message history contains tool calls, even if no tools are being used.
