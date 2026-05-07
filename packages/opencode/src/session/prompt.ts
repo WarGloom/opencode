@@ -1427,6 +1427,12 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
           if (!lastUser) throw new Error("No user message found in stream. This should never happen.")
 
+          const lastUserMsg = msgs.findLast((msg) => msg.info.role === "user" && msg.info.id === lastUser.id)
+          const isCompactionContinue =
+            lastUserMsg?.parts.some(
+              (part) =>
+                part.type === "text" && part.synthetic === true && part.metadata?.compaction_continue === true,
+            ) ?? false
           const hasCompactedAfterLastFinished =
             lastFinished !== undefined &&
             msgs.some(
@@ -1492,7 +1498,12 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             lastFinished.summary !== true &&
             (yield* compaction.isOverflow({ tokens: lastFinished.tokens, model }))
           ) {
-            yield* compaction.create({ sessionID, agent: lastUser.agent, model: lastUser.model, auto: true })
+            yield* compaction.create({
+              sessionID,
+              agent: lastUser.agent,
+              model: lastUser.model,
+              auto: !isCompactionContinue,
+            })
             continue
           }
 

@@ -482,6 +482,79 @@ it.live("does not recompact an assistant already covered by compaction", () =>
   ),
 )
 
+it.live("does not auto-continue after compacting a synthetic continuation overflow", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({
+        title: "Synthetic overflow",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      const followup = yield* sessions.updateMessage({
+        id: MessageID.ascending(),
+        role: "user",
+        sessionID: chat.id,
+        agent: "build",
+        model: ref,
+        time: { created: Date.now() },
+      })
+      yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: followup.id,
+        sessionID: chat.id,
+        type: "text",
+        synthetic: true,
+        metadata: { compaction_continue: true },
+        text: "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
+      })
+      const assistant: MessageV2.Assistant = {
+        id: MessageID.ascending(),
+        role: "assistant",
+        parentID: followup.id,
+        sessionID: chat.id,
+        mode: "build",
+        agent: "build",
+        cost: 0,
+        path: { cwd: "/tmp", root: "/tmp" },
+        tokens: { input: 3, output: 128, reasoning: 0, cache: { read: 110_449, write: 7_438 } },
+        modelID: ref.modelID,
+        providerID: ref.providerID,
+        time: { created: Date.now() },
+        finish: "tool-calls",
+      }
+      yield* sessions.updateMessage(assistant)
+      yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: assistant.id,
+        sessionID: chat.id,
+        type: "text",
+        text: "overflowing synthetic continuation reply",
+      })
+      yield* llm.text("summary")
+
+      const result = yield* prompt.loop({ sessionID: chat.id })
+      expect(result.info.role).toBe("assistant")
+      expect(result.info.role === "assistant" ? result.info.summary : false).toBe(true)
+      expect(yield* llm.calls).toBe(1)
+
+      const msgs = yield* sessions.messages({ sessionID: chat.id })
+      const compaction = msgs
+        .flatMap((msg) => msg.parts)
+        .find((part): part is MessageV2.CompactionPart => part.type === "compaction")
+      expect(compaction).toMatchObject({ type: "compaction", auto: false })
+      const syntheticContinues = msgs
+        .flatMap((msg) => msg.parts)
+        .filter(
+          (part) =>
+            part.type === "text" && part.synthetic === true && part.metadata?.compaction_continue === true,
+        )
+      expect(syntheticContinues).toHaveLength(1)
+    }),
+    { git: true, config: providerCfg },
+  ),
+)
+
 it.live("prompt emits v2 prompted and synthetic events", () =>
   provideTmpdirServer(
     Effect.fnUntraced(function* () {
