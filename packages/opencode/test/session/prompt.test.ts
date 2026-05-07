@@ -374,6 +374,114 @@ it.live("loop calls LLM and returns assistant message", () =>
   ),
 )
 
+it.live("does not recompact an assistant already covered by compaction", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({
+        title: "Compacted",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      const first = yield* user(chat.id, "first")
+      const preserved: MessageV2.Assistant = {
+        id: MessageID.ascending(),
+        role: "assistant",
+        parentID: first.id,
+        sessionID: chat.id,
+        mode: "build",
+        agent: "build",
+        cost: 0,
+        path: { cwd: "/tmp", root: "/tmp" },
+        tokens: { input: 3, output: 142, reasoning: 0, cache: { read: 0, write: 121_073 } },
+        modelID: ref.modelID,
+        providerID: ref.providerID,
+        time: { created: Date.now() },
+        finish: "stop",
+      }
+      yield* sessions.updateMessage(preserved)
+      yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: preserved.id,
+        sessionID: chat.id,
+        type: "text",
+        text: "preserved large reply",
+      })
+
+      const compact = yield* sessions.updateMessage({
+        id: MessageID.ascending(),
+        role: "user",
+        sessionID: chat.id,
+        agent: "build",
+        model: ref,
+        time: { created: Date.now() },
+      })
+      yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: compact.id,
+        sessionID: chat.id,
+        type: "compaction",
+        auto: true,
+        tail_start_id: first.id,
+      })
+      const summaryMsg: MessageV2.Assistant = {
+        id: MessageID.ascending(),
+        role: "assistant",
+        parentID: compact.id,
+        sessionID: chat.id,
+        mode: "compaction",
+        agent: "compaction",
+        cost: 0,
+        path: { cwd: "/tmp", root: "/tmp" },
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        modelID: ref.modelID,
+        providerID: ref.providerID,
+        time: { created: Date.now() },
+        finish: "stop",
+        summary: true,
+      }
+      yield* sessions.updateMessage(summaryMsg)
+      yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: summaryMsg.id,
+        sessionID: chat.id,
+        type: "text",
+        text: "summary",
+      })
+      const followup = yield* sessions.updateMessage({
+        id: MessageID.ascending(),
+        role: "user",
+        sessionID: chat.id,
+        agent: "build",
+        model: ref,
+        time: { created: Date.now() },
+      })
+      yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: followup.id,
+        sessionID: chat.id,
+        type: "text",
+        synthetic: true,
+        metadata: { compaction_continue: true },
+        text: "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
+      })
+      yield* llm.text("continued")
+
+      const result = yield* prompt.loop({ sessionID: chat.id })
+      expect(result.info.role).toBe("assistant")
+      expect(result.parts.some((part) => part.type === "text" && part.text === "continued")).toBe(true)
+      expect(yield* llm.calls).toBe(1)
+
+      const msgs = yield* sessions.messages({ sessionID: chat.id })
+      const compactions = msgs
+        .flatMap((msg) => msg.parts)
+        .filter((part): part is MessageV2.CompactionPart => part.type === "compaction")
+      expect(compactions).toHaveLength(1)
+    }),
+    { git: true, config: providerCfg },
+  ),
+)
+
 it.live("prompt emits v2 prompted and synthetic events", () =>
   provideTmpdirServer(
     Effect.fnUntraced(function* () {

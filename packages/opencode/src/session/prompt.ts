@@ -1427,6 +1427,16 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
           if (!lastUser) throw new Error("No user message found in stream. This should never happen.")
 
+          const hasCompactedAfterLastFinished =
+            lastFinished !== undefined &&
+            msgs.some(
+              (msg) =>
+                msg.info.role === "assistant" &&
+                msg.info.summary === true &&
+                msg.info.finish !== undefined &&
+                !msg.info.error &&
+                msg.info.parentID > lastFinished.id,
+            )
           const lastAssistantMsg = msgs.findLast(
             (msg) => msg.info.role === "assistant" && msg.info.id === lastAssistant?.id,
           )
@@ -1478,6 +1488,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
           if (
             lastFinished &&
+            !hasCompactedAfterLastFinished &&
             lastFinished.summary !== true &&
             (yield* compaction.isOverflow({ tokens: lastFinished.tokens, model }))
           ) {
