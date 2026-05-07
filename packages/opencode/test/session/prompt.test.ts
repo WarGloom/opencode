@@ -465,7 +465,8 @@ it.live("does not recompact an assistant already covered by compaction", () =>
         metadata: { compaction_continue: true },
         text: "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
       })
-      yield* llm.text("continued")
+      yield* llm.text("continued", { usage: { input: 95_000, output: 100 } })
+      yield* llm.text("summary")
 
       const result = yield* prompt.loop({ sessionID: chat.id })
       expect(result.info.role).toBe("assistant")

@@ -1630,6 +1630,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
             if (result === "stop") return "break" as const
             if (result === "compact") {
+              if (hasCompactedAfterLastFinished) return "break" as const
               yield* compaction.create({
                 sessionID,
                 agent: lastUser.agent,
