@@ -508,35 +508,13 @@ it.live("does not auto-continue after compacting a synthetic continuation overfl
         metadata: { compaction_continue: true },
         text: "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
       })
-      const assistant: MessageV2.Assistant = {
-        id: MessageID.ascending(),
-        role: "assistant",
-        parentID: followup.id,
-        sessionID: chat.id,
-        mode: "build",
-        agent: "build",
-        cost: 0,
-        path: { cwd: "/tmp", root: "/tmp" },
-        tokens: { input: 3, output: 128, reasoning: 0, cache: { read: 110_449, write: 7_438 } },
-        modelID: ref.modelID,
-        providerID: ref.providerID,
-        time: { created: Date.now() },
-        finish: "tool-calls",
-      }
-      yield* sessions.updateMessage(assistant)
-      yield* sessions.updatePart({
-        id: PartID.ascending(),
-        messageID: assistant.id,
-        sessionID: chat.id,
-        type: "text",
-        text: "overflowing synthetic continuation reply",
-      })
+      yield* llm.text("overflowing synthetic continuation reply", { usage: { input: 95_000, output: 100 } })
       yield* llm.text("summary")
 
       const result = yield* prompt.loop({ sessionID: chat.id })
       expect(result.info.role).toBe("assistant")
       expect(result.info.role === "assistant" ? result.info.summary : false).toBe(true)
-      expect(yield* llm.calls).toBe(1)
+      expect(yield* llm.calls).toBe(2)
 
       const msgs = yield* sessions.messages({ sessionID: chat.id })
       const compaction = msgs

@@ -1634,7 +1634,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 sessionID,
                 agent: lastUser.agent,
                 model: lastUser.model,
-                auto: true,
+                auto: !isCompactionContinue,
                 overflow: !handle.message.finish,
               })
             }
