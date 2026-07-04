@@ -1,4 +1,4 @@
-import type { JsonSchema, LLMRequest, ProviderMetadata } from "@opencode-ai/llm"
+import type { JsonSchema, LLMRequest, ProviderMetadata, ToolContent } from "@opencode-ai/llm"
 import { LLM, Message, SystemPart, ToolCallPart, ToolDefinition, ToolResultPart } from "@opencode-ai/llm"
 import {
   AmazonBedrock,
@@ -64,14 +64,60 @@ const mediaPart = (part: Record<string, unknown>) => {
   }
 }
 
+const toolResultMediaUri = (part: Record<string, unknown>, mediaType: string) => {
+  if (typeof part.uri === "string") return part.uri
+  if (typeof part.data === "string") return part.data
+  if (part.data instanceof Uint8Array)
+    return `data:${mediaType};base64,${Buffer.from(part.data).toString("base64")}`
+  throw new Error("Native LLM request adapter only supports media tool-result content with string or Uint8Array data")
+}
+
+const toolResultContentItem = (item: unknown): ToolContent => {
+  if (!isRecord(item)) throw new Error("Native LLM request adapter only supports object tool-result content items")
+  if (item.type === "text") return { type: "text", text: typeof item.text === "string" ? item.text : "" }
+  if (item.type === "media" || item.type === "file") {
+    const mediaType =
+      typeof item.mediaType === "string"
+        ? item.mediaType
+        : typeof item.mime === "string"
+          ? item.mime
+          : "application/octet-stream"
+    return {
+      type: "file",
+      uri: toolResultMediaUri(item, mediaType),
+      mime: mediaType,
+      name:
+        typeof item.name === "string" ? item.name : typeof item.filename === "string" ? item.filename : undefined,
+    }
+  }
+  throw new Error(`Native LLM request adapter does not support ${String(item.type)} tool-result content items`)
+}
+
+const toolResultContent = (value: unknown) => {
+  if (!Array.isArray(value))
+    throw new Error("Native LLM request adapter requires content tool-result output value arrays")
+  return value.map(toolResultContentItem)
+}
+
+const toolResultType = (output: Record<string, unknown>) => {
+  if (output.type === "text") return "text"
+  if (output.type === "error-text") return "error"
+  if (output.type === "content") return "content"
+  return "json"
+}
+
+const toolResultValue = (output: Record<string, unknown>) => {
+  if (output.type === "content") return toolResultContent(output.value)
+  return "value" in output ? output.value : output
+}
+
 const toolResult = (part: Record<string, unknown>) => {
   const output = isRecord(part.output) ? part.output : { type: "json", value: part.output }
-  const type = output.type === "text" ? "text" : output.type === "error-text" ? "error" : "json"
   return ToolResultPart.make({
     id: typeof part.toolCallId === "string" ? part.toolCallId : "",
     name: typeof part.toolName === "string" ? part.toolName : "",
-    result: "value" in output ? output.value : output,
-    resultType: type,
+    result: toolResultValue(output),
+    resultType: toolResultType(output),
     providerExecuted: typeof part.providerExecuted === "boolean" ? part.providerExecuted : undefined,
     providerMetadata: partProviderMetadata(part),
   })
