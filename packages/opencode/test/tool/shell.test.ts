@@ -194,6 +194,26 @@ describe("tool.shell", () => {
     ),
   )
 
+  each("infers description when blank", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        const bash = yield* initBash()
+        const result = yield* bash.execute(
+          {
+            command: "echo inferred",
+            description: "",
+          },
+          ctx,
+        )
+        expect(result.title).toBe("echo inferred")
+        expect(result.metadata.description).toBe("echo inferred")
+        expect(result.metadata.exit).toBe(0)
+        expect(result.metadata.output).toContain("inferred")
+      }),
+    ),
+  )
+
   it.live("falls back from terminal-only configured shell", () =>
     Effect.gen(function* () {
       const tmp = yield* tmpdirScoped({ config: { shell: "fish" } })
