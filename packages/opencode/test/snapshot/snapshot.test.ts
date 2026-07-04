@@ -371,11 +371,11 @@ it.instance(
     Effect.gen(function* () {
       yield* write(`${tmp.path}/.hidden`, "hidden content")
       yield* write(`${tmp.path}/.gitignore`, "*.log")
-      yield* write(`${tmp.path}/.config`, "config content")
+      yield* write(`${tmp.path}/.opencode-snapshot-hidden`, "config content")
       const patch = yield* snapshot.patch(before)
       expect(patch.files).toContain(fwd(tmp.path, ".hidden"))
       expect(patch.files).toContain(fwd(tmp.path, ".gitignore"))
-      expect(patch.files).toContain(fwd(tmp.path, ".config"))
+      expect(patch.files).toContain(fwd(tmp.path, ".opencode-snapshot-hidden"))
     }),
   ),
   { git: true },
