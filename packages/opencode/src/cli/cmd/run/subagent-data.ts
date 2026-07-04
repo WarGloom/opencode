@@ -557,7 +557,6 @@ function compactDetail(detail: DetailState) {
 function applyChildEvent(input: {
   detail: DetailState
   event: Event
-  thinking: boolean
   limits: Record<string, number>
 }) {
   const before = queueSnapshot(input.detail.data)
@@ -565,7 +564,7 @@ function applyChildEvent(input: {
     data: input.detail.data,
     event: input.event,
     sessionID: input.detail.sessionID,
-    thinking: input.thinking,
+    thinking: false,
     limits: input.limits,
   })
   const changed = appendCommits(input.detail, out.commits)
@@ -577,14 +576,13 @@ function applyChildEvent(input: {
 function bootstrapChildEvent(input: {
   detail: DetailState
   event: Event
-  thinking: boolean
   limits: Record<string, number>
 }) {
   const out = reduceSessionData({
     data: input.detail.data,
     event: input.event,
     sessionID: input.detail.sessionID,
-    thinking: input.thinking,
+    thinking: false,
     limits: input.limits,
   })
 
@@ -594,7 +592,6 @@ function bootstrapChildEvent(input: {
 function bootstrapChildMessages(input: {
   detail: DetailState
   messages: BootstrapChildMessage[]
-  thinking: boolean
   limits: Record<string, number>
 }) {
   let changed = false
@@ -611,7 +608,6 @@ function bootstrapChildMessages(input: {
             info: message.info,
           },
         },
-        thinking: input.thinking,
         limits: input.limits,
       }) || changed
 
@@ -627,10 +623,9 @@ function bootstrapChildMessages(input: {
               part,
               time: 0,
             },
-          },
-          thinking: input.thinking,
-          limits: input.limits,
-        }) || changed
+        },
+        limits: input.limits,
+      }) || changed
     }
   }
 
@@ -763,7 +758,6 @@ export function bootstrapSubagentCalls(input: {
   data: SubagentData
   sessionID: string
   messages: BootstrapChildMessage[]
-  thinking: boolean
   limits: Record<string, number>
 }) {
   if (!knownSession(input.data, input.sessionID) || input.messages.length === 0) {
@@ -782,7 +776,6 @@ export function bootstrapSubagentCalls(input: {
   const changed = bootstrapChildMessages({
     detail,
     messages: input.messages,
-    thinking: input.thinking,
     limits: input.limits,
   })
 
@@ -793,7 +786,6 @@ export function reduceSubagentData(input: {
   data: SubagentData
   event: Event
   sessionID: string
-  thinking: boolean
   limits: Record<string, number>
 }) {
   const event = input.event
@@ -869,7 +861,6 @@ export function reduceSubagentData(input: {
     applyChildEvent({
       detail,
       event,
-      thinking: input.thinking,
       limits: input.limits,
     }) || cancelled
   )

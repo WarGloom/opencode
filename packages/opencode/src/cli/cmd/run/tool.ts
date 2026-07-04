@@ -859,8 +859,8 @@ function scrollLspStart(p: ToolProps<typeof LspTool>): string {
   return `→ ${lspTitle(p.input)}`
 }
 
-function scrollSkillStart(p: ToolProps<typeof SkillTool>): string {
-  return `→ Skill "${p.input.name ?? ""}"`
+function scrollSkillStart(_: ToolProps<typeof SkillTool>): string {
+  return ""
 }
 
 function scrollGlobStart(p: ToolProps<typeof GlobTool>): string {

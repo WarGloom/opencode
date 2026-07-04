@@ -44,7 +44,6 @@ function reduce(data: ReturnType<typeof createSubagentData>, event: unknown) {
     data,
     event: event as Event,
     sessionID: "parent-1",
-    thinking: true,
     limits: {},
   })
 }
@@ -400,7 +399,6 @@ describe("run subagent data", () => {
     expect(snapshot.tabs).toEqual([expect.objectContaining({ sessionID: "child-1", status: "running" })])
     expect(visible(snapshot.details["child-1"]?.commits ?? [])).toEqual([
       "› Inspect footer tabs",
-      "_Thinking:_ planning next steps",
       "$ git status --short",
       "hello world",
     ])
@@ -472,14 +470,12 @@ describe("run subagent data", () => {
             ],
           }),
         ],
-        thinking: true,
         limits: {},
       }),
     ).toBe(true)
 
     expect(visible(snapshotSubagentData(data).details["child-1"]?.commits ?? [])).toEqual([
       "› Inspect footer tabs",
-      "_Thinking:_ planning next steps",
       "hello world",
     ])
   })
