@@ -368,6 +368,58 @@ the following subscriptions in OpenCode with zero setup:
 - Gitlab Duo
   :::
 
+If you already use the local Claude Code CLI, OpenCode can also talk to that
+installation directly without copying Claude credentials into OpenCode. For a
+safe smoke test, prefer Haiku first:
+
+```json title="opencode.json"
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "claude-code/claude-haiku-4-5",
+  "small_model": "claude-code/claude-haiku-4-5",
+  "provider": {
+    "claude-code": {
+      "options": {
+        "binaryPath": "/usr/bin/claude"
+      }
+    }
+  }
+}
+```
+
+For real work, you can keep Claude auth but trim down the inherited Claude
+runtime so local hooks, slash commands, and MCPs do not take over your OpenCode
+session:
+
+```json title="opencode.json"
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "claude-code/claude-sonnet-4-6",
+  "small_model": "claude-code/claude-haiku-4-5",
+  "provider": {
+    "claude-code": {
+      "options": {
+        "binaryPath": "/usr/bin/claude",
+        "settingSources": ["project", "local"],
+        "disableSlashCommands": true,
+        "strictMcpConfig": true
+      }
+    }
+  }
+}
+```
+
+Useful `claude-code` provider options:
+
+- `settingSources` - limit which Claude settings layers load, for example `["project", "local"]`
+- `disableSlashCommands` - turn off Claude slash commands for that session
+- `strictMcpConfig` - ignore ambient Claude MCP config unless you pass `mcpConfig`
+- `pluginDir`, `mcpConfig`, `addDir`, `tools`, `permissionMode` - selectively rebuild the Claude runtime you want
+- `bare` - start a minimal Claude runtime, but note that Claude App OAuth does not work in bare mode; use it only with API-key auth
+
+OpenCode will auto-load the `claude-code` provider only when `claude auth status
+--json` reports an active login.
+
 ---
 
 ### Atomic Chat

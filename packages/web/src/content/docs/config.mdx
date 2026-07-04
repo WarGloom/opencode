@@ -368,6 +368,35 @@ You can configure the providers and models you want to use in your OpenCode conf
 
 The `small_model` option configures a separate model for lightweight tasks like title generation. By default, OpenCode tries to use a cheaper model if one is available from your provider, otherwise it falls back to your main model.
 
+If you are smoke testing the local Claude Code provider, start with Haiku:
+
+```json title="opencode.json"
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "claude-code/claude-haiku-4-5",
+  "small_model": "claude-code/claude-haiku-4-5"
+}
+```
+
+For day-to-day Claude Code work inside OpenCode, a cleaner runtime usually looks like this:
+
+```json title="opencode.json"
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "claude-code": {
+      "options": {
+        "settingSources": ["project", "local"],
+        "disableSlashCommands": true,
+        "strictMcpConfig": true
+      }
+    }
+  }
+}
+```
+
+For `claude-code`, additional provider options include `settingSources`, `disableSlashCommands`, `strictMcpConfig`, `pluginDir`, `mcpConfig`, `addDir`, `tools`, and `permissionMode`. `bare` is also supported, but it disables Claude App OAuth and is intended for API-key flows.
+
 Provider options can include `timeout`, `chunkTimeout`, and `setCacheKey`:
 
 ```json title="opencode.json"
