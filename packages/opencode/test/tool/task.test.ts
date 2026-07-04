@@ -216,43 +216,399 @@ describe("tool.task", () => {
     },
   )
 
-  it.instance("execute resumes an existing task session from task_id", () =>
-    Effect.gen(function* () {
-      const sessions = yield* Session.Service
-      const { chat, assistant } = yield* seed()
-      const child = yield* sessions.create({ parentID: chat.id, title: "Existing child" })
-      const tool = yield* TaskTool
-      const def = yield* tool.init()
-      let seen: SessionPrompt.PromptInput | undefined
-      const promptOps = stubOps({ text: "resumed", onPrompt: (input) => (seen = input) })
+  it.instance(
+    "execute resumes an existing task session from task_id and appends missing child denies",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* Session.Service
+        const { chat, assistant } = yield* seed()
+        const child = yield* sessions.create({
+          parentID: chat.id,
+          title: "Existing child",
+          agent: "reviewer",
+          permission: [
+            {
+              permission: "external_directory",
+              pattern: "/tmp/shared",
+              action: "allow",
+            },
+            {
+              permission: "bash",
+              pattern: "*",
+              action: "allow",
+            },
+            {
+              permission: "read",
+              pattern: "*",
+              action: "allow",
+            },
+          ],
+        })
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+        let seen: SessionPrompt.PromptInput | undefined
+        const promptOps = stubOps({ text: "resumed", onPrompt: (input) => (seen = input) })
 
-      const result = yield* def.execute(
-        {
-          description: "inspect bug",
-          prompt: "look into the cache key path",
-          subagent_type: "general",
-          task_id: child.id,
-        },
-        {
-          sessionID: chat.id,
-          messageID: assistant.id,
-          agent: "build",
-          abort: new AbortController().signal,
-          extra: { promptOps },
-          messages: [],
-          metadata: () => Effect.void,
-          ask: () => Effect.void,
-        },
-      )
+        const result = yield* def.execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "reviewer",
+            task_id: child.id,
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
 
-      const kids = yield* sessions.children(chat.id)
-      expect(kids).toHaveLength(1)
-      expect(kids[0]?.id).toBe(child.id)
-      expect(result.metadata.sessionId).toBe(child.id)
-      expect(result.output).toContain(`<task id="${child.id}" state="completed">`)
-      expect(seen?.sessionID).toBe(child.id)
-      expect(seen?.variant).toBe("xhigh")
-    }),
+        const kids = yield* sessions.children(chat.id)
+        const updated = yield* sessions.get(child.id)
+        expect(kids).toHaveLength(1)
+        expect(kids[0]?.id).toBe(child.id)
+        expect(result.metadata.sessionId).toBe(child.id)
+        expect(result.output).toContain(`<task id="${child.id}" state="completed">`)
+        expect(updated.permission).toEqual([
+          {
+            permission: "external_directory",
+            pattern: "/tmp/shared",
+            action: "allow",
+          },
+          {
+            permission: "bash",
+            pattern: "*",
+            action: "allow",
+          },
+          {
+            permission: "read",
+            pattern: "*",
+            action: "allow",
+          },
+          {
+            permission: "todowrite",
+            pattern: "*",
+            action: "deny",
+          },
+          {
+            permission: "task",
+            pattern: "*",
+            action: "deny",
+          },
+          {
+            permission: "bash",
+            pattern: "*",
+            action: "deny",
+          },
+          {
+            permission: "read",
+            pattern: "*",
+            action: "deny",
+          },
+        ])
+        expect(seen?.sessionID).toBe(child.id)
+        expect(seen?.variant).toBe("xhigh")
+        expect(seen?.tools).toBeUndefined()
+      }),
+    {
+      config: {
+        agent: {
+          reviewer: {
+            mode: "subagent",
+          },
+        },
+        experimental: {
+          primary_tools: ["bash", "read"],
+        },
+      },
+    },
+  )
+
+  it.instance(
+    "execute moves derived denies after stale matching allows on resume",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* Session.Service
+        const { chat, assistant } = yield* seed()
+        const child = yield* sessions.create({
+          parentID: chat.id,
+          title: "Existing child",
+          agent: "reviewer",
+          permission: [
+            {
+              permission: "bash",
+              pattern: "*",
+              action: "deny",
+            },
+            {
+              permission: "bash",
+              pattern: "git *",
+              action: "allow",
+            },
+            {
+              permission: "task",
+              pattern: "*",
+              action: "deny",
+            },
+            {
+              permission: "task",
+              pattern: "reviewer",
+              action: "allow",
+            },
+          ],
+        })
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+        let seen: SessionPrompt.PromptInput | undefined
+        const promptOps = stubOps({ text: "resumed", onPrompt: (input) => (seen = input) })
+
+        const result = yield* def.execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "reviewer",
+            task_id: child.id,
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+
+        const updated = yield* sessions.get(child.id)
+        expect(result.metadata.sessionId).toBe(child.id)
+        expect(updated.permission).toEqual([
+          {
+            permission: "bash",
+            pattern: "git *",
+            action: "allow",
+          },
+          {
+            permission: "task",
+            pattern: "reviewer",
+            action: "allow",
+          },
+          {
+            permission: "todowrite",
+            pattern: "*",
+            action: "deny",
+          },
+          {
+            permission: "task",
+            pattern: "*",
+            action: "deny",
+          },
+          {
+            permission: "bash",
+            pattern: "*",
+            action: "deny",
+          },
+        ])
+        expect(seen?.sessionID).toBe(child.id)
+        expect(seen?.tools).toBeUndefined()
+      }),
+    {
+      config: {
+        agent: {
+          reviewer: {
+            mode: "subagent",
+          },
+        },
+        experimental: {
+          primary_tools: ["bash"],
+        },
+      },
+    },
+  )
+
+  it.instance(
+    "execute appends final todowrite and task denies for explicitly denied subagents",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* Session.Service
+        const { chat, assistant } = yield* seed()
+        const child = yield* sessions.create({
+          parentID: chat.id,
+          title: "Existing child",
+          agent: "reviewer",
+          permission: [
+            {
+              permission: "todowrite",
+              pattern: "*",
+              action: "allow",
+            },
+            {
+              permission: "task",
+              pattern: "*",
+              action: "allow",
+            },
+          ],
+        })
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+        let seen: SessionPrompt.PromptInput | undefined
+        const promptOps = stubOps({ text: "resumed", onPrompt: (input) => (seen = input) })
+
+        const result = yield* def.execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "reviewer",
+            task_id: child.id,
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+
+        const updated = yield* sessions.get(child.id)
+        expect(result.metadata.sessionId).toBe(child.id)
+        expect(updated.permission).toEqual([
+          {
+            permission: "todowrite",
+            pattern: "*",
+            action: "allow",
+          },
+          {
+            permission: "task",
+            pattern: "*",
+            action: "allow",
+          },
+          {
+            permission: "todowrite",
+            pattern: "*",
+            action: "deny",
+          },
+          {
+            permission: "task",
+            pattern: "*",
+            action: "deny",
+          },
+        ])
+        expect(seen?.sessionID).toBe(child.id)
+        expect(seen?.tools).toBeUndefined()
+      }),
+    {
+      config: {
+        agent: {
+          reviewer: {
+            mode: "subagent",
+            permission: {
+              todowrite: "deny",
+              task: "deny",
+            },
+          },
+        },
+      },
+    },
+  )
+
+  it.instance(
+    "execute repairs stale task allows when wildcard deny overrides subagent allow",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* Session.Service
+        const { chat, assistant } = yield* seed()
+        const child = yield* sessions.create({
+          parentID: chat.id,
+          title: "Existing child",
+          agent: "reviewer",
+          permission: [
+            {
+              permission: "todowrite",
+              pattern: "*",
+              action: "allow",
+            },
+            {
+              permission: "task",
+              pattern: "*",
+              action: "allow",
+            },
+          ],
+        })
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+        let seen: SessionPrompt.PromptInput | undefined
+        const promptOps = stubOps({ text: "resumed", onPrompt: (input) => (seen = input) })
+
+        const result = yield* def.execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "reviewer",
+            task_id: child.id,
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+
+        const updated = yield* sessions.get(child.id)
+        expect(result.metadata.sessionId).toBe(child.id)
+        expect(updated.permission).toEqual([
+          {
+            permission: "todowrite",
+            pattern: "*",
+            action: "allow",
+          },
+          {
+            permission: "task",
+            pattern: "*",
+            action: "allow",
+          },
+          {
+            permission: "todowrite",
+            pattern: "*",
+            action: "deny",
+          },
+          {
+            permission: "task",
+            pattern: "*",
+            action: "deny",
+          },
+        ])
+        expect(seen?.sessionID).toBe(child.id)
+        expect(seen?.tools).toBeUndefined()
+      }),
+    {
+      config: {
+        agent: {
+          reviewer: {
+            mode: "subagent",
+            permission: {
+              todowrite: "allow",
+              task: "allow",
+              "*": "deny",
+            },
+          },
+        },
+      },
+    },
   )
 
   it.instance("execute asks by default and skips checks when bypassed", () =>
@@ -429,6 +785,98 @@ describe("tool.task", () => {
     }),
   )
 
+  it.instance("execute creates a child when task_id belongs to a different parent", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const other = yield* seed("Other parent")
+      const foreign = yield* sessions.create({ parentID: other.chat.id, title: "Foreign child", agent: "general" })
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      let seen: SessionPrompt.PromptInput | undefined
+      const promptOps = stubOps({ text: "created", onPrompt: (input) => (seen = input) })
+
+      const result = yield* def.execute(
+        {
+          description: "inspect bug",
+          prompt: "look into the cache key path",
+          subagent_type: "general",
+          task_id: foreign.id,
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      const kids = yield* sessions.children(chat.id)
+      const otherKids = yield* sessions.children(other.chat.id)
+      expect(kids).toHaveLength(1)
+      expect(kids[0]?.id).toBe(result.metadata.sessionId)
+      expect(result.metadata.sessionId).not.toBe(foreign.id)
+      expect(otherKids).toHaveLength(1)
+      expect(otherKids[0]?.id).toBe(foreign.id)
+      expect(result.output).toContain(`<task id="${result.metadata.sessionId}" state="completed">`)
+      expect(seen?.sessionID).toBe(result.metadata.sessionId)
+    }),
+  )
+
+  it.instance(
+    "execute creates a child when task_id belongs to a different subagent",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* Session.Service
+        const { chat, assistant } = yield* seed()
+        const existing = yield* sessions.create({ parentID: chat.id, title: "Existing child", agent: "general" })
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+        let seen: SessionPrompt.PromptInput | undefined
+        const promptOps = stubOps({ text: "created", onPrompt: (input) => (seen = input) })
+
+        const result = yield* def.execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "reviewer",
+            task_id: existing.id,
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+
+        const kids = yield* sessions.children(chat.id)
+        const created = yield* sessions.get(result.metadata.sessionId)
+        expect(kids).toHaveLength(2)
+        expect(result.metadata.sessionId).not.toBe(existing.id)
+        expect(created.agent).toBe("reviewer")
+        expect(result.output).toContain(`<task id="${result.metadata.sessionId}" state="completed">`)
+        expect(seen?.sessionID).toBe(result.metadata.sessionId)
+      }),
+    {
+      config: {
+        agent: {
+          reviewer: {
+            mode: "subagent",
+          },
+        },
+      },
+    },
+  )
+
   it.instance(
     "allows nested subagents up to the configured depth",
     () =>
@@ -534,6 +982,70 @@ describe("tool.task", () => {
         },
       },
     },
+  )
+
+  it.instance("foreground completion does not append a synthetic user turn", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+
+      const result = yield* def.execute(
+        {
+          description: "inspect bug",
+          prompt: "look into the cache key path",
+          subagent_type: "general",
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps: stubOps({ text: "done" }) },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      const messages = yield* sessions.messages({ sessionID: result.metadata.sessionId })
+      const child = yield* sessions.get(result.metadata.sessionId)
+      expect(messages).toHaveLength(0)
+      expect(child.title).toBe("✓ inspect bug (@general subagent)")
+    }),
+  )
+
+  it.instance("foreground completion retitle is idempotent on resumed children", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const child = yield* sessions.create({ parentID: chat.id, title: "✓ Existing child", agent: "general" })
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+
+      yield* def.execute(
+        {
+          description: "inspect bug",
+          prompt: "look into the cache key path",
+          subagent_type: "general",
+          task_id: child.id,
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps: stubOps({ text: "done" }) },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      const updated = yield* sessions.get(child.id)
+      expect(updated.title).toBe("✓ Existing child")
+    }),
   )
 
   it.instance("rejects background execution when the experiment is disabled", () =>
