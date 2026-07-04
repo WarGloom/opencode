@@ -175,10 +175,12 @@ describe("session.llm.hasToolCalls", () => {
 describe("session.llm.ai-sdk adapter", () => {
   type AISDKAdapterEvent = Parameters<typeof LLMAISDK.toLLMEvents>[1]
 
-  const adapt = (events: ReadonlyArray<AISDKAdapterEvent>) => {
+  const adapt = (events: ReadonlyArray<AISDKAdapterEvent>, options?: Parameters<typeof LLMAISDK.toLLMEvents>[2]) => {
     const state = LLMAISDK.adapterState()
     return Effect.runPromise(
-      Effect.forEach(events, (event) => LLMAISDK.toLLMEvents(state, event)).pipe(Effect.map((items) => items.flat())),
+      Effect.forEach(events, (event) => LLMAISDK.toLLMEvents(state, event, options)).pipe(
+        Effect.map((items) => items.flat()),
+      ),
     )
   }
   // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- tests defensive adapter branches outside AI SDK's current typed surface
@@ -353,6 +355,31 @@ describe("session.llm.ai-sdk adapter", () => {
       message: error.message,
       error,
     })
+  })
+
+  test("ignores missing reasoning part errors for Copilot streams", async () => {
+    const events = await adapt([
+      uncheckedAdapterEvent({
+        type: "error",
+        error: "reasoning part rs_0422964c1abe880c016a158f28fe7c8191bd499ac6357a7adb:0 not found",
+      }),
+    ], { ignoreMissingReasoningPartError: true })
+
+    expect(events).toEqual([])
+  })
+
+  test("surfaces missing reasoning part errors for non-Copilot streams", async () => {
+    const exit = await Effect.runPromiseExit(
+      LLMAISDK.toLLMEvents(
+        LLMAISDK.adapterState(),
+        uncheckedAdapterEvent({
+          type: "error",
+          error: "reasoning part rs_0422964c1abe880c016a158f28fe7c8191bd499ac6357a7adb:0 not found",
+        }),
+      ),
+    )
+
+    expect(Exit.isFailure(exit)).toBe(true)
   })
 
   test("emits undefined usage when every AI SDK usage field is missing", async () => {

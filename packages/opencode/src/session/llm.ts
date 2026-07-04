@@ -11,6 +11,7 @@ import type { LLMEvent } from "@opencode-ai/llm"
 import { LLMClient } from "@opencode-ai/llm/route"
 import type { LLMClientService } from "@opencode-ai/llm/route"
 import { GitLabWorkflowLanguageModel } from "gitlab-ai-provider"
+import * as AnthropicAdvisor from "@/provider/anthropic-advisor"
 import { ProviderTransform } from "@/provider/transform"
 import { Config } from "@/config/config"
 import type { Agent } from "@/agent/agent"
@@ -31,6 +32,7 @@ import { LLMNativeRuntime } from "./llm/native-runtime"
 import { LLMRequestPrep } from "./llm/request"
 
 export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
+type Result = Awaited<ReturnType<typeof streamText>>
 
 export type StreamInput = {
   user: SessionV1.User
@@ -49,6 +51,26 @@ export type StreamInput = {
 
 export type StreamRequest = StreamInput & {
   abort: AbortSignal
+}
+
+export type Event = Result["fullStream"] extends AsyncIterable<infer T> ? T : never
+
+export function applyAnthropicAdvisorToRequest(args: {
+  model: Provider.Model
+  options: Record<string, any>
+  tools: Record<string, Tool>
+}) {
+  const { advisor, providerOptions } = AnthropicAdvisor.extractAnthropicAdvisorConfig(args.options)
+  const tools = { ...args.tools }
+
+  if (advisor) {
+    AnthropicAdvisor.validateAnthropicAdvisorPair(args.model, advisor)
+    if (!("advisor" in tools)) {
+      tools["advisor"] = AnthropicAdvisor.createAnthropicAdvisorTool(advisor)
+    }
+  }
+
+  return { advisor, providerOptions, tools }
 }
 
 export interface Interface {
@@ -111,6 +133,18 @@ const live: Layer.Layer<
         flags,
         isWorkflow,
       })
+      const advisorRequest = applyAnthropicAdvisorToRequest({
+        model: input.model,
+        options: prepared.params.options,
+        tools: prepared.tools,
+      })
+      const preparedParams = {
+        ...prepared.params,
+        options: advisorRequest.providerOptions,
+      }
+      const preparedTools = Object.fromEntries(
+        Object.entries(advisorRequest.tools).toSorted(([a], [b]) => a.localeCompare(b)),
+      )
 
       // Wire up toolExecutor for DWS workflow models so that tool calls
       // from the workflow service are executed via opencode's tool system
@@ -125,7 +159,7 @@ const live: Layer.Layer<
         workflowModel.sessionID = input.sessionID
         workflowModel.systemPrompt = prepared.system.join("\n")
         workflowModel.toolExecutor = async (toolName, argsJson, _requestID) => {
-          const t = prepared.tools[toolName]
+          const t = preparedTools[toolName]
           if (!t || !t.execute) {
             return { result: "", error: `Unknown tool: ${toolName}` }
           }
@@ -147,7 +181,7 @@ const live: Layer.Layer<
         }
 
         const ruleset = Permission.merge(input.agent.permission ?? [], input.permission ?? [])
-        workflowModel.sessionPreapprovedTools = Object.keys(prepared.tools).filter((name) => {
+        workflowModel.sessionPreapprovedTools = Object.keys(preparedTools).filter((name) => {
           const match = ruleset.findLast((rule) => Wildcard.match(name, rule.permission))
           return !match || match.action !== "ask"
         })
@@ -230,13 +264,13 @@ const live: Layer.Layer<
           auth: info,
           llmClient,
           messages: prepared.messages,
-          tools: prepared.tools,
+          tools: preparedTools,
           toolChoice: input.toolChoice,
-          temperature: prepared.params.temperature,
-          topP: prepared.params.topP,
-          topK: prepared.params.topK,
-          maxOutputTokens: prepared.params.maxOutputTokens,
-          providerOptions: prepared.params.options,
+          temperature: preparedParams.temperature,
+          topP: preparedParams.topP,
+          topK: preparedParams.topK,
+          maxOutputTokens: preparedParams.maxOutputTokens,
+          providerOptions: preparedParams.options,
           headers: prepared.headers,
           abort: input.abort,
         })
@@ -295,7 +329,7 @@ const live: Layer.Layer<
           includeRawChunks: input.model.providerID.includes("github-copilot"),
           async experimental_repairToolCall(failed) {
             const lower = failed.toolCall.toolName.toLowerCase()
-            if (lower !== failed.toolCall.toolName && prepared.tools[lower]) {
+            if (lower !== failed.toolCall.toolName && preparedTools[lower]) {
               return {
                 ...failed.toolCall,
                 toolName: lower,
@@ -310,14 +344,14 @@ const live: Layer.Layer<
               toolName: "invalid",
             }
           },
-          temperature: prepared.params.temperature,
-          topP: prepared.params.topP,
-          topK: prepared.params.topK,
-          providerOptions: ProviderTransform.providerOptions(input.model, prepared.params.options),
-          activeTools: Object.keys(prepared.tools).filter((x) => x !== "invalid"),
-          tools: prepared.tools,
+          temperature: preparedParams.temperature,
+          topP: preparedParams.topP,
+          topK: preparedParams.topK,
+          providerOptions: ProviderTransform.providerOptions(input.model, preparedParams.options),
+          activeTools: Object.keys(preparedTools).filter((x) => x !== "invalid"),
+          tools: preparedTools,
           toolChoice: input.toolChoice,
-          maxOutputTokens: prepared.params.maxOutputTokens,
+          maxOutputTokens: preparedParams.maxOutputTokens,
           abortSignal: input.abort,
           headers: prepared.headers,
           maxRetries: input.retries ?? 0,
@@ -373,7 +407,11 @@ const live: Layer.Layer<
             return Stream.fromAsyncIterable(result.result.fullStream, (e) =>
               e instanceof Error ? e : new Error(String(e)),
             ).pipe(
-              Stream.mapEffect((event) => LLMAISDK.toLLMEvents(state, event)),
+              Stream.mapEffect((event) =>
+                LLMAISDK.toLLMEvents(state, event, {
+                  ignoreMissingReasoningPartError: input.model.providerID.includes("github-copilot"),
+                }),
+              ),
               Stream.flatMap((events) => Stream.fromIterable(events)),
             )
           }),
