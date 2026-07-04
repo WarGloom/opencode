@@ -142,6 +142,9 @@ export function retryable(error: Err, provider: string) {
   if (json.type === "error" && json.error?.type === "too_many_requests") {
     return { message: "Too Many Requests" }
   }
+  if (json.type === "error" && json.error?.type === "server_error") {
+    return { message: "Server error" }
+  }
   if (code.includes("exhausted") || code.includes("unavailable")) {
     return { message: "Provider is overloaded" }
   }
