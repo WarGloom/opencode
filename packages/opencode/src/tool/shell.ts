@@ -25,6 +25,7 @@ import { BashArity } from "@/permission/arity"
 export { Parameters } from "./shell/prompt"
 
 const MAX_METADATA_LENGTH = 30_000
+const DEFAULT_DESCRIPTION = "Run shell command"
 const CWD = new Set(["cd", "chdir", "popd", "pushd", "push-location", "set-location"])
 const FILES = new Set([
   ...CWD,
@@ -220,6 +221,16 @@ function pathArgs(list: Part[], ps: boolean, cmd = false) {
 function preview(text: string) {
   if (text.length <= MAX_METADATA_LENGTH) return text
   return "...\n\n" + text.slice(-MAX_METADATA_LENGTH)
+}
+
+function describeCommand(input: { command: string; description?: string }) {
+  const description = input.description?.trim()
+  if (description) return description
+
+  const firstLine = input.command.trim().split(/\r?\n/, 1)[0]?.trim()
+  if (!firstLine) return DEFAULT_DESCRIPTION
+
+  return firstLine.length > 80 ? firstLine.slice(0, 77) + "..." : firstLine
 }
 
 function tail(text: string, maxLines: number, maxBytes: number) {
@@ -429,6 +440,7 @@ export const ShellTool = Tool.define(
       input: {
         shell: string
         command: string
+        description: string
         cwd: string
         env: NodeJS.ProcessEnv
         timeout: number
@@ -583,8 +595,9 @@ export const ShellTool = Tool.define(
         output += "\n\n<shell_metadata>\n" + meta.join("\n") + "\n</shell_metadata>"
       }
       return {
-        title: input.command,
+        title: input.description,
         metadata: {
+          description: input.description,
           output: last || preview(output),
           exit: code,
           truncated: cut,
@@ -616,6 +629,7 @@ export const ShellTool = Tool.define(
                 throw new Error(`Invalid timeout value: ${params.timeout}. Timeout must be a positive number.`)
               }
               const timeout = params.timeout ?? defaultTimeoutMs
+              const description = describeCommand(params)
               const ps = Shell.ps(shell)
               yield* Effect.scoped(
                 Effect.gen(function* () {
@@ -632,6 +646,7 @@ export const ShellTool = Tool.define(
                 {
                   shell,
                   command: params.command,
+                  description,
                   cwd,
                   env: yield* shellEnv(ctx, cwd),
                   timeout,
