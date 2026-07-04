@@ -23,6 +23,8 @@ export type MessageWithParts = {
   parts: Part[]
 }
 
+type AssistantMessageWithVariant = AssistantMessage & { readonly variant?: string }
+
 export function formatTranscript(
   session: SessionInfo,
   messages: MessageWithParts[],
@@ -65,7 +67,7 @@ export function formatMessage(
 }
 
 export function formatAssistantHeader(
-  msg: AssistantMessage,
+  msg: AssistantMessageWithVariant,
   includeMetadata: boolean,
   providers?: Provider[] | ReadonlyMap<string, Provider>,
 ): string {
@@ -76,7 +78,7 @@ export function formatAssistantHeader(
   const duration =
     msg.time.completed && msg.time.created ? ((msg.time.completed - msg.time.created) / 1000).toFixed(1) + "s" : ""
 
-  const modelName = Model.name(providers, msg.providerID, msg.modelID)
+  const modelName = Model.displayName(Model.name(providers, msg.providerID, msg.modelID), msg.variant)
 
   return `## Assistant (${Locale.titlecase(msg.agent)} · ${modelName}${duration ? ` · ${duration}` : ""})\n\n`
 }
