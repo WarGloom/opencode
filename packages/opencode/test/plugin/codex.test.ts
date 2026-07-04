@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import {
+  GPT_5_5_CODEX_LIMIT,
   CodexAuthPlugin,
   parseJwtClaims,
   extractAccountIdFromClaims,
@@ -15,6 +16,14 @@ function createTestJwt(payload: object): string {
 }
 
 describe("plugin.codex", () => {
+  test("uses conservative GPT-5.5 limits for Codex OAuth metadata", () => {
+    expect(GPT_5_5_CODEX_LIMIT).toEqual({
+      context: 400_000,
+      input: 272_000,
+      output: 128_000,
+    })
+  })
+
   test("escapes provider errors in callback HTML", () => {
     const error = `</div><script>alert("xss" & 'more')</script>`
     const html = renderOAuthError(error)

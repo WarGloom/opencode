@@ -15,6 +15,12 @@ const OAUTH_POLLING_SAFETY_MARGIN_MS = 3000
 const ALLOWED_MODELS = new Set(["gpt-5.5", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini"])
 const DISALLOWED_MODELS = new Set(["gpt-5.5-pro"])
 
+export const GPT_5_5_CODEX_LIMIT = {
+  context: 400_000,
+  input: 272_000,
+  output: 128_000,
+}
+
 interface PkceCodes {
   verifier: string
   challenge: string
