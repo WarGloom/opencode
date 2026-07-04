@@ -1,0 +1,876 @@
+diff --git a/dist/index.js b/dist/index.js
+index 55e5a95..82163aa 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -147,6 +147,24 @@ var anthropicMessagesResponseSchema = (0, import_provider_utils2.lazySchema)(
+               })
+             ]).optional()
+           }),
++          import_v42.z.object({
++            type: import_v42.z.literal("advisor_tool_result"),
++            tool_use_id: import_v42.z.string(),
++            content: import_v42.z.discriminatedUnion("type", [
++              import_v42.z.object({
++                type: import_v42.z.literal("advisor_result"),
++                text: import_v42.z.string()
++              }),
++              import_v42.z.object({
++                type: import_v42.z.literal("advisor_redacted_result"),
++                encrypted_content: import_v42.z.string()
++              }),
++              import_v42.z.object({
++                type: import_v42.z.literal("advisor_tool_result_error"),
++                error_code: import_v42.z.string()
++              })
++            ])
++          }),
+           import_v42.z.object({
+             type: import_v42.z.literal("mcp_tool_use"),
+             id: import_v42.z.string(),
+@@ -338,9 +356,10 @@ var anthropicMessagesResponseSchema = (0, import_provider_utils2.lazySchema)(
+         cache_read_input_tokens: import_v42.z.number().nullish(),
+         iterations: import_v42.z.array(
+           import_v42.z.object({
+-            type: import_v42.z.union([import_v42.z.literal("compaction"), import_v42.z.literal("message")]),
++            type: import_v42.z.union([import_v42.z.literal("compaction"), import_v42.z.literal("message"), import_v42.z.literal("advisor_message")]),
+             input_tokens: import_v42.z.number(),
+-            output_tokens: import_v42.z.number()
++            output_tokens: import_v42.z.number(),
++            model: import_v42.z.string().optional()
+           })
+         ).nullish()
+       }),
+@@ -478,6 +497,24 @@ var anthropicMessagesChunkSchema = (0, import_provider_utils2.lazySchema)(
+               })
+             ]).optional()
+           }),
++          import_v42.z.object({
++            type: import_v42.z.literal("advisor_tool_result"),
++            tool_use_id: import_v42.z.string(),
++            content: import_v42.z.discriminatedUnion("type", [
++              import_v42.z.object({
++                type: import_v42.z.literal("advisor_result"),
++                text: import_v42.z.string()
++              }),
++              import_v42.z.object({
++                type: import_v42.z.literal("advisor_redacted_result"),
++                encrypted_content: import_v42.z.string()
++              }),
++              import_v42.z.object({
++                type: import_v42.z.literal("advisor_tool_result_error"),
++                error_code: import_v42.z.string()
++              })
++            ])
++          }),
+           import_v42.z.object({
+             type: import_v42.z.literal("mcp_tool_use"),
+             id: import_v42.z.string(),
+@@ -752,9 +789,10 @@ var anthropicMessagesChunkSchema = (0, import_provider_utils2.lazySchema)(
+           cache_read_input_tokens: import_v42.z.number().nullish(),
+           iterations: import_v42.z.array(
+             import_v42.z.object({
+-              type: import_v42.z.union([import_v42.z.literal("compaction"), import_v42.z.literal("message")]),
++              type: import_v42.z.union([import_v42.z.literal("compaction"), import_v42.z.literal("message"), import_v42.z.literal("advisor_message")]),
+               input_tokens: import_v42.z.number(),
+-              output_tokens: import_v42.z.number()
++              output_tokens: import_v42.z.number(),
++              model: import_v42.z.string().optional()
+             })
+           ).nullish()
+         }),
+@@ -1391,6 +1429,17 @@ async function prepareTools({
+             });
+             break;
+           }
++          case "anthropic.advisor_20260301": {
++            betas.add("advisor-tool-2026-03-01");
++            anthropicTools2.push({
++              type: "advisor_20260301",
++              name: "advisor",
++              model: tool.args.model,
++              ...(tool.args.maxUses != null ? { max_uses: tool.args.maxUses } : {}),
++              ...(tool.args.caching != null ? { caching: tool.args.caching } : {})
++            });
++            break;
++          }
+           case "anthropic.computer_20250124": {
+             betas.add("computer-use-2025-01-24");
+             anthropicTools2.push({
+@@ -2442,7 +2491,7 @@ async function convertToAnthropicMessagesPrompt({
+                     });
+                   } else {
+                     if (providerToolName === "code_execution" || // code execution 20250522
+-                    providerToolName === "web_fetch" || providerToolName === "web_search") {
++                    providerToolName === "web_fetch" || providerToolName === "web_search" || providerToolName === "advisor") {
+                       anthropicContent.push({
+                         type: "server_tool_use",
+                         id: part.toolCallId,
+@@ -2502,6 +2551,58 @@ async function convertToAnthropicMessagesPrompt({
+                     content: output.value,
+                     cache_control: cacheControl
+                   });
++                } else if (providerToolName === "advisor") {
++                  const output = part.output;
++                  if (output.type === "error-text" || output.type === "error-json") {
++                    let errorInfo = {};
++                    try {
++                      if (typeof output.value === "string") {
++                        errorInfo = JSON.parse(output.value);
++                      } else if (typeof output.value === "object" && output.value !== null) {
++                        errorInfo = output.value;
++                      }
++                    } catch (e) {
++                    }
++                    anthropicContent.push({
++                      type: "advisor_tool_result",
++                      tool_use_id: part.toolCallId,
++                      content: {
++                        type: "advisor_tool_result_error",
++                        error_code: (_m = errorInfo.errorCode) != null ? _m : "unavailable"
++                      },
++                      cache_control: cacheControl
++                    });
++                    break;
++                  }
++                  if (output.type === "text") {
++                    anthropicContent.push({
++                      type: "advisor_tool_result",
++                      tool_use_id: part.toolCallId,
++                      content: {
++                        type: "advisor_result",
++                        text: output.value
++                      },
++                      cache_control: cacheControl
++                    });
++                    break;
++                  }
++                  if (output.type === "json" && output.value != null && typeof output.value === "object" && "type" in output.value && output.value.type === "advisor_redacted_result" && "encryptedContent" in output.value && typeof output.value.encryptedContent === "string") {
++                    anthropicContent.push({
++                      type: "advisor_tool_result",
++                      tool_use_id: part.toolCallId,
++                      content: {
++                        type: "advisor_redacted_result",
++                        encrypted_content: output.value.encryptedContent
++                      },
++                      cache_control: cacheControl
++                    });
++                    break;
++                  }
++                  warnings.push({
++                    type: "other",
++                    message: `provider executed tool result output type ${output.type} for tool ${part.toolName} is not supported`
++                  });
++                  break;
+                 } else if (providerToolName === "code_execution") {
+                   const output = part.output;
+                   if (output.type === "error-text" || output.type === "error-json") {
+@@ -3512,7 +3613,7 @@ var AnthropicMessagesLanguageModel = class {
+               input: JSON.stringify({ type: part.name, ...part.input }),
+               providerExecuted: true
+             });
+-          } else if (part.name === "web_search" || part.name === "code_execution" || part.name === "web_fetch") {
++          } else if (part.name === "web_search" || part.name === "code_execution" || part.name === "web_fetch" || part.name === "advisor") {
+             const inputToSerialize = part.name === "code_execution" && part.input != null && typeof part.input === "object" && "code" in part.input && !("type" in part.input) ? { type: "programmatic-tool-call", ...part.input } : part.input;
+             content.push({
+               type: "tool-call",
+@@ -3536,6 +3637,38 @@ var AnthropicMessagesLanguageModel = class {
+           }
+           break;
+         }
++        case "advisor_tool_result": {
++          if (part.content.type === "advisor_result") {
++            content.push({
++              type: "tool-result",
++              toolCallId: part.tool_use_id,
++              toolName: toolNameMapping.toCustomToolName("advisor"),
++              result: part.content.text
++            });
++          } else if (part.content.type === "advisor_redacted_result") {
++            content.push({
++              type: "tool-result",
++              toolCallId: part.tool_use_id,
++              toolName: toolNameMapping.toCustomToolName("advisor"),
++              result: {
++                type: "advisor_redacted_result",
++                encryptedContent: part.content.encrypted_content
++              }
++            });
++          } else {
++            content.push({
++              type: "tool-result",
++              toolCallId: part.tool_use_id,
++              toolName: toolNameMapping.toCustomToolName("advisor"),
++              isError: true,
++              result: {
++                type: "advisor_tool_result_error",
++                errorCode: part.content.error_code
++              }
++            });
++          }
++          break;
++        }
+         case "mcp_tool_use": {
+           mcpToolCalls[part.id] = {
+             type: "tool-call",
+@@ -3959,6 +4092,7 @@ var AnthropicMessagesLanguageModel = class {
+                 }
+                 case "server_tool_use": {
+                   if ([
++                    "advisor",
+                     "web_fetch",
+                     "web_search",
+                     // code execution 20250825:
+@@ -4011,6 +4145,38 @@ var AnthropicMessagesLanguageModel = class {
+                   }
+                   return;
+                 }
++                case "advisor_tool_result": {
++                  if (part.content.type === "advisor_result") {
++                    controller.enqueue({
++                      type: "tool-result",
++                      toolCallId: part.tool_use_id,
++                      toolName: toolNameMapping.toCustomToolName("advisor"),
++                      result: part.content.text
++                    });
++                  } else if (part.content.type === "advisor_redacted_result") {
++                    controller.enqueue({
++                      type: "tool-result",
++                      toolCallId: part.tool_use_id,
++                      toolName: toolNameMapping.toCustomToolName("advisor"),
++                      result: {
++                        type: "advisor_redacted_result",
++                        encryptedContent: part.content.encrypted_content
++                      }
++                    });
++                  } else {
++                    controller.enqueue({
++                      type: "tool-result",
++                      toolCallId: part.tool_use_id,
++                      toolName: toolNameMapping.toCustomToolName("advisor"),
++                      isError: true,
++                      result: {
++                        type: "advisor_tool_result_error",
++                        errorCode: part.content.error_code
++                      }
++                    });
++                  }
++                  return;
++                }
+                 case "web_fetch_tool_result": {
+                   if (part.content.type === "web_fetch_result") {
+                     citationDocuments.push({
+@@ -5268,4 +5434,4 @@ function forwardAnthropicContainerIdFromLastStep({
+   createAnthropic,
+   forwardAnthropicContainerIdFromLastStep
+ });
+-//# sourceMappingURL=index.js.map
+\ No newline at end of file
++//# sourceMappingURL=index.js.map
+diff --git a/dist/index.mjs b/dist/index.mjs
+index f3f7cd2..6b4f655 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -142,6 +142,24 @@ var anthropicMessagesResponseSchema = lazySchema2(
+               })
+             ]).optional()
+           }),
++          z2.object({
++            type: z2.literal("advisor_tool_result"),
++            tool_use_id: z2.string(),
++            content: z2.discriminatedUnion("type", [
++              z2.object({
++                type: z2.literal("advisor_result"),
++                text: z2.string()
++              }),
++              z2.object({
++                type: z2.literal("advisor_redacted_result"),
++                encrypted_content: z2.string()
++              }),
++              z2.object({
++                type: z2.literal("advisor_tool_result_error"),
++                error_code: z2.string()
++              })
++            ])
++          }),
+           z2.object({
+             type: z2.literal("mcp_tool_use"),
+             id: z2.string(),
+@@ -333,9 +351,10 @@ var anthropicMessagesResponseSchema = lazySchema2(
+         cache_read_input_tokens: z2.number().nullish(),
+         iterations: z2.array(
+           z2.object({
+-            type: z2.union([z2.literal("compaction"), z2.literal("message")]),
++            type: z2.union([z2.literal("compaction"), z2.literal("message"), z2.literal("advisor_message")]),
+             input_tokens: z2.number(),
+-            output_tokens: z2.number()
++            output_tokens: z2.number(),
++            model: z2.string().optional()
+           })
+         ).nullish()
+       }),
+@@ -473,6 +492,24 @@ var anthropicMessagesChunkSchema = lazySchema2(
+               })
+             ]).optional()
+           }),
++          z2.object({
++            type: z2.literal("advisor_tool_result"),
++            tool_use_id: z2.string(),
++            content: z2.discriminatedUnion("type", [
++              z2.object({
++                type: z2.literal("advisor_result"),
++                text: z2.string()
++              }),
++              z2.object({
++                type: z2.literal("advisor_redacted_result"),
++                encrypted_content: z2.string()
++              }),
++              z2.object({
++                type: z2.literal("advisor_tool_result_error"),
++                error_code: z2.string()
++              })
++            ])
++          }),
+           z2.object({
+             type: z2.literal("mcp_tool_use"),
+             id: z2.string(),
+@@ -746,12 +783,13 @@ var anthropicMessagesChunkSchema = lazySchema2(
+           cache_creation_input_tokens: z2.number().nullish(),
+           cache_read_input_tokens: z2.number().nullish(),
+           iterations: z2.array(
+-            z2.object({
+-              type: z2.union([z2.literal("compaction"), z2.literal("message")]),
+-              input_tokens: z2.number(),
+-              output_tokens: z2.number()
+-            })
+-          ).nullish()
++          z2.object({
++            type: z2.union([z2.literal("compaction"), z2.literal("message"), z2.literal("advisor_message")]),
++            input_tokens: z2.number(),
++            output_tokens: z2.number(),
++            model: z2.string().optional()
++          })
++        ).nullish()
+         }),
+         context_management: z2.object({
+           applied_edits: z2.array(
+@@ -1404,6 +1442,17 @@ async function prepareTools({
+             });
+             break;
+           }
++          case "anthropic.advisor_20260301": {
++            betas.add("advisor-tool-2026-03-01");
++            anthropicTools2.push({
++              type: "advisor_20260301",
++              name: "advisor",
++              model: tool.args.model,
++              ...(tool.args.maxUses != null ? { max_uses: tool.args.maxUses } : {}),
++              ...(tool.args.caching != null ? { caching: tool.args.caching } : {})
++            });
++            break;
++          }
+           case "anthropic.computer_20250124": {
+             betas.add("computer-use-2025-01-24");
+             anthropicTools2.push({
+@@ -2479,7 +2528,7 @@ async function convertToAnthropicMessagesPrompt({
+                     });
+                   } else {
+                     if (providerToolName === "code_execution" || // code execution 20250522
+-                    providerToolName === "web_fetch" || providerToolName === "web_search") {
++                    providerToolName === "web_fetch" || providerToolName === "web_search" || providerToolName === "advisor") {
+                       anthropicContent.push({
+                         type: "server_tool_use",
+                         id: part.toolCallId,
+@@ -2539,6 +2588,58 @@ async function convertToAnthropicMessagesPrompt({
+                     content: output.value,
+                     cache_control: cacheControl
+                   });
++                } else if (providerToolName === "advisor") {
++                  const output = part.output;
++                  if (output.type === "error-text" || output.type === "error-json") {
++                    let errorInfo = {};
++                    try {
++                      if (typeof output.value === "string") {
++                        errorInfo = JSON.parse(output.value);
++                      } else if (typeof output.value === "object" && output.value !== null) {
++                        errorInfo = output.value;
++                      }
++                    } catch (e) {
++                    }
++                    anthropicContent.push({
++                      type: "advisor_tool_result",
++                      tool_use_id: part.toolCallId,
++                      content: {
++                        type: "advisor_tool_result_error",
++                        error_code: (_m = errorInfo.errorCode) != null ? _m : "unavailable"
++                      },
++                      cache_control: cacheControl
++                    });
++                    break;
++                  }
++                  if (output.type === "text") {
++                    anthropicContent.push({
++                      type: "advisor_tool_result",
++                      tool_use_id: part.toolCallId,
++                      content: {
++                        type: "advisor_result",
++                        text: output.value
++                      },
++                      cache_control: cacheControl
++                    });
++                    break;
++                  }
++                  if (output.type === "json" && output.value != null && typeof output.value === "object" && "type" in output.value && output.value.type === "advisor_redacted_result" && "encryptedContent" in output.value && typeof output.value.encryptedContent === "string") {
++                    anthropicContent.push({
++                      type: "advisor_tool_result",
++                      tool_use_id: part.toolCallId,
++                      content: {
++                        type: "advisor_redacted_result",
++                        encrypted_content: output.value.encryptedContent
++                      },
++                      cache_control: cacheControl
++                    });
++                    break;
++                  }
++                  warnings.push({
++                    type: "other",
++                    message: `provider executed tool result output type ${output.type} for tool ${part.toolName} is not supported`
++                  });
++                  break;
+                 } else if (providerToolName === "code_execution") {
+                   const output = part.output;
+                   if (output.type === "error-text" || output.type === "error-json") {
+@@ -3549,7 +3650,7 @@ var AnthropicMessagesLanguageModel = class {
+               input: JSON.stringify({ type: part.name, ...part.input }),
+               providerExecuted: true
+             });
+-          } else if (part.name === "web_search" || part.name === "code_execution" || part.name === "web_fetch") {
++          } else if (part.name === "web_search" || part.name === "code_execution" || part.name === "web_fetch" || part.name === "advisor") {
+             const inputToSerialize = part.name === "code_execution" && part.input != null && typeof part.input === "object" && "code" in part.input && !("type" in part.input) ? { type: "programmatic-tool-call", ...part.input } : part.input;
+             content.push({
+               type: "tool-call",
+@@ -3573,6 +3674,38 @@ var AnthropicMessagesLanguageModel = class {
+           }
+           break;
+         }
++        case "advisor_tool_result": {
++          if (part.content.type === "advisor_result") {
++            content.push({
++              type: "tool-result",
++              toolCallId: part.tool_use_id,
++              toolName: toolNameMapping.toCustomToolName("advisor"),
++              result: part.content.text
++            });
++          } else if (part.content.type === "advisor_redacted_result") {
++            content.push({
++              type: "tool-result",
++              toolCallId: part.tool_use_id,
++              toolName: toolNameMapping.toCustomToolName("advisor"),
++              result: {
++                type: "advisor_redacted_result",
++                encryptedContent: part.content.encrypted_content
++              }
++            });
++          } else {
++            content.push({
++              type: "tool-result",
++              toolCallId: part.tool_use_id,
++              toolName: toolNameMapping.toCustomToolName("advisor"),
++              isError: true,
++              result: {
++                type: "advisor_tool_result_error",
++                errorCode: part.content.error_code
++              }
++            });
++          }
++          break;
++        }
+         case "mcp_tool_use": {
+           mcpToolCalls[part.id] = {
+             type: "tool-call",
+@@ -3996,6 +4129,7 @@ var AnthropicMessagesLanguageModel = class {
+                 }
+                 case "server_tool_use": {
+                   if ([
++                    "advisor",
+                     "web_fetch",
+                     "web_search",
+                     // code execution 20250825:
+@@ -4048,6 +4182,38 @@ var AnthropicMessagesLanguageModel = class {
+                   }
+                   return;
+                 }
++                case "advisor_tool_result": {
++                  if (part.content.type === "advisor_result") {
++                    controller.enqueue({
++                      type: "tool-result",
++                      toolCallId: part.tool_use_id,
++                      toolName: toolNameMapping.toCustomToolName("advisor"),
++                      result: part.content.text
++                    });
++                  } else if (part.content.type === "advisor_redacted_result") {
++                    controller.enqueue({
++                      type: "tool-result",
++                      toolCallId: part.tool_use_id,
++                      toolName: toolNameMapping.toCustomToolName("advisor"),
++                      result: {
++                        type: "advisor_redacted_result",
++                        encryptedContent: part.content.encrypted_content
++                      }
++                    });
++                  } else {
++                    controller.enqueue({
++                      type: "tool-result",
++                      toolCallId: part.tool_use_id,
++                      toolName: toolNameMapping.toCustomToolName("advisor"),
++                      isError: true,
++                      result: {
++                        type: "advisor_tool_result_error",
++                        errorCode: part.content.error_code
++                      }
++                    });
++                  }
++                  return;
++                }
+                 case "web_fetch_tool_result": {
+                   if (part.content.type === "web_fetch_result") {
+                     citationDocuments.push({
+@@ -5344,4 +5510,4 @@ export {
+   createAnthropic,
+   forwardAnthropicContainerIdFromLastStep
+ };
+-//# sourceMappingURL=index.mjs.map
+\ No newline at end of file
++//# sourceMappingURL=index.mjs.map
+diff --git a/src/anthropic-messages-api.ts b/src/anthropic-messages-api.ts
+index e0e3058..39fea46 100644
+--- a/src/anthropic-messages-api.ts
++++ b/src/anthropic-messages-api.ts
+@@ -383,6 +383,13 @@ export type AnthropicTool =
+       type: 'code_execution_20260120';
+       name: string;
+     }
++  | {
++      type: 'advisor_20260301';
++      name: 'advisor';
++      model: string;
++      max_uses?: number;
++      caching?: { type: 'ephemeral'; ttl: '5m' | '1h' };
++    }
+   | {
+       name: string;
+       type: 'computer_20250124' | 'computer_20241022';
+@@ -642,6 +649,24 @@ export const anthropicMessagesResponseSchema = lazySchema(() =>
+               ])
+               .optional(),
+           }),
++          z.object({
++            type: z.literal('advisor_tool_result'),
++            tool_use_id: z.string(),
++            content: z.discriminatedUnion('type', [
++              z.object({
++                type: z.literal('advisor_result'),
++                text: z.string(),
++              }),
++              z.object({
++                type: z.literal('advisor_redacted_result'),
++                encrypted_content: z.string(),
++              }),
++              z.object({
++                type: z.literal('advisor_tool_result_error'),
++                error_code: z.string(),
++              }),
++            ]),
++          }),
+           z.object({
+             type: z.literal('mcp_tool_use'),
+             id: z.string(),
+@@ -840,9 +865,14 @@ export const anthropicMessagesResponseSchema = lazySchema(() =>
+         iterations: z
+           .array(
+             z.object({
+-              type: z.union([z.literal('compaction'), z.literal('message')]),
++              type: z.union([
++                z.literal('compaction'),
++                z.literal('message'),
++                z.literal('advisor_message'),
++              ]),
+               input_tokens: z.number(),
+               output_tokens: z.number(),
++              model: z.string().optional(),
+             }),
+           )
+           .nullish(),
+@@ -1000,6 +1030,24 @@ export const anthropicMessagesChunkSchema = lazySchema(() =>
+               ])
+               .optional(),
+           }),
++          z.object({
++            type: z.literal('advisor_tool_result'),
++            tool_use_id: z.string(),
++            content: z.discriminatedUnion('type', [
++              z.object({
++                type: z.literal('advisor_result'),
++                text: z.string(),
++              }),
++              z.object({
++                type: z.literal('advisor_redacted_result'),
++                encrypted_content: z.string(),
++              }),
++              z.object({
++                type: z.literal('advisor_tool_result_error'),
++                error_code: z.string(),
++              }),
++            ]),
++          }),
+           z.object({
+             type: z.literal('mcp_tool_use'),
+             id: z.string(),
+@@ -1284,13 +1332,18 @@ export const anthropicMessagesChunkSchema = lazySchema(() =>
+           cache_read_input_tokens: z.number().nullish(),
+           iterations: z
+             .array(
+-              z.object({
+-                type: z.union([z.literal('compaction'), z.literal('message')]),
+-                input_tokens: z.number(),
+-                output_tokens: z.number(),
+-              }),
+-            )
+-            .nullish(),
++            z.object({
++              type: z.union([
++                z.literal('compaction'),
++                z.literal('message'),
++                z.literal('advisor_message'),
++              ]),
++              input_tokens: z.number(),
++              output_tokens: z.number(),
++              model: z.string().optional(),
++            }),
++          )
++          .nullish(),
+         }),
+         context_management: z
+           .object({
+diff --git a/src/anthropic-messages-language-model.ts b/src/anthropic-messages-language-model.ts
+index 6674006..f416a0a 100644
+--- a/src/anthropic-messages-language-model.ts
++++ b/src/anthropic-messages-language-model.ts
+@@ -967,7 +967,8 @@ export class AnthropicMessagesLanguageModel implements LanguageModelV3 {
+           } else if (
+             part.name === 'web_search' ||
+             part.name === 'code_execution' ||
+-            part.name === 'web_fetch'
++            part.name === 'web_fetch' ||
++            part.name === 'advisor'
+           ) {
+             // For code_execution, inject 'programmatic-tool-call' type when input has { code } format
+             const inputToSerialize =
+@@ -1007,6 +1008,39 @@ export class AnthropicMessagesLanguageModel implements LanguageModelV3 {
+ 
+           break;
+         }
++        case 'advisor_tool_result': {
++          if (part.content.type === 'advisor_result') {
++            content.push({
++              type: 'tool-result',
++              toolCallId: part.tool_use_id,
++              toolName: toolNameMapping.toCustomToolName('advisor'),
++              result: part.content.text,
++            });
++          } else if (part.content.type === 'advisor_redacted_result') {
++            content.push({
++              type: 'tool-result',
++              toolCallId: part.tool_use_id,
++              toolName: toolNameMapping.toCustomToolName('advisor'),
++              result: {
++                type: 'advisor_redacted_result',
++                encryptedContent: part.content.encrypted_content,
++              },
++            });
++          } else {
++            content.push({
++              type: 'tool-result',
++              toolCallId: part.tool_use_id,
++              toolName: toolNameMapping.toCustomToolName('advisor'),
++              isError: true,
++              result: {
++                type: 'advisor_tool_result_error',
++                errorCode: part.content.error_code,
++              },
++            });
++          }
++
++          break;
++        }
+         case 'mcp_tool_use': {
+           mcpToolCalls[part.id] = {
+             type: 'tool-call',
+@@ -1527,6 +1561,7 @@ export class AnthropicMessagesLanguageModel implements LanguageModelV3 {
+                 case 'server_tool_use': {
+                   if (
+                     [
++                      'advisor',
+                       'web_fetch',
+                       'web_search',
+                       // code execution 20250825:
+@@ -1611,6 +1646,40 @@ export class AnthropicMessagesLanguageModel implements LanguageModelV3 {
+                   return;
+                 }
+ 
++                case 'advisor_tool_result': {
++                  if (part.content.type === 'advisor_result') {
++                    controller.enqueue({
++                      type: 'tool-result',
++                      toolCallId: part.tool_use_id,
++                      toolName: toolNameMapping.toCustomToolName('advisor'),
++                      result: part.content.text,
++                    })
++                  } else if (part.content.type === 'advisor_redacted_result') {
++                    controller.enqueue({
++                      type: 'tool-result',
++                      toolCallId: part.tool_use_id,
++                      toolName: toolNameMapping.toCustomToolName('advisor'),
++                      result: {
++                        type: 'advisor_redacted_result',
++                        encryptedContent: part.content.encrypted_content,
++                      },
++                    })
++                  } else {
++                    controller.enqueue({
++                      type: 'tool-result',
++                      toolCallId: part.tool_use_id,
++                      toolName: toolNameMapping.toCustomToolName('advisor'),
++                      isError: true,
++                      result: {
++                        type: 'advisor_tool_result_error',
++                        errorCode: part.content.error_code,
++                      },
++                    })
++                  }
++
++                  return;
++                }
++
+                 case 'web_fetch_tool_result': {
+                   if (part.content.type === 'web_fetch_result') {
+                     citationDocuments.push({
+diff --git a/src/anthropic-prepare-tools.ts b/src/anthropic-prepare-tools.ts
+index 645cc03..69a1fde 100644
+--- a/src/anthropic-prepare-tools.ts
++++ b/src/anthropic-prepare-tools.ts
+@@ -157,6 +157,26 @@ export async function prepareTools({
+             });
+             break;
+           }
++          case 'anthropic.advisor_20260301': {
++            betas.add('advisor-tool-2026-03-01');
++            anthropicTools.push({
++              type: 'advisor_20260301',
++              name: 'advisor',
++              model: tool.args.model as string,
++              ...(tool.args.maxUses != null
++                ? { max_uses: tool.args.maxUses as number }
++                : {}),
++              ...(tool.args.caching != null
++                ? {
++                    caching: tool.args.caching as {
++                      type: 'ephemeral';
++                      ttl: '5m' | '1h';
++                    },
++                  }
++                : {}),
++            });
++            break;
++          }
+           case 'anthropic.computer_20250124': {
+             betas.add('computer-use-2025-01-24');
+             anthropicTools.push({
+diff --git a/src/convert-to-anthropic-messages-prompt.ts b/src/convert-to-anthropic-messages-prompt.ts
+index 610ad1c..2b5c05a 100644
+--- a/src/convert-to-anthropic-messages-prompt.ts
++++ b/src/convert-to-anthropic-messages-prompt.ts
+@@ -614,7 +614,8 @@ export async function convertToAnthropicMessagesPrompt({
+                     if (
+                       providerToolName === 'code_execution' || // code execution 20250522
+                       providerToolName === 'web_fetch' ||
+-                      providerToolName === 'web_search'
++                      providerToolName === 'web_search' ||
++                      providerToolName === 'advisor'
+                     ) {
+                       anthropicContent.push({
+                         type: 'server_tool_use',
+@@ -702,6 +703,74 @@ export async function convertToAnthropicMessagesPrompt({
+                       | Array<{ type: 'text'; text: string }>,
+                     cache_control: cacheControl,
+                   });
++                } else if (providerToolName === 'advisor') {
++                  const output = part.output;
++
++                  if (output.type === 'error-text' || output.type === 'error-json') {
++                    let errorInfo: { type?: string; errorCode?: string } = {};
++                    try {
++                      if (typeof output.value === 'string') {
++                        errorInfo = JSON.parse(output.value);
++                      } else if (
++                        typeof output.value === 'object' &&
++                        output.value !== null
++                      ) {
++                        errorInfo = output.value as typeof errorInfo;
++                      }
++                    } catch {}
++
++                    anthropicContent.push({
++                      type: 'advisor_tool_result',
++                      tool_use_id: part.toolCallId,
++                      content: {
++                        type: 'advisor_tool_result_error' as const,
++                        error_code: errorInfo.errorCode ?? 'unavailable',
++                      },
++                      cache_control: cacheControl,
++                    });
++                    break;
++                  }
++
++                  if (output.type === 'text') {
++                    anthropicContent.push({
++                      type: 'advisor_tool_result',
++                      tool_use_id: part.toolCallId,
++                      content: {
++                        type: 'advisor_result' as const,
++                        text: output.value,
++                      },
++                      cache_control: cacheControl,
++                    });
++                    break;
++                  }
++
++                  if (
++                    output.type === 'json' &&
++                    output.value != null &&
++                    typeof output.value === 'object' &&
++                    'type' in output.value &&
++                    output.value.type === 'advisor_redacted_result' &&
++                    'encryptedContent' in output.value &&
++                    typeof output.value.encryptedContent === 'string'
++                  ) {
++                    anthropicContent.push({
++                      type: 'advisor_tool_result',
++                      tool_use_id: part.toolCallId,
++                      content: {
++                        type: 'advisor_redacted_result' as const,
++                        encrypted_content: output.value.encryptedContent,
++                      },
++                      cache_control: cacheControl,
++                    });
++                    break;
++                  }
++
++                  warnings.push({
++                    type: 'other',
++                    message: `provider executed tool result output type ${output.type} for tool ${part.toolName} is not supported`,
++                  });
++
++                  break;
+                 } else if (providerToolName === 'code_execution') {
+                   const output = part.output;
+ 
