@@ -7,7 +7,14 @@ import type { OpenAICompatibleChatPrompt } from "./openai-compatible-api-types"
 import { convertToBase64 } from "@ai-sdk/provider-utils"
 
 function getOpenAIMetadata(message: { providerOptions?: SharedV3ProviderOptions }) {
-  return message?.providerOptions?.copilot ?? {}
+  return Object.fromEntries(
+    Object.entries(message.providerOptions?.copilot ?? {}).filter(([key]) => key !== "reasoningOpaque"),
+  )
+}
+
+function getCopilotReasoningOpaque(message: { providerOptions?: SharedV3ProviderOptions }) {
+  const reasoningOpaque = message.providerOptions?.copilot?.reasoningOpaque
+  return typeof reasoningOpaque === "string" && reasoningOpaque.length > 0 ? reasoningOpaque : undefined
 }
 
 export function convertToOpenAICompatibleChatMessages(prompt: LanguageModelV3Prompt): OpenAICompatibleChatPrompt {
@@ -81,12 +88,10 @@ export function convertToOpenAICompatibleChatMessages(prompt: LanguageModelV3Pro
         }> = []
 
         for (const part of content) {
-          const partMetadata = getOpenAIMetadata(part)
           // reasoningOpaque may be attached to any part. Interleaved thinking yields one per
           // reasoning segment; like the Copilot VS Code client, replay the latest opaque value
           // with the concatenated reasoning text.
-          const partOpaque = (part.providerOptions as { copilot?: { reasoningOpaque?: string } })?.copilot
-            ?.reasoningOpaque
+          const partOpaque = getCopilotReasoningOpaque(part)
           if (partOpaque) {
             reasoningOpaque = partOpaque
           }
@@ -101,6 +106,7 @@ export function convertToOpenAICompatibleChatMessages(prompt: LanguageModelV3Pro
               break
             }
             case "tool-call": {
+              const partMetadata = getOpenAIMetadata(part)
               toolCalls.push({
                 id: part.toolCallId,
                 type: "function",
@@ -120,7 +126,7 @@ export function convertToOpenAICompatibleChatMessages(prompt: LanguageModelV3Pro
           content: text || null,
           tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
           reasoning_text: reasoningOpaque ? reasoningText : undefined,
-          reasoning_opaque: reasoningOpaque,
+          reasoning_opaque: reasoningText ? reasoningOpaque : undefined,
           ...metadata,
         })
 
