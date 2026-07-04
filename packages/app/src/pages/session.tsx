@@ -552,7 +552,7 @@ export default function Page() {
   const messagesReady = timeline.ready
   const sessionSync = timeline.resource
   const userMessages = timeline.userMessages
-  const visibleUserMessages = timeline.visibleUserMessages
+  const visibleSessionUserMessages = timeline.visibleUserMessages
 
   createEffect(() => {
     const tab = activeFileTab()
@@ -803,7 +803,7 @@ export default function Page() {
   }
 
   function navigateMessageByOffset(offset: number) {
-    const msgs = visibleUserMessages()
+    const msgs = visibleSessionUserMessages()
     if (msgs.length === 0) return
 
     const current = store.messageId && messageMark === scrollMark ? store.messageId : cursor()
@@ -922,7 +922,7 @@ export default function Page() {
 
   createEffect(
     on(
-      () => visibleUserMessages().at(-1)?.id,
+      () => visibleSessionUserMessages().at(-1)?.id,
       (lastId, prevLastId) => {
         if (lastId && prevLastId && lastId > prevLastId) {
           setStore("messageId", undefined)
@@ -1688,7 +1688,7 @@ export default function Page() {
           historyMore(),
           historyLoading(),
           autoScroll.userScrolled(),
-          visibleUserMessages().length,
+          visibleSessionUserMessages().length,
         ] as const,
       ([id, ready, more, loading, scrolled]) => {
         if (!id || !ready || loading || scrolled) return
@@ -1998,7 +1998,7 @@ export default function Page() {
     sessionKey,
     sessionID: () => params.id,
     messagesReady,
-    visibleUserMessages,
+    visibleUserMessages: visibleSessionUserMessages,
     historyMore,
     historyLoading,
     loadMore: (sessionID) => sync().session.history.loadMore(sessionID),
@@ -2214,7 +2214,7 @@ export default function Page() {
                     const root = scroller
                     if (root) scheduleScrollState(root)
                   }}
-                  userMessages={visibleUserMessages()}
+                  userMessages={visibleSessionUserMessages()}
                   setHistoryAnchor={(handlers) => {
                     captureHistoryAnchor = handlers.capture
                     restoreHistoryAnchor = handlers.restore
