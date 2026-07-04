@@ -6,6 +6,9 @@ import { ProviderError } from "@/provider/error"
 
 type Result = Awaited<ReturnType<typeof streamText>>
 type AISDKEvent = Result["fullStream"] extends AsyncIterable<infer T> ? T : never
+type ToLLMEventsOptions = {
+  readonly ignoreMissingReasoningPartError?: boolean
+}
 
 export function adapterState() {
   return {
@@ -74,9 +77,15 @@ function currentReasoningID(state: ReturnType<typeof adapterState>, id: string |
   return state.currentReasoningID
 }
 
+function isMissingReasoningPartError(error: unknown) {
+  const message = errorMessage(error)
+  return /^reasoning part \S+ not found$/.test(message)
+}
+
 export function toLLMEvents(
   state: ReturnType<typeof adapterState>,
   event: AISDKEvent,
+  options: ToLLMEventsOptions = {},
 ): Effect.Effect<ReadonlyArray<LLMEvent>, unknown> {
   switch (event.type) {
     case "start":
@@ -265,7 +274,11 @@ export function toLLMEvents(
       })
 
     case "error":
-      return Effect.fail(event.error)
+      return options.ignoreMissingReasoningPartError && isMissingReasoningPartError(event.error)
+        ? Effect.logWarning("ignored missing reasoning part stream error", { error: errorMessage(event.error) }).pipe(
+            Effect.as([]),
+          )
+        : Effect.fail(event.error)
 
     case "abort":
     case "source":
