@@ -7,7 +7,7 @@ import { Session } from "@/session/session"
 import { SessionID, MessageID } from "../session/schema"
 import { MessageV2 } from "../session/message-v2"
 import { Agent } from "../agent/agent"
-import { deriveSubagentSessionPermission } from "../agent/subagent-permissions"
+import { deriveSubagentSessionPermission, subagentAllowsPermission } from "../agent/subagent-permissions"
 import type { SessionPrompt } from "../session/prompt"
 import { Config } from "@/config/config"
 import { Effect, Exit, Schema, Scope } from "effect"
@@ -133,18 +133,22 @@ export const TaskTool = Tool.define(
         return yield* Effect.fail(new Error(`Unknown agent type: ${params.subagent_type} is not a valid agent type`))
       }
 
-      const session = params.task_id
+      const requestedSession = params.task_id
         ? yield* sessions.get(SessionID.make(params.task_id)).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
         : undefined
+      const session =
+        requestedSession?.parentID === ctx.sessionID && requestedSession.agent === next.name ? requestedSession : undefined
+      const parentAgent = parent.agent ? yield* agent.get(parent.agent) : undefined
       const childPermission = deriveSubagentSessionPermission({
         parentSessionPermission: parent.permission ?? [],
+        parentAgent,
         subagent: next,
       })
       const childToolDenies = [
-        ...(next.permission.some((rule) => rule.permission === "todowrite")
+        ...(subagentAllowsPermission(next, "todowrite")
           ? []
           : [{ permission: "todowrite" as const, pattern: "*" as const, action: "deny" as const }]),
-        ...(next.permission.some((rule) => rule.permission === id)
+        ...(subagentAllowsPermission(next, id)
           ? []
           : [{ permission: id, pattern: "*" as const, action: "deny" as const }]),
         ...(cfg.experimental?.primary_tools?.map((permission) => ({
@@ -153,23 +157,54 @@ export const TaskTool = Tool.define(
           action: "deny" as const,
         })) ?? []),
       ]
-      const nextSession =
-        session ??
-        (yield* sessions.create({
-          parentID: ctx.sessionID,
-          title: params.description + ` (@${next.name} subagent)`,
-          agent: next.name,
-          permission: [
-            ...childPermission,
-            ...childToolDenies.filter(
-              (deny) =>
-                !childPermission.some(
-                  (rule) =>
-                    rule.permission === deny.permission && rule.pattern === deny.pattern && rule.action === deny.action,
-                ),
+      const childSessionPermission = [
+        ...childPermission,
+        ...childToolDenies.filter(
+          (deny) =>
+            !childPermission.some(
+              (rule) => rule.permission === deny.permission && rule.pattern === deny.pattern && rule.action === deny.action,
             ),
-          ],
-        }))
+        ),
+      ]
+      const childSessionDenies = childSessionPermission.filter(
+        (rule, index) =>
+          rule.action === "deny" &&
+          childSessionPermission.findIndex(
+            (item) => item.action === "deny" && item.permission === rule.permission && item.pattern === rule.pattern,
+          ) === index,
+      )
+      const nextSession = session
+        ? yield* Effect.gen(function* () {
+            const currentPermission = session.permission ?? []
+            const permission = [
+              ...currentPermission.filter(
+                (rule) =>
+                  !childSessionDenies.some(
+                    (deny) =>
+                      rule.action === "deny" && rule.permission === deny.permission && rule.pattern === deny.pattern,
+                  ),
+              ),
+              ...childSessionDenies,
+            ]
+            if (
+              currentPermission.length === permission.length &&
+              currentPermission.every(
+                (rule, index) =>
+                  permission[index]?.permission === rule.permission &&
+                  permission[index]?.pattern === rule.pattern &&
+                  permission[index]?.action === rule.action,
+              )
+            )
+              return session
+            yield* sessions.setPermission({ sessionID: session.id, permission })
+            return { ...session, permission }
+          })
+        : (yield* sessions.create({
+            parentID: ctx.sessionID,
+            title: params.description + ` (@${next.name} subagent)`,
+            agent: next.name,
+            permission: childSessionPermission,
+          }))
 
       const msg = yield* MessageV2.get({ sessionID: ctx.sessionID, messageID: ctx.messageID }).pipe(
         Effect.provideService(Database.Service, database),
@@ -338,6 +373,11 @@ export const TaskTool = Tool.define(
             if (result?.metadata?.background === true) return backgroundResult()
             if (result?.status === "error") return yield* Effect.fail(new Error(result.error ?? "Task failed"))
             if (result?.status === "cancelled") return yield* Effect.fail(new Error("Task cancelled"))
+            const completedTitle = nextSession.title ?? params.description
+            yield* sessions.setTitle({
+              sessionID: nextSession.id,
+              title: completedTitle.startsWith("✓ ") ? completedTitle : "✓ " + completedTitle,
+            })
             return {
               title: params.description,
               metadata,
