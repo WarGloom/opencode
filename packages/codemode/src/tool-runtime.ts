@@ -547,8 +547,8 @@ export const prepare = <R>(tools: HostTools<R>, catalogBudget = defaultCatalogBu
 
   // Section order is deliberate: workflow first (the top is the least likely part of a long
   // description to be truncated or skimmed away), then rules, then syntax, with the budgeted
-  // catalog at the bottom. Example call forms use placeholders - never a real or fabricated
-  // tool name - and show both dot and bracket notation so non-identifier names are not normalized.
+  // catalog at the bottom. Example call forms use explicit `<namespace>.<tool>` placeholders -
+  // never a real or fabricated tool name.
   const intro = [
     empty
       ? "This is a restricted JavaScript language for calling tools, not a general-purpose runtime."
