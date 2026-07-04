@@ -422,7 +422,7 @@ describe("reasoning (copilot-specific)", () => {
     ])
   })
 
-  test("should include reasoning_opaque from text part providerOptions", () => {
+  test("should omit reasoning_opaque from text part providerOptions", () => {
     const result = convertToCopilotMessages([
       {
         role: "assistant",
@@ -444,7 +444,45 @@ describe("reasoning (copilot-specific)", () => {
         content: "Done!",
         tool_calls: undefined,
         reasoning_text: undefined,
-        reasoning_opaque: "opaque-text-456",
+        reasoning_opaque: undefined,
+      },
+    ])
+  })
+
+  test("should omit reasoning_opaque from tool call providerOptions", () => {
+    const result = convertToCopilotMessages([
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "call_reasoning_only",
+            toolName: "read_file",
+            input: {},
+            providerOptions: {
+              copilot: { reasoningOpaque: "opaque-tool-789" },
+            },
+          },
+        ],
+      },
+    ])
+
+    expect(result).toEqual([
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call_reasoning_only",
+            type: "function",
+            function: {
+              name: "read_file",
+              arguments: JSON.stringify({}),
+            },
+          },
+        ],
+        reasoning_text: undefined,
+        reasoning_opaque: undefined,
       },
     ])
   })
