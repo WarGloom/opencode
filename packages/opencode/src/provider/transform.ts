@@ -61,6 +61,13 @@ function sdkKey(npm: string): string | undefined {
   return undefined
 }
 
+function isGithubCopilotGemini(model: Provider.Model): boolean {
+  if (model.api.npm !== "@ai-sdk/github-copilot") return false
+  const modelId = model.id.toLowerCase()
+  const apiId = model.api.id.toLowerCase()
+  return modelId.includes("gemini") || apiId.includes("gemini")
+}
+
 // TODO: fix this stupid inefficient dogshit function
 function normalizeMessages(
   msgs: ModelMessage[],
@@ -520,6 +527,7 @@ const WIDELY_SUPPORTED_EFFORTS = ["low", "medium", "high"]
 const OPENAI_EFFORTS = ["none", "minimal", ...WIDELY_SUPPORTED_EFFORTS, "xhigh"]
 const OPENAI_GPT5_1_EFFORTS = ["none", ...WIDELY_SUPPORTED_EFFORTS]
 const OPENAI_GPT5_2_PLUS_EFFORTS = [...OPENAI_GPT5_1_EFFORTS, "xhigh"]
+const OPENAI_GPT5_6_EFFORTS = [...OPENAI_GPT5_2_PLUS_EFFORTS, "max"]
 const OPENAI_GPT5_PRO_EFFORTS = ["high"]
 const OPENAI_GPT5_PRO_2_PLUS_EFFORTS = ["medium", "high", "xhigh"]
 const OPENAI_GPT5_CHAT_EFFORTS = ["medium"]
@@ -551,6 +559,7 @@ function versionedGpt5ReasoningEfforts(apiId: string) {
   const version = gpt5Version(apiId)
   if (version === undefined) return undefined
   if (version === 1) return OPENAI_GPT5_1_EFFORTS
+  if (version === 6) return OPENAI_GPT5_6_EFFORTS
   return OPENAI_GPT5_2_PLUS_EFFORTS
 }
 
@@ -824,7 +833,7 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
       )
 
     case "@ai-sdk/github-copilot":
-      if (model.id.includes("gemini")) {
+      if (isGithubCopilotGemini(model)) {
         // currently github copilot only returns thinking
         return {}
       }
@@ -1101,7 +1110,7 @@ export function options(input: {
   if (
     input.model.providerID === "openai" ||
     input.model.api.npm === "@ai-sdk/openai" ||
-    input.model.api.npm === "@ai-sdk/github-copilot" ||
+    (input.model.api.npm === "@ai-sdk/github-copilot" && !isGithubCopilotGemini(input.model)) ||
     input.model.api.npm === "@ai-sdk/amazon-bedrock/mantle" ||
     input.model.api.npm === "@ai-sdk/xai"
   ) {
@@ -1258,7 +1267,7 @@ export function smallOptions(model: Provider.Model) {
   if (
     model.providerID === "openai" ||
     model.api.npm === "@ai-sdk/openai" ||
-    model.api.npm === "@ai-sdk/github-copilot" ||
+    (model.api.npm === "@ai-sdk/github-copilot" && !isGithubCopilotGemini(model)) ||
     model.api.npm === "@ai-sdk/xai"
   ) {
     const base = { store: false }
@@ -1507,16 +1516,17 @@ export function schema(model: Provider.Model, schema: JSONSchema7): JSONSchema7 
       ].some((key) => key in node)
     }
 
-    const sanitizeGemini = (obj: any): any => {
+    const sanitizeGemini = (obj: any, inheritedProperties?: Record<string, unknown>): any => {
       if (obj === null || typeof obj !== "object") {
         return obj
       }
 
       if (Array.isArray(obj)) {
-        return obj.map(sanitizeGemini)
+        return obj.map((entry: unknown) => sanitizeGemini(entry))
       }
 
       const result: any = {}
+      const properties = isPlainObject(obj.properties) ? obj.properties : undefined
       for (const [key, value] of Object.entries(obj)) {
         if (key === "enum" && Array.isArray(value)) {
           // Convert all enum values to strings
@@ -1525,6 +1535,8 @@ export function schema(model: Provider.Model, schema: JSONSchema7): JSONSchema7 
           if (result.type === "integer" || result.type === "number") {
             result.type = "string"
           }
+        } else if (["anyOf", "oneOf", "allOf"].includes(key) && Array.isArray(value)) {
+          result[key] = value.map((entry) => sanitizeGemini(entry, properties))
         } else if (typeof value === "object" && value !== null) {
           result[key] = sanitizeGemini(value)
         } else {
@@ -1550,9 +1562,28 @@ export function schema(model: Provider.Model, schema: JSONSchema7): JSONSchema7 
         }
       }
 
-      // Filter required array to only include fields that exist in properties
-      if (result.type === "object" && result.properties && Array.isArray(result.required)) {
-        result.required = result.required.filter((field: any) => field in result.properties)
+      const required: string[] | undefined = Array.isArray(result.required)
+        ? result.required.filter((field: unknown): field is string => typeof field === "string")
+        : undefined
+      if (result.type === "object") {
+        if (required && isPlainObject(result.properties)) {
+          result.required = required.filter((field: string) => Object.hasOwn(result.properties, field))
+        } else if (Object.hasOwn(result, "required")) {
+          delete result.required
+        }
+      } else if (result.type === undefined && required?.length && inheritedProperties) {
+        const fields = required.filter((field: string) => Object.hasOwn(inheritedProperties, field))
+        if (fields.length) {
+          result.type = "object"
+          result.properties = Object.fromEntries(
+            fields.map((field: string) => [field, sanitizeGemini(inheritedProperties[field])]),
+          )
+          result.required = fields
+        } else {
+          delete result.required
+        }
+      } else if (Object.hasOwn(result, "required")) {
+        delete result.required
       }
 
       if (result.type === "array" && !hasCombiner(result)) {
@@ -1565,10 +1596,9 @@ export function schema(model: Provider.Model, schema: JSONSchema7): JSONSchema7 
         }
       }
 
-      // Remove properties/required from non-object types (Gemini rejects these)
+      // Remove properties from non-object types (Gemini rejects these)
       if (result.type && result.type !== "object" && !hasCombiner(result)) {
         delete result.properties
-        delete result.required
       }
 
       return result
