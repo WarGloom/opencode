@@ -6,10 +6,11 @@ import DESCRIPTION from "./websearch.txt"
 import { checksum } from "@opencode-ai/core/util/encode"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { NumberCoerce } from "./coerce-number"
 
 export const Parameters = Schema.Struct({
   query: Schema.String.annotate({ description: "Websearch query" }),
-  numResults: Schema.optional(Schema.Number).annotate({
+  numResults: Schema.optional(NumberCoerce).annotate({
     description: "Number of search results to return (default: 8)",
   }),
   livecrawl: Schema.optional(Schema.Literals(["fallback", "preferred"])).annotate({
@@ -19,7 +20,7 @@ export const Parameters = Schema.Struct({
   type: Schema.optional(Schema.Literals(["auto", "fast", "deep"])).annotate({
     description: "Search type - 'auto': balanced search (default), 'fast': quick results, 'deep': comprehensive search",
   }),
-  contextMaxCharacters: Schema.optional(Schema.Number).annotate({
+  contextMaxCharacters: Schema.optional(NumberCoerce).annotate({
     description: "Maximum characters for context string optimized for LLMs (default: 10000)",
   }),
 })
