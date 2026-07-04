@@ -222,6 +222,28 @@ describe("run entry body", () => {
     })
   })
 
+  test("keeps internal skill routing out of scrollback", () => {
+    expect(
+      entryBody(
+        toolCommit({
+          tool: "skill",
+          phase: "start",
+          toolState: "running",
+          text: "running skill",
+          state: {
+            status: "running",
+            input: {
+              name: "crash-analysis",
+            },
+            time: { start: 1 },
+          },
+        }),
+      ),
+    ).toEqual({
+      type: "none",
+    })
+  })
+
   test("promotes task results to markdown and falls back to structured task summaries", () => {
     expect(
       entryBody(
