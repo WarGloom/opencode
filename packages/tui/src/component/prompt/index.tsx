@@ -44,7 +44,6 @@ import { formatDuration } from "../../util/format"
 import { createColors, createFrames } from "../../ui/spinner"
 import { useDialog } from "../../ui/dialog"
 import { DialogProvider as DialogProviderConnect } from "../dialog-provider"
-import { DialogAlert } from "../../ui/dialog-alert"
 import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv"
 import { createFadeIn } from "../../util/signal"
@@ -959,7 +958,14 @@ export function Prompt(props: PromptProps) {
     if (auto()?.visible) return false
     if (!store.prompt.input) return false
     const agent = local.agent.current()
-    if (!agent) return false
+    if (!agent) {
+      toast.show({
+        variant: "warning",
+        message: "Select an agent to send prompts",
+        duration: 3000,
+      })
+      return false
+    }
     const trimmed = store.prompt.input.trim()
     if (trimmed === "exit" || trimmed === "quit" || trimmed === ":q") {
       void exit()
@@ -985,7 +991,6 @@ export function Prompt(props: PromptProps) {
       ))
       return false
     }
-
     const variant = local.model.variant.current()
     let sessionID = props.sessionID
     let finishMoveProgress = false
@@ -1343,7 +1348,6 @@ export function Prompt(props: PromptProps) {
     }
   })
   const maxHeight = createMemo(() => tuiConfig.prompt?.max_height ?? Math.max(6, Math.floor(dimensions().height / 3)))
-  const moveLabelWidth = createMemo(() => Math.max(12, Math.min(44, dimensions().width - 48)))
 
   return (
     <>
@@ -1540,11 +1544,6 @@ export function Prompt(props: PromptProps) {
                         if (r.message.length > 80) return r.message.slice(0, 80) + "..."
                         return r.message
                       })
-                      const isTruncated = createMemo(() => {
-                        const r = retry()
-                        if (!r) return false
-                        return r.message.length > 120
-                      })
                       const [seconds, setSeconds] = createSignal(0)
                       onMount(() => {
                         const timer = setInterval(() => {
@@ -1556,27 +1555,19 @@ export function Prompt(props: PromptProps) {
                           clearInterval(timer)
                         })
                       })
-                      const handleMessageClick = () => {
-                        const r = retry()
-                        if (!r) return
-                        if (isTruncated()) {
-                          void DialogAlert.show(dialog, "Retry Error", r.message)
-                        }
-                      }
 
                       const retryText = () => {
                         const r = retry()
                         if (!r) return ""
                         const baseMessage = message()
-                        const truncatedHint = isTruncated() ? " (click to expand)" : ""
                         const duration = formatDuration(seconds())
                         const retryInfo = ` [retrying ${duration ? `in ${duration} ` : ""}attempt #${r.attempt}]`
-                        return baseMessage + truncatedHint + retryInfo
+                        return baseMessage + retryInfo
                       }
 
                       return (
                         <Show when={retry()}>
-                          <box onMouseUp={handleMessageClick}>
+                          <box>
                             <text fg={theme.error}>{retryText()}</text>
                           </box>
                         </Show>

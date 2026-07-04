@@ -89,6 +89,17 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         theme.error,
         theme.info,
       ])
+      createEffect(() => {
+        const items = agents()
+        if (items.length === 0) {
+          if (agentStore.current !== undefined) setAgentStore("current", undefined)
+          return
+        }
+        if (items.some((x) => x.name === agentStore.current)) return
+        const value = items[0]
+        if (!value) return
+        setAgentStore("current", value.name)
+      })
       return {
         list() {
           return agents()
@@ -237,8 +248,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         const a = agent.current()
         return (
           getFirstValidModel(
-            () => a && modelStore.model[a.name],
-            () => a && a.model,
+            () => (a ? modelStore.model[a.name] : undefined),
+            () => a?.model,
             fallbackModel,
           ) ?? undefined
         )
@@ -274,6 +285,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         }),
         cycle(direction: 1 | -1) {
           const current = currentModel()
+          const value = agent.current()
+          if (!value) return
           if (!current) return
           const recent = modelStore.recent
           const index = recent.findIndex((x) => x.providerID === current.providerID && x.modelID === current.modelID)
@@ -281,11 +294,9 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           let next = index + direction
           if (next < 0) next = recent.length - 1
           if (next >= recent.length) next = 0
-          const val = recent[next]
-          if (!val) return
-          const a = agent.current()
-          if (!a) return
-          setModelStore("model", a.name, { ...val })
+          const item = recent[next]
+          if (!item) return
+          setModelStore("model", value.name, { ...item })
         },
         cycleFavorite(direction: 1 | -1) {
           const favorites = modelStore.favorite.filter((item) => isModelValid(item))
@@ -309,11 +320,11 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             if (index < 0) index = favorites.length - 1
             if (index >= favorites.length) index = 0
           }
+          const value = agent.current()
+          if (!value) return
           const next = favorites[index]
           if (!next) return
-          const a = agent.current()
-          if (!a) return
-          setModelStore("model", a.name, { ...next })
+          setModelStore("model", value.name, { ...next })
           setModelStore("recent", recentModels(next, modelStore.recent))
           save()
         },
@@ -327,9 +338,9 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
               })
               return
             }
-            const a = agent.current()
-            if (!a) return
-            setModelStore("model", a.name, model)
+            const value = agent.current()
+            if (!value) return
+            setModelStore("model", value.name, model)
             if (options?.recent) {
               setModelStore("recent", recentModels(model, modelStore.recent))
               save()
