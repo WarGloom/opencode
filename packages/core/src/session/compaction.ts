@@ -15,25 +15,30 @@ const TOOL_OUTPUT_MAX_CHARS = 2_000
 const SUMMARY_OUTPUT_TOKENS = 4_096
 const SUMMARY_TEMPLATE = `Output exactly the Markdown structure shown inside <template> and keep the section order unchanged. Do not include the <template> tags in your response.
 <template>
-## Objective
-- [one or two brief sentences describing what the user is trying to accomplish]
+## Goal
+- [single-sentence task summary]
 
-## Important Details
-- [constraints/preferences, decisions and why, important facts/assumptions, exact context needed to continue, or "(none)"]
+## Constraints & Preferences
+- [user constraints, preferences, specs, or "(none)"]
 
-## Work State
-### Completed
-- [finished work, verified facts, or changes made; otherwise "(none)"]
+## Progress
+### Done
+- [completed work or "(none)"]
 
-### Active
-- [current work, partial changes, or investigation state; otherwise "(none)"]
+### In Progress
+- [current work or "(none)"]
 
 ### Blocked
-- [blockers, failing commands, or unknowns; otherwise "(none)"]
+- [blockers or "(none)"]
 
-## Next Move
-1. [immediate concrete action, or "(none)"]
-2. [next action if known, or "(none)"]
+## Key Decisions
+- [decision and why, or "(none)"]
+
+## Next Steps
+- [ordered next actions or "(none)"]
+
+## Critical Context
+- [important technical facts, errors, open questions, or "(none)"]
 
 ## Relevant Files
 - [file or directory path: why it matters, or "(none)"]

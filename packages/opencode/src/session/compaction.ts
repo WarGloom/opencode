@@ -29,6 +29,8 @@ export const PRUNE_MINIMUM = 20_000
 export const PRUNE_PROTECT = 40_000
 const TOOL_OUTPUT_MAX_CHARS = 2_000
 const PRUNE_PROTECTED_TOOLS = ["skill"]
+export const COMPACTION_CONTINUE_PROMPT =
+  "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed."
 const DEFAULT_TAIL_TURNS = 2
 const MIN_PRESERVE_RECENT_TOKENS = 2_000
 const MAX_PRESERVE_RECENT_TOKENS = 8_000
@@ -482,7 +484,7 @@ const layer = Layer.effect(
               (input.overflow
                 ? "The previous request exceeded the provider's size limit due to large media attachments. The conversation was compacted and media files were removed from context. If the user was asking about attached images or files, explain that the attachments were too large to process and suggest they try again with smaller or fewer files.\n\n"
                 : "") +
-              "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed."
+              COMPACTION_CONTINUE_PROMPT
             yield* session.updatePart({
               id: PartID.ascending(),
               messageID: continueMsg.id,

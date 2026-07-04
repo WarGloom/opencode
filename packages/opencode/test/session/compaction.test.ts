@@ -391,12 +391,12 @@ describe("session.compaction.isOverflow", () => {
   )
 
   it.live(
-    "includes cache.read in token count",
+    "counts cached tokens for auto-compaction pressure",
     provideTmpdirInstance(() =>
       Effect.gen(function* () {
         const compact = yield* SessionCompaction.Service
-        const model = createModel({ context: 100_000, output: 32_000 })
-        const tokens = { input: 60_000, output: 10_000, reasoning: 0, cache: { read: 10_000, write: 0 } }
+        const model = createModel({ context: 128_000, input: 128_000, output: 32_000 })
+        const tokens = { total: 119_425, input: 8_000, output: 1_000, reasoning: 0, cache: { read: 110_425, write: 4_000 } }
         expect(yield* compact.isOverflow({ tokens, model })).toBe(true)
       }),
     ),
@@ -505,15 +505,15 @@ describe("session.compaction.isOverflow", () => {
         const withInputLimit = createModel({ context: 200_000, input: 200_000, output: 32_000 })
         const withoutInputLimit = createModel({ context: 200_000, output: 32_000 })
 
-        // 170K total tokens — well above context-output (168K) but below input limit (200K)
-        const tokens = { input: 166_000, output: 10_000, reasoning: 0, cache: { read: 5_000, write: 0 } }
+        // 181K non-cache tokens — above both proactive thresholds.
+        const tokens = { input: 171_000, output: 10_000, reasoning: 0, cache: { read: 5_000, write: 0 } }
 
         const withLimit = yield* compact.isOverflow({ tokens, model: withInputLimit })
         const withoutLimit = yield* compact.isOverflow({ tokens, model: withoutInputLimit })
 
         // Both models have identical real capacity — they should agree:
-        expect(withLimit).toBe(true) // should compact (170K leaves no room for 32K output)
-        expect(withoutLimit).toBe(true) // correctly compacts (170K > 168K)
+        expect(withLimit).toBe(true) // should compact (181K leaves no room for 32K output)
+        expect(withoutLimit).toBe(true) // correctly compacts (181K > 168K)
       }),
     ),
   )
@@ -1430,8 +1430,8 @@ describe("session.compaction.process", () => {
         expect(captured).toContain("<previous-summary>")
         expect(captured).toContain("summary one")
         expect(captured.match(/summary one/g)?.length).toBe(1)
-        expect(captured).toContain("## Important Details")
-        expect(captured).toContain("## Work State")
+        expect(captured).toContain("## Constraints & Preferences")
+        expect(captured).toContain("## Progress")
       }).pipe(withCompaction({ llm: stub.llmLayer }))
     },
     { git: true },
