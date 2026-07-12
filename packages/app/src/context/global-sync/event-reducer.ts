@@ -342,23 +342,14 @@ export function applyDirectoryEvent(input: {
       input.setStore(
         produce((draft) => {
           delete draft.part_text_accum_delta[props.partID]
+          const parts = draft.part[props.messageID]
+          if (!parts) return
+          const result = Binary.search(parts, props.partID, (part) => part.id)
+          if (!result.found) return
+          parts.splice(result.index, 1)
+          if (parts.length === 0) delete draft.part[props.messageID]
         }),
       )
-      const parts = input.store.part[props.messageID]
-      if (!parts) break
-      const result = Binary.search(parts, props.partID, (part) => part.id)
-      if (result.found) {
-        input.setStore(
-          produce((draft) => {
-            const list = draft.part[props.messageID]
-            if (!list) return
-            const next = Binary.search(list, props.partID, (part) => part.id)
-            if (!next.found) return
-            list.splice(next.index, 1)
-            if (list.length === 0) delete draft.part[props.messageID]
-          }),
-        )
-      }
       break
     }
     case "message.part.delta": {

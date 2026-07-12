@@ -372,6 +372,7 @@ describe("applyDirectoryEvent", () => {
       baseState({
         message: { [sessionID]: [userMessage("msg_z", sessionID, 1), userMessage("msg_b", sessionID, 3)] },
         part: { msg_a: [textPart("prt_1", sessionID, "msg_a")] },
+        part_text_accum_delta: { prt_1: "streaming" },
       }),
     )
 
@@ -416,6 +417,7 @@ describe("applyDirectoryEvent", () => {
 
     expect(store.message[sessionID]?.map((x) => x.id)).toEqual(["msg_z", "msg_b"])
     expect(store.part.msg_a).toBeUndefined()
+    expect(store.part_text_accum_delta.prt_1).toBeUndefined()
   })
 
   test("upserts and prunes message parts", () => {
@@ -424,6 +426,7 @@ describe("applyDirectoryEvent", () => {
     const [store, setStore] = createStore(
       baseState({
         part: { [messageID]: [textPart("prt_1", sessionID, messageID), textPart("prt_3", sessionID, messageID)] },
+        part_text_accum_delta: { prt_1: "one", prt_2: "two", prt_3: "three" },
       }),
     )
 
@@ -483,6 +486,23 @@ describe("applyDirectoryEvent", () => {
     })
 
     expect(store.part[messageID]).toBeUndefined()
+    expect(store.part_text_accum_delta).toEqual({})
+  })
+
+  test("orphan part removals clear accumulated text without creating arrays", () => {
+    const [store, setStore] = createStore(baseState({ part_text_accum_delta: { prt_orphan: "streaming" } }))
+
+    applyDirectoryEvent({
+      event: { type: "message.part.removed", properties: { messageID: "msg_orphan", partID: "prt_orphan" } },
+      store,
+      setStore,
+      push() {},
+      directory: "/tmp",
+      loadLsp() {},
+    })
+
+    expect(store.part.msg_orphan).toBeUndefined()
+    expect(store.part_text_accum_delta.prt_orphan).toBeUndefined()
   })
 
   test("tracks permission and question request lifecycles", () => {
