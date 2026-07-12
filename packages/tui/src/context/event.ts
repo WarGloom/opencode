@@ -3,6 +3,7 @@ import { useSDK } from "./sdk"
 
 type EventMetadata = {
   directory: string
+  project: string | undefined
   workspace: string | undefined
 }
 
@@ -15,7 +16,7 @@ export function useEvent() {
         return
       }
 
-      handler(event.payload, { directory: event.directory, workspace: event.workspace })
+      handler(event.payload, { directory: event.directory, project: event.project, workspace: event.workspace })
     })
   }
 
