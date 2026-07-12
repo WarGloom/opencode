@@ -87,7 +87,7 @@ function partData(part: (typeof SessionV1.Event.PartUpdated.Type)["data"]["part"
 }
 
 function applyUsage(
-  db: DatabaseService,
+  db: Pick<DatabaseService, "update">,
   sessionID: (typeof SessionV1.Event.MessageUpdated.Type)["data"]["sessionID"],
   value: Usage,
   sign = 1,
@@ -272,59 +272,65 @@ const layer = Layer.effectDiscard(
       }),
     )
     yield* events.project(SessionV1.Event.MessageRemoved, (event) =>
-      Effect.gen(function* () {
-        const rows = yield* db
-          .select()
-          .from(PartTable)
-          .where(and(eq(PartTable.message_id, event.data.messageID), eq(PartTable.session_id, event.data.sessionID)))
-          .all()
-          .pipe(Effect.orDie)
-        for (const row of rows) {
-          const previous = usage(row.data)
-          if (previous) yield* applyUsage(db, event.data.sessionID, previous, -1)
-        }
-        yield* db
-          .delete(MessageTable)
-          .where(and(eq(MessageTable.id, event.data.messageID), eq(MessageTable.session_id, event.data.sessionID)))
-          .run()
-          .pipe(Effect.orDie)
-      }),
+      db.transaction((tx) =>
+        Effect.gen(function* () {
+          const rows = yield* tx
+            .select()
+            .from(PartTable)
+            .where(and(eq(PartTable.message_id, event.data.messageID), eq(PartTable.session_id, event.data.sessionID)))
+            .all()
+            .pipe(Effect.orDie)
+          for (const row of rows) {
+            const previous = usage(row.data)
+            if (previous) yield* applyUsage(tx, event.data.sessionID, previous, -1)
+          }
+          yield* tx
+            .delete(MessageTable)
+            .where(and(eq(MessageTable.id, event.data.messageID), eq(MessageTable.session_id, event.data.sessionID)))
+            .run()
+            .pipe(Effect.orDie)
+        }),
+      ).pipe(Effect.orDie),
     )
     yield* events.project(SessionV1.Event.PartRemoved, (event) =>
-      Effect.gen(function* () {
-        const row = yield* db
-          .select()
-          .from(PartTable)
-          .where(and(eq(PartTable.id, event.data.partID), eq(PartTable.session_id, event.data.sessionID)))
-          .get()
-          .pipe(Effect.orDie)
-        const previous = row && usage(row.data)
-        if (previous) yield* applyUsage(db, event.data.sessionID, previous, -1)
-        yield* db
-          .delete(PartTable)
-          .where(and(eq(PartTable.id, event.data.partID), eq(PartTable.session_id, event.data.sessionID)))
-          .run()
-          .pipe(Effect.orDie)
-      }),
+      db.transaction((tx) =>
+        Effect.gen(function* () {
+          const row = yield* tx
+            .select()
+            .from(PartTable)
+            .where(and(eq(PartTable.id, event.data.partID), eq(PartTable.session_id, event.data.sessionID)))
+            .get()
+            .pipe(Effect.orDie)
+          const previous = row && usage(row.data)
+          if (previous) yield* applyUsage(tx, row.session_id, previous, -1)
+          yield* tx
+            .delete(PartTable)
+            .where(and(eq(PartTable.id, event.data.partID), eq(PartTable.session_id, event.data.sessionID)))
+            .run()
+            .pipe(Effect.orDie)
+        }),
+      ).pipe(Effect.orDie),
     )
     yield* events.project(SessionV1.Event.PartUpdated, (event) =>
-      Effect.gen(function* () {
-        const id = event.data.part.id
-        const messageID = event.data.part.messageID
-        const sessionID = event.data.part.sessionID
-        const data = partData(event.data.part)
-        const row = yield* db.select().from(PartTable).where(eq(PartTable.id, id)).get().pipe(Effect.orDie)
-        yield* db
-          .insert(PartTable)
-          .values({ id, message_id: messageID, session_id: sessionID, time_created: event.data.time, data })
-          .onConflictDoUpdate({ target: PartTable.id, set: { data } })
-          .run()
-          .pipe(Effect.orDie)
-        const previous = row && usage(row.data)
-        const next = usage(event.data.part)
-        if (previous) yield* applyUsage(db, row.session_id, previous, -1)
-        if (next) yield* applyUsage(db, sessionID, next)
-      }),
+      db.transaction((tx) =>
+        Effect.gen(function* () {
+          const id = event.data.part.id
+          const messageID = event.data.part.messageID
+          const sessionID = event.data.part.sessionID
+          const data = partData(event.data.part)
+          const row = yield* tx.select().from(PartTable).where(eq(PartTable.id, id)).get().pipe(Effect.orDie)
+          yield* tx
+            .insert(PartTable)
+            .values({ id, message_id: messageID, session_id: sessionID, time_created: event.data.time, data })
+            .onConflictDoUpdate({ target: PartTable.id, set: { data } })
+            .run()
+            .pipe(Effect.orDie)
+          const previous = row && usage(row.data)
+          const next = usage(event.data.part)
+          if (previous) yield* applyUsage(tx, row.session_id, previous, -1)
+          if (next) yield* applyUsage(tx, sessionID, next)
+        }),
+      ).pipe(Effect.orDie),
     )
     yield* events.project(SessionEvent.AgentSwitched, (event) =>
       db
