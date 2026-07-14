@@ -156,6 +156,66 @@ describe("tool.apply_patch freeform", () => {
   )
 
   it.instance(
+    "persists diagnostics only for non-deleted patch destinations",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { ctx } = makeCtx()
+        const addedPath = path.join(test.directory, "added.txt")
+        const updatedPath = path.join(test.directory, "updated.txt")
+        const deletedPath = path.join(test.directory, "deleted.txt")
+        const moveSourcePath = path.join(test.directory, "move-source.txt")
+        const moveDestinationPath = path.join(test.directory, "move-destination.txt")
+        const unrelatedPath = path.join(test.directory, "unrelated.txt")
+        yield* writeText(updatedPath, "before\n")
+        yield* writeText(deletedPath, "delete me\n")
+        yield* writeText(moveSourcePath, "move me\n")
+
+        const diagnostic = {
+          range: {
+            start: { line: 0, character: 0 },
+            end: { line: 0, character: 1 },
+          },
+          message: "cached diagnostic",
+        }
+        const cachedDiagnostics = {
+          [FSUtil.normalizePath(addedPath)]: [diagnostic],
+          [FSUtil.normalizePath(updatedPath)]: [diagnostic],
+          [FSUtil.normalizePath(deletedPath)]: [diagnostic],
+          [FSUtil.normalizePath(moveSourcePath)]: [diagnostic],
+          [FSUtil.normalizePath(moveDestinationPath)]: [diagnostic],
+          [FSUtil.normalizePath(unrelatedPath)]: [diagnostic],
+        }
+        const diagnosticRequests: string[][] = []
+        const lspLayer = Layer.mock(LSP.Service, {
+          touchFile: () => Effect.void,
+          diagnostics: () => Effect.succeed(cachedDiagnostics),
+          diagnosticsFor: (paths) =>
+            Effect.sync(() => {
+              diagnosticRequests.push([...paths])
+              return Object.fromEntries(
+                paths.flatMap((filePath) => {
+                  const normalizedPath = FSUtil.normalizePath(filePath)
+                  const items = cachedDiagnostics[normalizedPath]
+                  return items ? [[normalizedPath, items] as const] : []
+                }),
+              )
+            }),
+        })
+        const patchText =
+          "*** Begin Patch\n*** Add File: added.txt\n+added\n*** Update File: updated.txt\n@@\n-before\n+after\n*** Delete File: deleted.txt\n*** Update File: move-source.txt\n*** Move to: move-destination.txt\n@@\n-move me\n+moved\n*** End Patch"
+
+        const result = yield* execute({ patchText }, ctx).pipe(Effect.provide(lspLayer))
+
+        expect(Object.keys(result.metadata.diagnostics).sort()).toEqual(
+          [addedPath, updatedPath, moveDestinationPath].map(FSUtil.normalizePath).sort(),
+        )
+        expect(diagnosticRequests).toEqual([[addedPath, updatedPath, moveDestinationPath]])
+      }),
+    { git: true },
+  )
+
+  it.instance(
     "permission metadata includes move file info",
     () =>
       Effect.gen(function* () {
