@@ -122,6 +122,7 @@ export interface Interface {
   readonly hasClients: (file: string) => Effect.Effect<boolean>
   readonly touchFile: (input: string, diagnostics?: "document" | "full") => Effect.Effect<void>
   readonly diagnostics: () => Effect.Effect<Record<string, LSPClient.Diagnostic[]>>
+  readonly diagnosticsFor: (paths: readonly string[]) => Effect.Effect<Record<string, LSPClient.Diagnostic[]>>
   readonly hover: (input: LocInput) => Effect.Effect<any>
   readonly definition: (input: LocInput) => Effect.Effect<any[]>
   readonly references: (input: LocInput) => Effect.Effect<any[]>
@@ -361,9 +362,8 @@ const layer = Layer.effect(
       )
     })
 
-    const diagnostics = Effect.fn("LSP.diagnostics")(function* () {
+    const mergeDiagnostics = (all: Map<string, LSPClient.Diagnostic[]>[]) => {
       const results: Record<string, LSPClient.Diagnostic[]> = {}
-      const all = yield* runAll(async (client) => client.diagnostics)
       for (const result of all) {
         for (const [p, diags] of result.entries()) {
           const arr = results[p] || []
@@ -372,6 +372,14 @@ const layer = Layer.effect(
         }
       }
       return results
+    }
+
+    const diagnostics = Effect.fn("LSP.diagnostics")(function* () {
+      return mergeDiagnostics(yield* runAll(async (client) => client.diagnostics))
+    })
+
+    const diagnosticsFor = Effect.fn("LSP.diagnosticsFor")(function* (paths: readonly string[]) {
+      return mergeDiagnostics(yield* runAll(async (client) => client.diagnosticsFor(paths)))
     })
 
     const hover = Effect.fn("LSP.hover")(function* (input: LocInput) {
@@ -483,6 +491,7 @@ const layer = Layer.effect(
       hasClients,
       touchFile,
       diagnostics,
+      diagnosticsFor,
       hover,
       definition,
       references,

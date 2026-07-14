@@ -42,6 +42,15 @@ describe("LSP service lifecycle", () => {
     ),
   )
 
+  it.instance("diagnosticsFor() returns empty object without cached paths", () =>
+    LSP.Service.use((lsp) =>
+      Effect.gen(function* () {
+        const result = yield* lsp.diagnosticsFor([path.join((yield* TestInstance).directory, "test.ts")])
+        expect(result).toEqual({})
+      }),
+    ),
+  )
+
   it.instance("hasClients() returns false for .ts files in instance when LSP is unset", () =>
     LSP.Service.use((lsp) =>
       Effect.gen(function* () {
