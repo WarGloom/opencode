@@ -627,6 +627,17 @@ export async function create(input: {
       }
       return result
     },
+    diagnosticsFor(paths: readonly string[]) {
+      const result = new Map<string, Diagnostic[]>()
+      for (const filePath of paths) {
+        const normalizedPath = Filesystem.normalizePath(
+          path.isAbsolute(filePath) ? filePath : path.resolve(input.directory, filePath),
+        )
+        if (!pushDiagnostics.has(normalizedPath) && !pullDiagnostics.has(normalizedPath)) continue
+        result.set(normalizedPath, mergedDiagnostics(normalizedPath))
+      }
+      return result
+    },
     async waitForDiagnostics(request: { path: string; version: number; mode?: "document" | "full"; after?: number }) {
       const normalizedPath = Filesystem.normalizePath(
         path.isAbsolute(request.path) ? request.path : path.resolve(input.directory, request.path),
