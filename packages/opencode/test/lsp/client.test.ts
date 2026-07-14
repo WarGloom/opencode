@@ -445,6 +445,11 @@ describe("LSPClient interop", () => {
         expect(client.diagnostics.get(file)?.[0]?.message).toBe("current file")
         expect(client.diagnostics.get(related)?.[0]?.message).toBe("workspace file")
 
+        const requested = client.diagnosticsFor([path.relative(tmp.path, file)])
+        expect([...requested.keys()]).toEqual([file])
+        expect(requested.get(file)?.[0]?.message).toBe("current file")
+        expect(client.diagnostics.get(related)?.[0]?.message).toBe("workspace file")
+
         await client.shutdown()
       },
     })
