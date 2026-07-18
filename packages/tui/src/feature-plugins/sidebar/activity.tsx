@@ -34,11 +34,9 @@ export function Activity(props: { api: ActivityApi }) {
         <box
           flexDirection="row"
           gap={1}
-          onMouseDown={() => activity().sessions.length > 2 && setOpen((value) => !value)}
+          onMouseDown={() => setOpen((value) => !value)}
         >
-          <Show when={activity().sessions.length > 2}>
-            <text fg={theme().text}>{open() ? "▼" : "▶"}</text>
-          </Show>
+          <text fg={theme().text}>{open() ? "▼" : "▶"}</text>
           <text fg={theme().text}>
             <b>Activity</b>
             <Show when={summary()}>
@@ -46,7 +44,7 @@ export function Activity(props: { api: ActivityApi }) {
             </Show>
           </text>
         </box>
-        <Show when={activity().sessions.length <= 2 || open()}>
+        <Show when={open()}>
           <For each={activity().sessions}>
             {(session) => (
               <box
