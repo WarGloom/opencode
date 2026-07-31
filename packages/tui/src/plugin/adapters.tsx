@@ -16,6 +16,7 @@ import { Prompt } from "../component/prompt"
 import type { useToast } from "../ui/toast"
 import * as Keymap from "../keymap"
 import { createCommandShim } from "./command-shim"
+import { createActivity } from "./activity"
 import type { PluginRoutes } from "./api"
 export type { RouteMap } from "./api"
 export { createPluginRoutes, createTuiApi } from "./api"
@@ -146,6 +147,14 @@ function stateApi(sync: ReturnType<typeof useSync>): TuiPluginApi["state"] {
     },
     part(messageID) {
       return sync.data.part[messageID] ?? []
+    },
+    activity() {
+      return createActivity({
+        sessions: sync.data.session,
+        statuses: sync.data.session_status,
+        messages: sync.data.message,
+        parts: Object.values(sync.data.part).flat(),
+      })
     },
     lsp() {
       return sync.data.lsp.map((item) => ({ id: item.id, root: item.root, status: item.status }))

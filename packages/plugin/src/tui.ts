@@ -372,6 +372,22 @@ export type TuiKV = {
   readonly ready: boolean
 }
 
+export type TuiActivitySession = {
+  readonly id: string
+  readonly title: string
+  readonly parentID?: string
+  readonly agent?: string
+  readonly status: Exclude<SessionStatus["type"], "idle">
+}
+
+export type TuiActivity = {
+  readonly sessions: ReadonlyArray<TuiActivitySession>
+  readonly agents: number
+  readonly subagents: number
+  readonly tasks: number
+  readonly commands: number
+}
+
 export type TuiState = {
   readonly ready: boolean
   readonly config: SdkConfig
@@ -394,6 +410,7 @@ export type TuiState = {
     question: (sessionID: string) => ReadonlyArray<QuestionRequest>
   }
   part: (messageID: string) => ReadonlyArray<Part>
+  activity: () => TuiActivity
   lsp: () => ReadonlyArray<TuiSidebarLspItem>
   mcp: () => ReadonlyArray<TuiSidebarMcpItem>
 }
