@@ -1,5 +1,4 @@
 import { Effect, Option, Schema, Scope, Stream } from "effect"
-import { NonNegativeInt } from "@opencode-ai/core/schema"
 import * as path from "path"
 import * as Tool from "./tool"
 import { FSUtil } from "@opencode-ai/core/fs-util"
@@ -9,6 +8,8 @@ import { InstanceState } from "@/effect/instance-state"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { Instruction } from "../session/instruction"
 import { isPdfAttachment, sniffAttachmentMime } from "@/util/media"
+import { NonNegativeIntCoerce, PositiveIntCoerce } from "./coerce-number"
+import { Reference } from "@opencode-ai/core/reference"
 
 const DEFAULT_READ_LIMIT = 2000
 const MAX_LINE_LENGTH = 2000
@@ -20,19 +21,23 @@ const SUPPORTED_IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "
 
 class ReadStop extends Schema.TaggedErrorClass<ReadStop>()("ReadStop", {}) {}
 
-// `offset` and `limit` were originally `z.coerce.number()` — the runtime
-// coercion was useful when the tool was called from a shell but serves no
-// purpose in the LLM tool-call path (the model emits typed JSON). The JSON
-// Schema output is identical (`type: "number"`), so the LLM view is
-// unchanged; purely CLI-facing uses must now send numbers rather than strings.
-export const Parameters = Schema.Struct({
-  filePath: Schema.String.annotate({ description: "The absolute path to the file or directory to read" }),
-  offset: Schema.optional(NonNegativeInt).annotate({
+const CommonParameters = {
+  offset: Schema.optional(PositiveIntCoerce).annotate({
     description: "The line number to start reading from (1-indexed)",
   }),
-  limit: Schema.optional(NonNegativeInt).annotate({
+  limit: Schema.optional(NonNegativeIntCoerce).annotate({
     description: "The maximum number of lines to read (defaults to 2000)",
   }),
+}
+
+export const Parameters = Schema.Struct({
+  filePath: Schema.optional(
+    Schema.String.annotate({ description: "The absolute path to the file or directory to read" }),
+  ),
+  file_path: Schema.optional(
+    Schema.String.annotate({ description: "Alias for filePath. The absolute path to the file or directory to read" }),
+  ),
+  ...CommonParameters,
 })
 
 type Display =
@@ -230,8 +235,15 @@ export const ReadTool = Tool.define<
       params: Schema.Schema.Type<typeof Parameters>,
       ctx: Tool.Context<Metadata>,
     ) {
+      if (params.offset !== undefined && params.offset < 1) {
+        return yield* Effect.fail(new Error("offset must be greater than or equal to 1"))
+      }
+
       const instance = yield* InstanceState.context
-      let filepath = params.filePath
+      let filepath = params.filePath ?? params.file_path
+      if (!filepath) {
+        return yield* Effect.fail(new Error("filePath is required"))
+      }
       if (!path.isAbsolute(filepath)) {
         filepath = path.resolve(instance.directory, filepath)
       }
@@ -264,7 +276,7 @@ export const ReadTool = Tool.define<
       if (stat.type === "Directory") {
         const items = yield* list(filepath)
         const limit = params.limit ?? DEFAULT_READ_LIMIT
-        const offset = params.offset || 1
+        const offset = params.offset ?? 1
         const start = offset - 1
         const sliced = items.slice(start, start + limit)
         const truncated = start + sliced.length < items.length
@@ -328,7 +340,7 @@ export const ReadTool = Tool.define<
         return yield* Effect.fail(new Error(`Cannot read binary file: ${filepath}`))
       }
 
-      const file = yield* lines(filepath, { limit: params.limit ?? DEFAULT_READ_LIMIT, offset: params.offset || 1 })
+      const file = yield* lines(filepath, { limit: params.limit ?? DEFAULT_READ_LIMIT, offset: params.offset ?? 1 })
       if (file.count < file.offset && !(file.count === 0 && file.offset === 1)) {
         return yield* Effect.fail(
           new Error(`Offset ${file.offset} is out of range for this file (${file.count} lines)`),
