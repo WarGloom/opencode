@@ -49,6 +49,104 @@ describe("tool schema projections", () => {
     })
   })
 
+  test("gemini preserves required-only alias branches as valid object schemas", () => {
+    expect(
+      ToolSchemaProjection.gemini({
+        type: "object",
+        properties: {
+          changes: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                path: { type: "string" },
+                operation: { type: "string" },
+                op: { type: "string" },
+                action: { type: "string" },
+              },
+              required: ["path"],
+              anyOf: [{ required: ["operation"] }, { required: ["op"] }, { required: ["action"] }],
+            },
+          },
+        },
+      }),
+    ).toEqual({
+      type: "object",
+      properties: {
+        changes: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              path: { type: "string" },
+              operation: { type: "string" },
+              op: { type: "string" },
+              action: { type: "string" },
+            },
+            required: ["path"],
+            anyOf: [
+              {
+                type: "object",
+                properties: { operation: { type: "string" } },
+                required: ["operation"],
+              },
+              {
+                type: "object",
+                properties: { op: { type: "string" } },
+                required: ["op"],
+              },
+              {
+                type: "object",
+                properties: { action: { type: "string" } },
+                required: ["action"],
+              },
+            ],
+          },
+        },
+      },
+    })
+  })
+
+  test("gemini drops malformed required values and inherited property names", () => {
+    const stringRequired: Record<string, unknown> = {}
+    Object.defineProperty(stringRequired, "required", { value: "own", enumerable: true })
+    const objectRequired: Record<string, unknown> = {}
+    Object.defineProperty(objectRequired, "required", { value: { field: "own" }, enumerable: true })
+    const nonStringRequired: Record<string, unknown> = {}
+    Object.defineProperty(nonStringRequired, "required", { value: [42], enumerable: true })
+    const items: Record<string, unknown> = {
+      type: "object",
+      properties: { own: { type: "string" } },
+      anyOf: [stringRequired, objectRequired, nonStringRequired],
+    }
+    Object.defineProperty(items, "required", { value: ["own", "toString", 42], enumerable: true })
+
+    expect(
+      ToolSchemaProjection.gemini({
+        type: "object",
+        properties: {
+          changes: {
+            type: "array",
+            items,
+          },
+        },
+      }),
+    ).toEqual({
+      type: "object",
+      properties: {
+        changes: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: { own: { type: "string" } },
+            required: ["own"],
+            anyOf: [{}, {}, {}],
+          },
+        },
+      },
+    })
+  })
+
   test("openai keeps one flat object top-level schema", () => {
     expect(
       ToolSchemaProjection.openAI({

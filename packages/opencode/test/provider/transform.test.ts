@@ -7,6 +7,7 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { ModelsDev } from "@opencode-ai/core/models-dev"
 import { generateText, jsonSchema, type ModelMessage } from "ai"
 import { createAmazonBedrock } from "@ai-sdk/amazon-bedrock"
+import type { JSONSchema7 } from "@ai-sdk/provider"
 
 describe("ProviderTransform.options - setCacheKey", () => {
   const sessionID = "test-session-123"
@@ -218,6 +219,27 @@ describe("ProviderTransform.options - setCacheKey", () => {
       providerOptions: {},
     })
     expect(result.store).toBe(false)
+  })
+
+  test("should not set store=false for gemini served through github-copilot", () => {
+    const copilotGeminiModel = {
+      ...mockModel,
+      id: "github-copilot/gemini-3.1-pro-preview",
+      providerID: "github-copilot",
+      api: {
+        id: "gemini-3.1-pro-preview",
+        url: "https://api.githubcopilot.com",
+        npm: "@ai-sdk/github-copilot",
+      },
+    }
+
+    const result = ProviderTransform.options({
+      model: copilotGeminiModel,
+      sessionID,
+      providerOptions: {},
+    })
+
+    expect(result.store).toBeUndefined()
   })
 
   test("should set store=false for azure provider by default", () => {
@@ -1298,6 +1320,107 @@ describe("ProviderTransform.schema - gemini combiner nodes", () => {
     expect(result.properties.edits.items.type).toBeUndefined()
   })
 
+  test("projects required-only anyOf branches as explicit object schemas", () => {
+    const schema: JSONSchema7 = {
+      type: "object",
+      properties: {
+        changes: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              path: { type: "string" },
+              operation: { type: "string" },
+              op: { type: "string" },
+              action: { type: "string" },
+            },
+            required: ["path"],
+            anyOf: [{ required: ["operation"] }, { required: ["op"] }, { required: ["action"] }],
+          },
+        },
+      },
+    }
+
+    const result = ProviderTransform.schema(geminiModel, schema)
+
+    expect(result).toEqual({
+      type: "object",
+      properties: {
+        changes: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              path: { type: "string" },
+              operation: { type: "string" },
+              op: { type: "string" },
+              action: { type: "string" },
+            },
+            required: ["path"],
+            anyOf: [
+              {
+                type: "object",
+                properties: { operation: { type: "string" } },
+                required: ["operation"],
+              },
+              {
+                type: "object",
+                properties: { op: { type: "string" } },
+                required: ["op"],
+              },
+              {
+                type: "object",
+                properties: { action: { type: "string" } },
+                required: ["action"],
+              },
+            ],
+          },
+        },
+      },
+    })
+  })
+
+  test("drops malformed required values and inherited property names", () => {
+    const stringRequired: JSONSchema7 = {}
+    Object.defineProperty(stringRequired, "required", { value: "own", enumerable: true })
+    const objectRequired: JSONSchema7 = {}
+    Object.defineProperty(objectRequired, "required", { value: { field: "own" }, enumerable: true })
+    const nonStringRequired: JSONSchema7 = {}
+    Object.defineProperty(nonStringRequired, "required", { value: [42], enumerable: true })
+    const items: JSONSchema7 = {
+      type: "object",
+      properties: { own: { type: "string" } },
+      anyOf: [stringRequired, objectRequired, nonStringRequired],
+    }
+    Object.defineProperty(items, "required", { value: ["own", "toString", 42], enumerable: true })
+    const schema: JSONSchema7 = {
+      type: "object",
+      properties: {
+        changes: {
+          type: "array",
+          items,
+        },
+      },
+    }
+
+    const result = ProviderTransform.schema(geminiModel, schema)
+
+    expect(result).toEqual({
+      type: "object",
+      properties: {
+        changes: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: { own: { type: "string" } },
+            required: ["own"],
+            anyOf: [{}, {}, {}],
+          },
+        },
+      },
+    })
+  })
+
   test("does not add sibling keys to combiner nodes during sanitize", () => {
     const schema = {
       type: "object",
@@ -1648,6 +1771,89 @@ describe("ProviderTransform.schema - openai supported schema subset", () => {
         },
       },
     })
+  })
+})
+
+describe("ProviderTransform.schema - anthropic top-level composition", () => {
+  const anthropicModel = {
+    providerID: "anthropic",
+    api: {
+      id: "claude-opus-4",
+      npm: "@ai-sdk/anthropic",
+    },
+  } as any
+
+  test("leaves a plain object schema untouched", () => {
+    const result = ProviderTransform.schema(anthropicModel, {
+      type: "object",
+      properties: { query: { type: "string" } },
+      required: ["query"],
+    } as any) as any
+    expect(result).toEqual({
+      type: "object",
+      properties: { query: { type: "string" } },
+      required: ["query"],
+    })
+  })
+
+  test("merges a top-level allOf of object members", () => {
+    const result = ProviderTransform.schema(anthropicModel, {
+      allOf: [
+        { type: "object", properties: { a: { type: "string" } }, required: ["a"] },
+        { type: "object", properties: { b: { type: "number" } }, required: ["b"] },
+      ],
+    } as any) as any
+    expect(result.type).toBe("object")
+    expect(result.allOf).toBeUndefined()
+    expect(result.properties).toEqual({ a: { type: "string" }, b: { type: "number" } })
+    expect(result.required.sort()).toEqual(["a", "b"])
+  })
+
+  test("merges a top-level anyOf of object members without requiring any field", () => {
+    const result = ProviderTransform.schema(anthropicModel, {
+      anyOf: [
+        { type: "object", properties: { a: { type: "string" } }, required: ["a"] },
+        { type: "object", properties: { b: { type: "number" } }, required: ["b"] },
+      ],
+    } as any) as any
+    expect(result.type).toBe("object")
+    expect(result.anyOf).toBeUndefined()
+    expect(result.properties).toEqual({ a: { type: "string" }, b: { type: "number" } })
+    expect(result.required).toBeUndefined()
+  })
+
+  test("collapses a top-level oneOf to a permissive object when members are not all objects", () => {
+    const result = ProviderTransform.schema(anthropicModel, {
+      description: "pick one",
+      oneOf: [{ type: "object", properties: { a: { type: "string" } } }, { type: "string" }],
+    } as any) as any
+    expect(result.type).toBe("object")
+    expect(result.oneOf).toBeUndefined()
+    expect(result.additionalProperties).toBe(true)
+    expect(result.description).toBe("pick one")
+  })
+
+  test("absorbs a top-level anyOf that sits beside a type keyword", () => {
+    const result = ProviderTransform.schema(anthropicModel, {
+      type: "object",
+      anyOf: [
+        { type: "object", properties: { a: { type: "string" } } },
+        { type: "object", properties: { b: { type: "string" } } },
+      ],
+    } as any) as any
+    expect(result.anyOf).toBeUndefined()
+    expect(result.type).toBe("object")
+    expect(result.properties).toEqual({ a: { type: "string" }, b: { type: "string" } })
+  })
+
+  test("leaves nested composition untouched", () => {
+    const result = ProviderTransform.schema(anthropicModel, {
+      type: "object",
+      properties: {
+        choice: { anyOf: [{ type: "string" }, { type: "number" }] },
+      },
+    } as any) as any
+    expect(result.properties.choice.anyOf).toEqual([{ type: "string" }, { type: "number" }])
   })
 })
 
@@ -4843,6 +5049,26 @@ describe("ProviderTransform.variants", () => {
         releaseDate: "2026-04-23",
         efforts: ["none", "low", "medium", "high", "xhigh"],
       },
+      {
+        id: "gpt-5.6",
+        releaseDate: "2026-07-09",
+        efforts: ["none", "low", "medium", "high", "xhigh", "max"],
+      },
+      {
+        id: "gpt-5.6-luna",
+        releaseDate: "2026-07-09",
+        efforts: ["none", "low", "medium", "high", "xhigh", "max"],
+      },
+      {
+        id: "gpt-5.6-sol",
+        releaseDate: "2026-07-09",
+        efforts: ["none", "low", "medium", "high", "xhigh", "max"],
+      },
+      {
+        id: "gpt-5.6-terra",
+        releaseDate: "2026-07-09",
+        efforts: ["none", "low", "medium", "high", "xhigh", "max"],
+      },
       { id: "gpt-5.4-pro", releaseDate: "2026-03-05", efforts: ["medium", "high", "xhigh"] },
       { id: "gpt-5.5-pro", releaseDate: "2026-04-23", efforts: ["medium", "high", "xhigh"] },
       { id: "gpt-5-codex", releaseDate: "2025-09-23", efforts: ["low", "medium", "high"] },
@@ -5559,6 +5785,22 @@ describe("ProviderTransform.smallOptions - gpt-5 chat/search", () => {
     model.variants = ProviderTransform.variants(model)
     return model
   }
+
+  test("github-copilot gemini omits store=false", () => {
+    const model = {
+      ...createModel("gpt-5-chat-latest"),
+      id: "github-copilot/gemini-3.1-pro-preview",
+      providerID: "github-copilot",
+      api: {
+        id: "gemini-3.1-pro-preview",
+        url: "https://api.githubcopilot.com",
+        npm: "@ai-sdk/github-copilot",
+      },
+      variants: {},
+    }
+
+    expect(ProviderTransform.smallOptions(model)).toEqual({})
+  })
 
   for (const testCase of [
     { id: "gpt-5-chat-latest", options: { store: false } },
