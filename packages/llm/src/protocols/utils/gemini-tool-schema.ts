@@ -26,21 +26,44 @@ const hasCombiner = (schema: unknown) =>
 const hasSchemaIntent = (schema: unknown) =>
   isRecord(schema) && (hasCombiner(schema) || SCHEMA_INTENT_KEYS.some((key) => key in schema))
 
-const sanitizeNode = (schema: unknown): unknown => {
-  if (!isRecord(schema)) return Array.isArray(schema) ? schema.map(sanitizeNode) : schema
+const sanitizeNode = (schema: unknown, inheritedProperties?: Record<string, unknown>): unknown => {
+  if (!isRecord(schema)) return Array.isArray(schema) ? schema.map((entry) => sanitizeNode(entry)) : schema
 
+  const properties = isRecord(schema.properties) ? schema.properties : undefined
   const result: Record<string, unknown> = Object.fromEntries(
     Object.entries(schema).map(([key, value]) => [
       key,
-      key === "enum" && Array.isArray(value) ? value.map(String) : sanitizeNode(value),
+      key === "enum" && Array.isArray(value)
+        ? value.map(String)
+        : ["anyOf", "oneOf", "allOf"].includes(key) && Array.isArray(value)
+          ? value.map((entry) => sanitizeNode(entry, properties))
+          : sanitizeNode(value),
     ]),
   )
 
   if (Array.isArray(result.enum) && (result.type === "integer" || result.type === "number")) result.type = "string"
 
-  const properties = result.properties
-  if (result.type === "object" && isRecord(properties) && Array.isArray(result.required)) {
-    result.required = result.required.filter((field) => typeof field === "string" && field in properties)
+  const required = Array.isArray(result.required)
+    ? result.required.filter((field): field is string => typeof field === "string")
+    : undefined
+  if (result.type === "object") {
+    const projectedProperties = result.properties
+    if (required && isRecord(projectedProperties)) {
+      result.required = required.filter((field) => Object.hasOwn(projectedProperties, field))
+    } else if (Object.hasOwn(result, "required")) {
+      delete result.required
+    }
+  } else if (result.type === undefined && required?.length && inheritedProperties) {
+    const fields = required.filter((field) => Object.hasOwn(inheritedProperties, field))
+    if (fields.length) {
+      result.type = "object"
+      result.properties = Object.fromEntries(fields.map((field) => [field, sanitizeNode(inheritedProperties[field])]))
+      result.required = fields
+    } else {
+      delete result.required
+    }
+  } else if (Object.hasOwn(result, "required")) {
+    delete result.required
   }
 
   if (result.type === "array" && !hasCombiner(result)) {
