@@ -28,6 +28,10 @@ import { INTERACTIVE_INPUT_ERROR, resolveInteractiveStdin } from "./run/runtime.
 
 type ModelInput = Parameters<OpencodeClient["session"]["prompt"]>[0]["model"]
 
+export function resolveRunThinking(args: { thinking?: boolean; interactive?: boolean }): boolean {
+  return args.thinking ?? false
+}
+
 function pick(value: string | undefined): ModelInput | undefined {
   if (!value) return undefined
   const [providerID, ...rest] = value.split("/")
@@ -272,7 +276,7 @@ export const RunCommand = effectCmd({
       const rawMessage = [...args.message, ...(args["--"] || [])].join(" ")
       const interactive = args.mini
       const auto = args.auto || args.yolo || args["dangerously-skip-permissions"]
-      const thinking = interactive ? (args.thinking ?? true) : (args.thinking ?? false)
+      const thinking = resolveRunThinking({ thinking: args.thinking, interactive })
       const die = (message: string): never => {
         UI.error(message)
         process.exit(1)

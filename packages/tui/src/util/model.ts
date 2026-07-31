@@ -26,3 +26,9 @@ export function name(
 ) {
   return get(list, providerID, modelID)?.name ?? modelID
 }
+
+export function displayName(modelName: string, variant?: string) {
+  const label = variant?.trim().replace(/\s+/g, " ")
+  if (!label) return modelName
+  return `${modelName} (${label})`
+}
