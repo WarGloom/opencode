@@ -156,7 +156,7 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | Git.Service | EffectFl
                 // Discovery walks upward, so an enclosing repository with a
                 // matching origin could masquerade as the cache entry; reuse
                 // requires the checkout to live exactly at the cache path.
-                const worktree = existing ? yield* fs.resolve(localPath) : undefined
+                const worktree = existing ? FSUtil.resolve(localPath) : undefined
                 const reuse = Boolean(
                   existing &&
                     existing.worktree === worktree &&
