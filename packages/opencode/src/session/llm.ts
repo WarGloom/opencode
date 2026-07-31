@@ -404,7 +404,11 @@ const live: Layer.Layer<
             return Stream.fromAsyncIterable(result.result.fullStream, (e) =>
               e instanceof Error ? e : new Error(String(e)),
             ).pipe(
-              Stream.mapEffect((event) => LLMAISDK.toLLMEvents(state, event)),
+              Stream.mapEffect((event) =>
+                LLMAISDK.toLLMEvents(state, event, {
+                  ignoreMissingReasoningPartError: input.model.providerID.includes("github-copilot"),
+                }),
+              ),
               Stream.flatMap((events) => Stream.fromIterable(events)),
             )
           }),
