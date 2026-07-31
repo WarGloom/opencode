@@ -81,6 +81,15 @@ IMPORTANT:
 
 const STRUCTURED_OUTPUT_SYSTEM_PROMPT = `IMPORTANT: The user has requested structured output. You MUST use the StructuredOutput tool to provide your final response. Do NOT respond with plain text - you MUST call the StructuredOutput tool with your answer formatted according to the schema.`
 
+function isNativeCompactionContinuePart(part: SessionV1.Part) {
+  if (part.type !== "text") return false
+  if (part.synthetic !== true || part.metadata?.compaction_continue !== true) return false
+  return (
+    part.text === SessionCompaction.COMPACTION_CONTINUE_PROMPT ||
+    part.text.endsWith(`\n\n${SessionCompaction.COMPACTION_CONTINUE_PROMPT}`)
+  )
+}
+
 function mcpResourceBase64Size(value: string) {
   const trimmed = value.replace(/\s/g, "")
   const padding = trimmed.endsWith("==") ? 2 : trimmed.endsWith("=") ? 1 : 0
@@ -1097,6 +1106,29 @@ const layer = Layer.effect(
 
           if (!lastUser) throw new Error("No user message found in stream. This should never happen.")
 
+          const lastUserMsg = msgs.findLast((msg) => msg.info.role === "user" && msg.info.id === lastUser.id)
+          const isCompactionContinue =
+            lastUserMsg?.parts.some(isNativeCompactionContinuePart) ?? false
+          const compactionUserIDs = new Set(
+            msgs.flatMap((msg) =>
+              msg.info.role === "user" && msg.parts.some((part) => part.type === "compaction") ? [msg.info.id] : [],
+            ),
+          )
+          const compactedUserIDsAfterLastFinished =
+            lastFinished === undefined
+              ? new Set<typeof lastUser.id>()
+              : new Set(
+                  msgs.flatMap((msg) =>
+                    msg.info.role === "assistant" &&
+                    msg.info.summary === true &&
+                    !msg.info.error &&
+                    compactionUserIDs.has(msg.info.parentID) &&
+                    msg.info.parentID > lastFinished.id
+                      ? [msg.info.parentID]
+                      : [],
+                  ),
+                )
+          const hasCompactedAfterLastFinished = compactedUserIDsAfterLastFinished.size > 0
           const lastAssistantMsg = msgs.findLast(
             (msg) => msg.info.role === "assistant" && msg.info.id === lastAssistant?.id,
           )
@@ -1139,7 +1171,10 @@ const layer = Layer.effect(
             }).pipe(Effect.ignore, Effect.forkIn(scope))
 
           const model = yield* getModel(lastUser.model.providerID, lastUser.model.modelID, sessionID)
-          const task = tasks.pop()
+          let task = tasks.pop()
+          while (task?.type === "compaction" && compactedUserIDsAfterLastFinished.has(task.messageID as typeof lastUser.id)) {
+            task = tasks.pop()
+          }
 
           if (task?.type === "subtask") {
             yield* handleSubtask({ task, model, lastUser, sessionID, session, msgs })
@@ -1160,10 +1195,16 @@ const layer = Layer.effect(
 
           if (
             lastFinished &&
+            !hasCompactedAfterLastFinished &&
             lastFinished.summary !== true &&
             (yield* compaction.isOverflow({ tokens: lastFinished.tokens, model }))
           ) {
-            yield* compaction.create({ sessionID, agent: lastUser.agent, model: lastUser.model, auto: true })
+            yield* compaction.create({
+              sessionID,
+              agent: lastUser.agent,
+              model: lastUser.model,
+              auto: !isCompactionContinue,
+            })
             continue
           }
 
@@ -1318,11 +1359,12 @@ const layer = Layer.effect(
 
             if (result === "stop") return "break" as const
             if (result === "compact") {
+              if (hasCompactedAfterLastFinished) return "break" as const
               yield* compaction.create({
                 sessionID,
                 agent: lastUser.agent,
                 model: lastUser.model,
-                auto: true,
+                auto: !isCompactionContinue,
                 overflow: !handle.message.finish,
               })
             }
