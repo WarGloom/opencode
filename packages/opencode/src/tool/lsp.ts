@@ -6,6 +6,7 @@ import DESCRIPTION from "./lsp.txt"
 import { InstanceState } from "@/effect/instance-state"
 import { pathToFileURL } from "url"
 import { assertExternalDirectoryEffect } from "./external-directory"
+import { PositiveIntCoerce } from "./coerce-number"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 
 const operations = [
@@ -23,12 +24,8 @@ const operations = [
 export const Parameters = Schema.Struct({
   operation: Schema.Literals(operations).annotate({ description: "The LSP operation to perform" }),
   filePath: Schema.String.annotate({ description: "The absolute or relative path to the file" }),
-  line: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)).annotate({
-    description: "The line number (1-based, as shown in editors)",
-  }),
-  character: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)).annotate({
-    description: "The character offset (1-based, as shown in editors)",
-  }),
+  line: PositiveIntCoerce.annotate({ description: "The line number (1-based, as shown in editors)" }),
+  character: PositiveIntCoerce.annotate({ description: "The character offset (1-based, as shown in editors)" }),
   query: Schema.optional(Schema.String).annotate({
     description: "Search query for workspaceSymbol. Empty string requests all symbols.",
   }),

@@ -1,5 +1,6 @@
 import { Duration, Effect, Schema } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/unstable/http"
+import { NumberCoerce } from "./coerce-number"
 
 export const EXA_URL = process.env.EXA_API_KEY
   ? `https://mcp.exa.ai/mcp?exaApiKey=${encodeURIComponent(process.env.EXA_API_KEY)}`
@@ -43,9 +44,9 @@ export const parseResponse = Effect.fn("McpWebSearch.parseResponse")(function* (
 export const SearchArgs = Schema.Struct({
   query: Schema.String,
   type: Schema.String,
-  numResults: Schema.Number,
+  numResults: NumberCoerce,
   livecrawl: Schema.String,
-  contextMaxCharacters: Schema.optional(Schema.Number),
+  contextMaxCharacters: Schema.optional(NumberCoerce),
 })
 
 export const ParallelSearchArgs = Schema.Struct({
