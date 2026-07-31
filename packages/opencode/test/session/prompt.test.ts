@@ -554,6 +554,217 @@ it.instance("loop calls LLM and returns assistant message", () =>
   }),
 )
 
+it.instance(
+  "does not recompact an assistant already covered by a finish-less compaction summary",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({
+        title: "Compacted",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      const first = yield* user(chat.id, "first")
+      const preserved: SessionV1.Assistant = {
+        id: MessageID.ascending(),
+        role: "assistant",
+        parentID: first.id,
+        sessionID: chat.id,
+        mode: "build",
+        agent: "build",
+        cost: 0,
+        path: { cwd: "/tmp", root: "/tmp" },
+        tokens: { input: 3, output: 142, reasoning: 0, cache: { read: 0, write: 121_073 } },
+        modelID: ref.modelID,
+        providerID: ref.providerID,
+        time: { created: Date.now() },
+        finish: "stop",
+      }
+      yield* sessions.updateMessage(preserved)
+      yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: preserved.id,
+        sessionID: chat.id,
+        type: "text",
+        text: "preserved large reply",
+      })
+
+      const compact = yield* sessions.updateMessage({
+        id: MessageID.ascending(),
+        role: "user",
+        sessionID: chat.id,
+        agent: "build",
+        model: ref,
+        time: { created: Date.now() },
+      })
+      yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: compact.id,
+        sessionID: chat.id,
+        type: "compaction",
+        auto: true,
+        tail_start_id: first.id,
+      })
+      const summaryMsg: SessionV1.Assistant = {
+        id: MessageID.ascending(),
+        role: "assistant",
+        parentID: compact.id,
+        sessionID: chat.id,
+        mode: "compaction",
+        agent: "compaction",
+        cost: 0,
+        path: { cwd: "/tmp", root: "/tmp" },
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        modelID: ref.modelID,
+        providerID: ref.providerID,
+        time: { created: Date.now() },
+        summary: true,
+      }
+      yield* sessions.updateMessage(summaryMsg)
+      yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: summaryMsg.id,
+        sessionID: chat.id,
+        type: "text",
+        text: "summary",
+      })
+      const followup = yield* sessions.updateMessage({
+        id: MessageID.ascending(),
+        role: "user",
+        sessionID: chat.id,
+        agent: "build",
+        model: ref,
+        time: { created: Date.now() },
+      })
+      yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: followup.id,
+        sessionID: chat.id,
+        type: "text",
+        synthetic: true,
+        metadata: { compaction_continue: true },
+        text: "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
+      })
+      yield* llm.text("continued", { usage: { input: 95_000, output: 100 } })
+      yield* llm.text("summary")
+
+      const result = yield* prompt.loop({ sessionID: chat.id })
+      expect(result.info.role).toBe("assistant")
+      expect(result.parts.some((part) => part.type === "text" && part.text === "continued")).toBe(true)
+      expect(yield* llm.calls).toBe(1)
+
+      const msgs = yield* sessions.messages({ sessionID: chat.id })
+      const compactions = msgs
+        .flatMap((msg) => msg.parts)
+        .filter((part): part is SessionV1.CompactionPart => part.type === "compaction")
+      expect(compactions).toHaveLength(1)
+    }),
+)
+
+it.instance(
+  "does not auto-continue after compacting a synthetic continuation overflow",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({
+        title: "Synthetic overflow",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      const followup = yield* sessions.updateMessage({
+        id: MessageID.ascending(),
+        role: "user",
+        sessionID: chat.id,
+        agent: "build",
+        model: ref,
+        time: { created: Date.now() },
+      })
+      yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: followup.id,
+        sessionID: chat.id,
+        type: "text",
+        synthetic: true,
+        metadata: { compaction_continue: true },
+        text: "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
+      })
+      yield* llm.text("overflowing synthetic continuation reply", { usage: { input: 95_000, output: 100 } })
+      yield* llm.text("summary")
+
+      const result = yield* prompt.loop({ sessionID: chat.id })
+      expect(result.info.role).toBe("assistant")
+      expect(result.info.role === "assistant" ? result.info.summary : false).toBe(true)
+      expect(yield* llm.calls).toBe(2)
+
+      const msgs = yield* sessions.messages({ sessionID: chat.id })
+      const compaction = msgs
+        .flatMap((msg) => msg.parts)
+        .find((part): part is SessionV1.CompactionPart => part.type === "compaction")
+      expect(compaction).toMatchObject({ type: "compaction", auto: false })
+      const syntheticContinues = msgs
+        .flatMap((msg) => msg.parts)
+        .filter(
+          (part) =>
+            part.type === "text" && part.synthetic === true && part.metadata?.compaction_continue === true,
+        )
+      expect(syntheticContinues).toHaveLength(1)
+    }),
+)
+
+it.instance(
+  "auto-continues after compacting a non-native synthetic continuation overflow",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({
+        title: "Non-native synthetic overflow",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      const followup = yield* sessions.updateMessage({
+        id: MessageID.ascending(),
+        role: "user",
+        sessionID: chat.id,
+        agent: "build",
+        model: ref,
+        time: { created: Date.now() },
+      })
+      yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: followup.id,
+        sessionID: chat.id,
+        type: "text",
+        synthetic: true,
+        metadata: { compaction_continue: true },
+        text: "[SYSTEM DIRECTIVE: CONTINUE OUTSTANDING WORK]\n<!-- OMO_INTERNAL_INITIATOR -->",
+      })
+      yield* llm.text("overflowing non-native continuation reply", { usage: { input: 95_000, output: 100 } })
+      yield* llm.text("summary")
+      yield* llm.text("continued after compaction")
+
+      const result = yield* prompt.loop({ sessionID: chat.id })
+      expect(result.info.role).toBe("assistant")
+      expect(result.parts.some((part) => part.type === "text" && part.text === "continued after compaction")).toBe(true)
+      expect(yield* llm.calls).toBe(3)
+
+      const msgs = yield* sessions.messages({ sessionID: chat.id })
+      const compaction = msgs
+        .flatMap((msg) => msg.parts)
+        .find((part): part is SessionV1.CompactionPart => part.type === "compaction")
+      expect(compaction).toMatchObject({ type: "compaction", auto: true })
+      const syntheticContinues = msgs
+        .flatMap((msg) => msg.parts)
+        .filter(
+          (part) =>
+            part.type === "text" && part.synthetic === true && part.metadata?.compaction_continue === true,
+        )
+      expect(syntheticContinues).toHaveLength(2)
+    }),
+)
+
 withMcpInstructions.instance(
   "loop includes MCP instructions in model system context",
   () =>
