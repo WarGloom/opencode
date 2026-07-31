@@ -114,6 +114,9 @@ describe("tool parameters", () => {
       expect(parsed.timeout).toBe(5000)
       expect(parsed.workdir).toBe("/tmp")
     })
+    test("coerces numeric string timeout", () => {
+      expect(parse(Shell, { command: "ls", timeout: "5000" }).timeout).toBe(5000)
+    })
     test("rejects missing command", () => {
       expect(accepts(Shell, {})).toBe(false)
     })
@@ -178,6 +181,11 @@ describe("tool parameters", () => {
       const parsed = parse(Lsp, { operation: "hover", filePath: "/a.ts", line: 1, character: 1 })
       expect(parsed.operation).toBe("hover")
     })
+    test("coerces numeric string line and character", () => {
+      const parsed = parse(Lsp, { operation: "hover", filePath: "/a.ts", line: "1", character: "1" })
+      expect(parsed.line).toBe(1)
+      expect(parsed.character).toBe(1)
+    })
     test("rejects line < 1", () => {
       expect(accepts(Lsp, { operation: "hover", filePath: "/a.ts", line: 0, character: 1 })).toBe(false)
     })
@@ -216,10 +224,20 @@ describe("tool parameters", () => {
 
   describe("read", () => {
     test("accepts filePath-only", () => {
-      expect(parse(Read, { filePath: "/a" }).filePath).toBe("/a")
+      const parsed = parse(Read, { filePath: "/a" })
+      expect(parsed.filePath).toBe("/a")
+    })
+    test("accepts Claude Code file_path alias", () => {
+      const parsed = parse(Read, { file_path: "/a" })
+      expect(parsed.file_path).toBe("/a")
     })
     test("accepts optional offset + limit", () => {
       const parsed = parse(Read, { filePath: "/a", offset: 10, limit: 100 })
+      expect(parsed.offset).toBe(10)
+      expect(parsed.limit).toBe(100)
+    })
+    test("coerces numeric string offset + limit", () => {
+      const parsed = parse(Read, { filePath: "/a", offset: "10", limit: "100" })
       expect(parsed.offset).toBe(10)
       expect(parsed.limit).toBe(100)
     })
@@ -271,11 +289,19 @@ describe("tool parameters", () => {
         format: "markdown",
       })
     })
+    test("coerces numeric string timeout", () => {
+      expect(parse(WebFetch, { url: "https://example.com", timeout: "30" }).timeout).toBe(30)
+    })
   })
 
   describe("websearch", () => {
     test("accepts query", () => {
       expect(parse(WebSearch, { query: "opencode" }).query).toBe("opencode")
+    })
+    test("coerces numeric string limits", () => {
+      const parsed = parse(WebSearch, { query: "opencode", numResults: "5", contextMaxCharacters: "1000" })
+      expect(parsed.numResults).toBe(5)
+      expect(parsed.contextMaxCharacters).toBe(1000)
     })
   })
 

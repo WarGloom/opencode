@@ -5,6 +5,7 @@ import * as Tool from "./tool"
 import TurndownService from "turndown"
 import DESCRIPTION from "./webfetch.txt"
 import { isImageAttachment } from "@/util/media"
+import { NumberCoerce } from "./coerce-number"
 
 const MAX_RESPONSE_SIZE = 5 * 1024 * 1024 // 5MB
 const DEFAULT_TIMEOUT = 30 * 1000 // 30 seconds
@@ -18,7 +19,7 @@ export const Parameters = Schema.Struct({
       default: "markdown",
     })
     .pipe(Schema.withDecodingDefault(Effect.succeed("markdown" as const))),
-  timeout: Schema.optional(Schema.Number).annotate({ description: "Optional timeout in seconds (max 120)" }),
+  timeout: Schema.optional(NumberCoerce).annotate({ description: "Optional timeout in seconds (max 120)" }),
 })
 
 export const WebFetchTool = Tool.define(
