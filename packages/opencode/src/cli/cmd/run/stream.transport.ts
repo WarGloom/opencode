@@ -655,7 +655,6 @@ function createLayer(input: StreamInput) {
                         data: state.subagent,
                         sessionID,
                         messages: messagesList,
-                        thinking: input.thinking,
                         limits: input.limits(),
                       })
                     ) {
@@ -936,7 +935,6 @@ function createLayer(input: StreamInput) {
             data: state.subagent,
             event,
             sessionID: input.sessionID,
-            thinking: input.thinking,
             limits: input.limits(),
           })
           if (changed && prev) {

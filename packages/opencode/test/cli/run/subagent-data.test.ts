@@ -44,7 +44,6 @@ function reduce(data: ReturnType<typeof createSubagentData>, event: unknown) {
     data,
     event: event as Event,
     sessionID: "parent-1",
-    thinking: true,
     limits: {},
   })
 }
@@ -262,6 +261,55 @@ describe("run subagent data", () => {
     expect(snapshot.questions.map((item) => item.id)).toEqual(["question-1"])
   })
 
+  test("labels a category-routed task tab with its category when subagent_type is absent", () => {
+    // given: a task tool call dispatched via category (e.g. task(category="quick", ...)), which
+    // carries no subagent_type -- OMO routes these through the generic delegate agent.
+    const data = createSubagentData()
+    const message: SessionMessage = {
+      parts: [
+        {
+          id: "part-child-3",
+          sessionID: "parent-1",
+          messageID: "msg-child-3",
+          type: "tool",
+          callID: "call-child-3",
+          tool: "task",
+          state: {
+            status: "completed",
+            input: {
+              description: "Fix type error",
+              category: "quick",
+            },
+            output: "",
+            title: "Fix type error",
+            metadata: {
+              sessionId: "child-3",
+              toolcalls: 1,
+            },
+            time: { start: 1, end: 2 },
+          },
+        },
+      ],
+    }
+
+    // when: the tab is bootstrapped from that task part
+    bootstrapSubagentData({
+      data,
+      messages: [message],
+      children: [{ id: "child-3" }],
+      permissions: [],
+      questions: [],
+    })
+
+    // then: the label surfaces the category alongside the generic agent name
+    expect(snapshotSubagentData(data).tabs).toEqual([
+      expect.objectContaining({
+        sessionID: "child-3",
+        label: "General (quick)",
+      }),
+    ])
+  })
+
   test("marks interrupted task tabs as cancelled during bootstrap", () => {
     const data = createSubagentData()
 
@@ -400,7 +448,6 @@ describe("run subagent data", () => {
     expect(snapshot.tabs).toEqual([expect.objectContaining({ sessionID: "child-1", status: "running" })])
     expect(visible(snapshot.details["child-1"]?.commits ?? [])).toEqual([
       "› Inspect footer tabs",
-      "_Thinking:_ planning next steps",
       "$ git status --short",
       "hello world",
     ])
@@ -472,14 +519,12 @@ describe("run subagent data", () => {
             ],
           }),
         ],
-        thinking: true,
         limits: {},
       }),
     ).toBe(true)
 
     expect(visible(snapshotSubagentData(data).details["child-1"]?.commits ?? [])).toEqual([
       "› Inspect footer tabs",
-      "_Thinking:_ planning next steps",
       "hello world",
     ])
   })

@@ -59,7 +59,7 @@ function userBody(raw: string): RunEntryBody {
 }
 
 function reasoningBody(raw: string): RunEntryBody {
-  const clean = raw.replace(/\[REDACTED\]/g, "")
+  const clean = raw.replace(/\[REDACTED\]/g, "").replace(/(?:^|\r?\n\r?\n)<!-- -->\s*$/, "")
   if (!clean) {
     return RUN_ENTRY_NONE
   }
