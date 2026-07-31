@@ -88,6 +88,12 @@ describe("transcript", () => {
       expect(result).toBe("## Assistant (Build · Claude Sonnet 4 · 5.4s)\n\n")
     })
 
+    test("renders assistant variant adjacent to model display name", () => {
+      const msg: AssistantMessage & { readonly variant?: string } = { ...baseMsg, variant: "high" }
+      const result = formatAssistantHeader(msg, true, providers)
+      expect(result).toBe("## Assistant (Build · Claude Sonnet 4 (high) · 5.4s)\n\n")
+    })
+
     test("excludes metadata when disabled", () => {
       const result = formatAssistantHeader(baseMsg, false)
       expect(result).toBe("## Assistant\n\n")

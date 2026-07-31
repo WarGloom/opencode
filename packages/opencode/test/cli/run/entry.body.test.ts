@@ -95,6 +95,22 @@ describe("run entry body", () => {
     expect(
       entryBody(
         commit({
+          kind: "reasoning",
+          text: "**Inspecting footer tabs**\n\n<!-- -->",
+          phase: "progress",
+          source: "reasoning",
+          partID: "reason-2",
+        }),
+      ),
+    ).toEqual({
+      type: "code",
+      filetype: "markdown",
+      content: "**Inspecting footer tabs**",
+    })
+
+    expect(
+      entryBody(
+        commit({
           kind: "user",
           text: "Inspect footer tabs",
           phase: "start",
@@ -212,6 +228,28 @@ describe("run entry body", () => {
             input: {
               description: "Inspect reducer",
               subagent_type: "explore",
+            },
+            time: { start: 1 },
+          },
+        }),
+      ),
+    ).toEqual({
+      type: "none",
+    })
+  })
+
+  test("keeps internal skill routing out of scrollback", () => {
+    expect(
+      entryBody(
+        toolCommit({
+          tool: "skill",
+          phase: "start",
+          toolState: "running",
+          text: "running skill",
+          state: {
+            status: "running",
+            input: {
+              name: "crash-analysis",
             },
             time: { start: 1 },
           },

@@ -16,6 +16,17 @@ describe("reasoningSummary", () => {
     })
   })
 
+  test("drops the empty HTML comment appended to reasoning summaries", () => {
+    expect(reasoningSummary("**Continuing Quality Review**\n\n<!-- -->")).toEqual({
+      title: "Continuing Quality Review",
+      body: "",
+    })
+    expect(reasoningSummary("Details only.\n\n<!-- -->")).toEqual({
+      title: null,
+      body: "Details only.",
+    })
+  })
+
   test("preserves markdown-significant indentation in the extracted body", () => {
     expect(reasoningSummary("**Continuing Quality Review**\n\n    const value = true\n")).toEqual({
       title: "Continuing Quality Review",
