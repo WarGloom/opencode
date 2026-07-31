@@ -102,6 +102,7 @@ type Opts = {
     vcs?: HostPluginApi["state"]["vcs"]
     session?: Partial<HostPluginApi["state"]["session"]>
     part?: HostPluginApi["state"]["part"]
+    activity?: HostPluginApi["state"]["activity"]
     lsp?: HostPluginApi["state"]["lsp"]
     mcp?: HostPluginApi["state"]["mcp"]
   }
@@ -323,6 +324,7 @@ export function createTuiPluginApi(opts: Opts = {}): HostPluginApi {
         question: opts.state?.session?.question ?? (() => []),
       },
       part: opts.state?.part ?? (() => []),
+      activity: opts.state?.activity ?? (() => ({ sessions: [], agents: 0, subagents: 0, tasks: 0, commands: 0 })),
       lsp: opts.state?.lsp ?? (() => []),
       mcp: opts.state?.mcp ?? (() => []),
     },
