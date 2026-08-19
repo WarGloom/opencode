@@ -123,6 +123,11 @@ interface CodexAuthPluginOptions {
   experimentalWebSockets?: boolean
 }
 
+export function resolveCodexApiEndpoint(baseURL: string | undefined) {
+  if (!baseURL) return CODEX_API_ENDPOINT
+  return `${baseURL.replace(/\/+$/, "")}/responses`
+}
+
 async function exchangeCodeForTokens(code: string, redirectUri: string, pkce: PkceCodes): Promise<TokenResponse> {
   const response = await fetch(`${ISSUER}/oauth/token`, {
     method: "POST",
@@ -281,7 +286,7 @@ function waitForOAuthCallback(pkce: PkceCodes, state: string): Promise<TokenResp
 
 export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPluginOptions = {}): Promise<Hooks> {
   const issuer = options.issuer ?? ISSUER
-  const codexApiEndpoint = options.codexApiEndpoint ?? CODEX_API_ENDPOINT
+  const codexApiEndpoint = options.codexApiEndpoint ?? resolveCodexApiEndpoint(process.env["OPENAI_BASE_URL"])
   const codexSessionIDs = new Map<string, string>()
   let websocketFetchInstalled = false
   const websocketFetches: Array<ReturnType<typeof OpenAIWebSocketPool.createWebSocketFetch>> = []
