@@ -8,6 +8,7 @@ import {
   extractAccountIdFromClaims,
   extractAccountId,
   extractResidency,
+  resolveCodexApiEndpoint,
   renderOAuthError,
   type IdTokenClaims,
 } from "../../src/plugin/openai/codex"
@@ -19,6 +20,12 @@ function createTestJwt(payload: object): string {
 }
 
 describe("plugin.codex", () => {
+  test("resolves the Codex endpoint from OPENAI_BASE_URL", () => {
+    expect(resolveCodexApiEndpoint("https://gateway.example/v1")).toBe("https://gateway.example/v1/responses")
+    expect(resolveCodexApiEndpoint("https://gateway.example/v1/")).toBe("https://gateway.example/v1/responses")
+    expect(resolveCodexApiEndpoint(undefined)).toBe("https://chatgpt.com/backend-api/codex/responses")
+  })
+
   test("escapes provider errors in callback HTML", () => {
     const error = `</div><script>alert("xss" & 'more')</script>`
     const html = renderOAuthError(error)
