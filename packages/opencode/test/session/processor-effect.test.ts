@@ -19,7 +19,7 @@ import { SessionStatus } from "../../src/session/status"
 import { SessionSummary } from "../../src/session/summary"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { provideTmpdirInstance, provideTmpdirServer } from "../fixture/fixture"
-import { testEffect } from "../lib/effect"
+import { pollWithTimeout, testEffect } from "../lib/effect"
 import { raw, reply, TestLLMServer } from "../lib/llm-server"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -757,6 +757,81 @@ it.live("session.processor effect tests publish retry status updates", () =>
         expect(value).toBe("continue")
         expect(yield* llm.calls).toBe(2)
         expect(states).toStrictEqual([1])
+      }),
+    { config: (url) => providerCfg(url) },
+  ),
+)
+
+it.live("session.processor effect tests finalize abort during retry backoff", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const events = yield* EventV2Bridge.Service
+        const status = yield* SessionStatus.Service
+        yield* llm.error(503, { error: "boom" })
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "abort retry")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        delete msg.finish
+        yield* session.updateMessage(msg)
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const order: string[] = []
+        const off = yield* events.listen((evt) => {
+          if (evt.type === Session.Event.Error.type) {
+            const data = evt.data as typeof Session.Event.Error.data.Type
+            if (data.sessionID === chat.id) order.push(data.error?.name ?? "missing error")
+          }
+          if (evt.type === SessionStatus.Event.Status.type) {
+            const data = evt.data as typeof SessionStatus.Event.Status.data.Type
+            if (data.sessionID === chat.id && data.status.type === "idle") order.push("idle")
+          }
+          if (evt.type === MessageV2.Event.Updated.type) {
+            const data = evt.data as typeof MessageV2.Event.Updated.data.Type
+            if (data.info.id === msg.id && data.info.role === "assistant" && data.info.time.completed) {
+              order.push("completed")
+            }
+          }
+          return Effect.void
+        })
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+        const run = yield* handle
+          .process({
+            user: parent,
+            sessionID: chat.id,
+            model: mdl,
+            agent: agent(),
+            system: [],
+            messages: [{ role: "user", content: "abort retry" }],
+            tools: {},
+          })
+          .pipe(Effect.forkChild)
+
+        const retry = yield* pollWithTimeout(
+          status.get(chat.id).pipe(Effect.map((state) => (state.type === "retry" ? state : undefined))),
+          "processor never entered retry backoff",
+        )
+        expect(retry.next).toBeGreaterThan(Date.now())
+        yield* Fiber.interrupt(run)
+        const exit = yield* Fiber.await(run)
+        const stored = yield* MessageV2.get({ sessionID: chat.id, messageID: msg.id })
+        yield* off
+
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit)) expect(Cause.hasInterruptsOnly(exit.cause)).toBe(true)
+        expect(yield* llm.calls).toBe(1)
+        expect(order.filter((event) => event !== "idle")).toEqual(["MessageAbortedError", "completed"])
+        expect(order.indexOf("idle")).toBeGreaterThan(order.indexOf("MessageAbortedError"))
+        expect(order.indexOf("idle")).toBeLessThan(order.indexOf("completed"))
+        expect(stored.info.role).toBe("assistant")
+        if (stored.info.role === "assistant") {
+          expect(stored.info.error?.name).toBe("MessageAbortedError")
+          expect(stored.info.time.completed).toBeDefined()
+          expect(stored.info.finish).toBeUndefined()
+        }
+        expect(stored.parts).toEqual([])
+        expect(yield* status.get(chat.id)).toEqual({ type: "idle" })
       }),
     { config: (url) => providerCfg(url) },
   ),
