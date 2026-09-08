@@ -1816,7 +1816,6 @@ function GenericTool(props: ToolProps) {
         <InlineTool icon="⚙" pending="Writing command…" complete={true} part={props.part}>
           {props.tool} {formatToolInputSummary(props.input)}
         </InlineTool>
-        </InlineTool>
       }
     >
       <BlockTool
@@ -2383,7 +2382,6 @@ function Edit(props: ToolProps) {
       <Match when={true}>
         <InlineTool icon="←" pending="Preparing edit…" complete={stringValue(props.input.filePath)} part={props.part}>
           Edit {pathFormatter.format(stringValue(props.input.filePath))} {formatToolInputSummary({ replaceAll: props.input.replaceAll })}
-        </InlineTool>
         </InlineTool>
       </Match>
     </Switch>
