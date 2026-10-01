@@ -1,4 +1,4 @@
-import { createProviderToolFactory } from "@ai-sdk/provider-utils"
+import { tool, zodSchema } from "ai"
 import { z } from "zod"
 import type { Provider } from "@/provider/provider"
 
@@ -15,18 +15,6 @@ const VALID_EXECUTOR_PATTERNS = [
   "claude-opus-4-7",
   "claude-opus-4-8",
 ] as const
-
-const anthropicAdvisorFactory = createProviderToolFactory<
-  Record<string, never>,
-  {
-    model: string
-    maxUses?: number
-    caching?: { type: "ephemeral"; ttl: "5m" | "1h" }
-  }
->({
-  id: "anthropic.advisor_20260301",
-  inputSchema: z.object({}),
-})
 
 export type AnthropicAdvisorConfig = {
   model: string
@@ -115,9 +103,14 @@ export function validateAnthropicAdvisorPair(
 }
 
 export function createAnthropicAdvisorTool(advisor: AnthropicAdvisorConfig) {
-  return anthropicAdvisorFactory({
-    model: stripProviderPrefix(advisor.model),
-    ...(advisor.maxUses !== undefined ? { maxUses: advisor.maxUses } : {}),
-    ...(advisor.caching ? { caching: advisor.caching } : {}),
+  return tool({
+    type: "provider",
+    id: "anthropic.advisor_20260301",
+    inputSchema: zodSchema(z.object({})),
+    args: {
+      model: stripProviderPrefix(advisor.model),
+      ...(advisor.maxUses !== undefined ? { maxUses: advisor.maxUses } : {}),
+      ...(advisor.caching ? { caching: advisor.caching } : {}),
+    },
   })
 }
