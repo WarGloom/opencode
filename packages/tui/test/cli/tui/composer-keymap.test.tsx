@@ -1,7 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import { testRender } from "@opentui/solid"
 import { afterAll, expect, test } from "bun:test"
-import { onMount, Show } from "solid-js"
+import { createEffect, onMount, Show } from "solid-js"
 import { ConfigProvider } from "../../../src/config"
 import type { TuiKeybind } from "../../../src/config/keybind"
 import { ClientProvider } from "../../../src/context/client"
@@ -22,7 +22,7 @@ import { createTuiResolvedConfig } from "../../fixture/tui-runtime"
 
 const sessions = {
   parent: session("parent", "Parent"),
-  "child-a": session("child-a", "First", "parent"),
+  "child-a": { ...session("child-a", "First", "parent"), model: { id: "sonnet", providerID: "anthropic", variant: "high" } },
   "child-b": session("child-b", "Second", "parent"),
   "child-c": session("child-c", "Third", "parent"),
 }
@@ -42,10 +42,17 @@ async function renderComposer(
   const removed: string[] = []
   const viewed: string[] = []
   const ready = Promise.withResolvers<void>()
+  const switched = Promise.withResolvers<void>()
   let closed = 0
   let dispatch!: ReturnType<typeof Keymap.use>["dispatch"]
   let route!: ReturnType<typeof useRoute>
   const calls = createFetch((url, request) => {
+    const location = { directory, project: { id: "proj_test", directory } }
+    if (url.pathname === "/api/provider") return json({ location, data: [{ id: "anthropic", name: "Anthropic" }] })
+    if (url.pathname === "/api/model") return json({ location, data: [
+      { id: "sonnet", providerID: "anthropic", name: "Claude Sonnet", variants: [] },
+      { id: "opus", providerID: "anthropic", name: "Claude Opus", variants: [] },
+    ] })
     if (url.pathname === "/api/session/active")
       return json({ data: { "child-a": { type: "running" }, "child-b": { type: "running" } } })
     const sessionID = url.pathname.match(/^\/api\/session\/([^/]+)$/)?.[1]
@@ -80,12 +87,16 @@ async function renderComposer(
     const data = useData()
     route = useRoute()
     dispatch = Keymap.use().dispatch
+    createEffect(() => {
+      if (data.session.get("child-a")?.model?.id === "opus") switched.resolve()
+    })
     onMount(() => {
       void Promise.all([
         data.session.sync("parent"),
         data.session.sync("child-a"),
         data.session.sync("child-b"),
         data.session.sync("child-c"),
+        data.location.sync({ directory }),
         data.shell.sync(),
       ])
         .then(() => wait(() => data.session.status("child-a") === "running"))
@@ -148,6 +159,8 @@ async function renderComposer(
   await app.renderOnce()
   return {
     app,
+    events,
+    switched: switched.promise,
     interrupted,
     removed,
     viewed,
@@ -156,6 +169,35 @@ async function renderComposer(
     closed: () => closed,
   }
 }
+
+test("subagent rows show the selected model and update on model changes", async () => {
+  const composer = await renderComposer("subagents", {})
+  try {
+    expect(composer.app.captureCharFrame()).toContain("First Claude Sonnet Anthropic · high")
+    composer.events.emit({
+      id: "evt_model_child_a",
+      created: 1,
+      type: "session.model.selected",
+      durable: { aggregateID: "child-a", seq: 1, version: 1 },
+      data: { sessionID: "child-a", model: { id: "opus", providerID: "anthropic", variant: "max" } },
+    })
+    const deadline = Promise.withResolvers<void>()
+    const timeout = setTimeout(() => deadline.reject(new Error("Timed out waiting for model change")), 2000)
+    try {
+      await Promise.race([composer.switched, deadline.promise])
+    } finally {
+      clearTimeout(timeout)
+    }
+    await composer.app.renderOnce()
+    expect(composer.app.captureCharFrame()).toContain("First Claude Opus Anthropic · max")
+    await composer.app.resize(44, 20)
+    await composer.app.renderOnce()
+    expect(composer.app.captureCharFrame()).toContain("First")
+    expect(composer.app.captureCharFrame()).toContain(" Running")
+  } finally {
+    composer.app.renderer.destroy()
+  }
+})
 
 test("disabled subagent bindings have no component fallbacks", async () => {
   const composer = await renderComposer("subagents", {
