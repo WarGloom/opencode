@@ -8,6 +8,7 @@ import { useData } from "../../../context/data"
 import { useClient } from "../../../context/client"
 import { useTheme } from "../../../context/theme"
 import { useStorage } from "../../../context/storage"
+import { display } from "../../../util/model"
 import { Locale } from "../../../util/locale"
 import { Keymap } from "../../../context/keymap"
 import { useComposerTab } from "./context"
@@ -21,6 +22,7 @@ interface SubagentEntry {
   status: string
   current: boolean
   prefix: string
+  model?: string
 }
 
 export function SubagentsTab(props: { sessionID: string }) {
@@ -46,6 +48,11 @@ export function SubagentsTab(props: { sessionID: string }) {
       ({ session, prefix }): SubagentEntry => {
         const title = withTimestampedFallback(session)
         const agentMatch = title.match(/@(\w+) subagent/)
+        const model = session.model && display(
+          { providerID: session.model.providerID, modelID: session.model.id },
+          data.location.provider.list(session.location),
+          data.location.model.list(session.location),
+        )
         return {
           sessionID: session.id,
           agent: session.agent
@@ -57,6 +64,7 @@ export function SubagentsTab(props: { sessionID: string }) {
           status: data.session.status(session.id),
           current: session.id === route.sessionID,
           prefix,
+          model: model && `${model.model} ${model.provider}${session.model?.variant ? ` · ${session.model.variant}` : ""}`,
         }
       },
     )
@@ -229,6 +237,8 @@ export function SubagentsTab(props: { sessionID: string }) {
                 >
                   <box flexGrow={1} minWidth={0} flexDirection="row">
                     <text
+                      flexShrink={1}
+                      minWidth={0}
                       fg={
                         active()
                           ? theme.text.action.primary.focused
@@ -238,13 +248,15 @@ export function SubagentsTab(props: { sessionID: string }) {
                       }
                       attributes={active() ? TextAttributes.BOLD : undefined}
                       wrapMode="none"
+                      truncate
                     >
                       {entry.prefix}
                       {entry.agent}: {entry.title}
+                      <Show when={entry.model}>{(model) => <span style={{ fg: theme.text.muted }}> {model()}</span>}</Show>
                     </text>
                   </box>
                   <Show when={status()}>
-                    <text fg={active() ? theme.text.action.primary.focused : theme.text.muted} wrapMode="none">
+                    <text flexShrink={0} marginLeft={1} fg={active() ? theme.text.action.primary.focused : theme.text.muted} wrapMode="none">
                       {status()}
                     </text>
                   </Show>
