@@ -25,7 +25,7 @@ import { useRoute } from "./route"
 import { useData } from "./data"
 import { usePermission } from "./permission"
 import { useLocation } from "./location"
-import { parse } from "../util/model"
+import { display, parse } from "../util/model"
 
 export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
   name: "Local",
@@ -404,13 +404,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
               reasoning: false,
             }
           }
-          const provider = providers()?.find((item) => item.id === value.providerID)
-          const info = models()?.find((item) => item.providerID === value.providerID && item.id === value.modelID)
-          return {
-            provider: provider?.name ?? value.providerID,
-            model: info?.name ?? `${value.modelID} (unavailable)`,
-            reasoning: (info?.variants?.length ?? 0) !== 0,
-          }
+          return display(value, providers(), models())
         }),
         cycle(direction: 1 | -1) {
           const current = currentSelection()
