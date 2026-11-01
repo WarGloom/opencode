@@ -3,6 +3,20 @@ export function parse(value: string) {
   return { providerID, modelID: modelID.join("/") }
 }
 
+export function display(
+  value: { providerID: string; modelID: string },
+  providers?: readonly { id: string; name: string }[],
+  models?: readonly { providerID: string; id: string; name: string; variants?: readonly unknown[] }[],
+) {
+  const provider = providers?.find((item) => item.id === value.providerID)
+  const info = models?.find((item) => item.providerID === value.providerID && item.id === value.modelID)
+  return {
+    provider: provider?.name ?? value.providerID,
+    model: info?.name ?? `${value.modelID} (unavailable)`,
+    reasoning: (info?.variants?.length ?? 0) !== 0,
+  }
+}
+
 export function formatRef(model: { providerID: string; id: string; variant?: string }) {
   return [model.providerID, model.id, model.variant].filter((value) => value !== undefined).join("/")
 }
