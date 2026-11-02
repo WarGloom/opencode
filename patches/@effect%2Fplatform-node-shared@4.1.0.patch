@@ -1,0 +1,15 @@
+diff --git a/dist/NodeWS.js b/dist/NodeWS.js
+index e29eb7dae33882898922845f57a3ac21cbc41181..090ec167ca63ae27b709780bac1b35c71b854533 100644
+--- a/dist/NodeWS.js
++++ b/dist/NodeWS.js
+@@ -10,5 +10,8 @@
+  * @category re-exports
+  * @since 4.1.0
+  */
+-export * from "ws";
++// Named re-exports: in a Bun bundle "ws" is Bun's built-in module, and Bun 1.4.4 drops the namespace
++// object of `export * from "ws"`, so `NodeWS.WebSocketServer` throws a ReferenceError at the first upgrade.
++// The list is what both the ws package and Bun's built-in provide.
++export { createWebSocketStream, extension, Receiver, Sender, subprotocol, WebSocket, WebSocketServer } from "ws";
+ //# sourceMappingURL=NodeWS.js.map
+\ No newline at end of file
