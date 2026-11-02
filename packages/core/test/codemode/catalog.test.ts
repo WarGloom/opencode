@@ -135,7 +135,7 @@ describe("CodeModeInstructions.render", () => {
       "The tools listed below, and `search`, cannot be called directly: they only work as JavaScript inside the `execute` tool.",
     )
     expect(partial).toContain(
-      "The catalog is partial. Before calling a tool that is not listed below, find it with the global `search(...)` function. Do not guess tool names.",
+      "The catalog is partial. Before calling a tool that is not listed below, get its signature with the global `search(...)` function, even when you already know the tool's name. Do not guess tool names or arguments.",
     )
     expect(partial).toContain("- search({")
     expect(partial).toContain("  /** @integer @exclusiveMinimum 0 */\n  limit?: number,")
