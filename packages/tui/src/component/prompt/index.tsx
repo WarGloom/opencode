@@ -31,7 +31,16 @@ import { expandPromptInputPastedText, realignPromptInputMentions } from "../../p
 import { parseSlashHead } from "../../prompt/parse"
 import { createStore, produce, unwrap } from "solid-js/store"
 import { emptyPrompt, usePromptHistory, type ChipData, type PromptInfo, type PromptPartRef } from "../../prompt/history"
-import { appendToSessionPrompt, registerComposer, saveDraft, takeDraft } from "./draft-stash"
+import {
+  appendToSessionPrompt,
+  configureDraftPersistence,
+  flushDraft,
+  persistDraft,
+  persistedDraft,
+  registerComposer,
+  saveDraft,
+  takeDraft,
+} from "./draft-stash"
 import { usePromptRestore } from "../../prompt/restore"
 import { Skill } from "@opencode/schema/skill"
 import { computePromptTraits } from "../../prompt/traits"
@@ -734,6 +743,7 @@ export function Prompt(props: PromptProps) {
 
   function resetComposer() {
     history.reset()
+    persistDraft(stashSessionID, emptyPrompt())
     input.extmarks.clear()
     setStore("prompt", emptyPrompt())
     setStore("extmarkToPart", new Map())
@@ -744,17 +754,21 @@ export function Prompt(props: PromptProps) {
   // instance belongs to exactly one tab. Reading props.sessionID lazily would
   // observe the *next* route during onCleanup and stash under the wrong tab.
   const stashSessionID = props.sessionID
+  configureDraftPersistence(paths.state)
 
   onMount(() => {
     onCleanup(registerComposer(stashSessionID, ref))
-    const saved = takeDraft(stashSessionID)
-    if (store.prompt.text) return
-    if (saved && saved.prompt.text) {
+    const saved = takeDraft(stashSessionID) ?? persistedDraft(stashSessionID)
+    if (!store.prompt.text && saved && saved.prompt.text) {
       input.setText(saved.prompt.text)
       setStore("prompt", saved.prompt)
       restoreExtmarksFromPrompt(saved.prompt)
       input.cursorOffset = Math.min(saved.cursor, measure(saved.prompt.text))
     }
+    createEffect(() => {
+      JSON.stringify(store.prompt)
+      persistDraft(stashSessionID, structuredClone(unwrap(store.prompt)))
+    })
   })
 
   onCleanup(() => {
@@ -762,6 +776,7 @@ export function Prompt(props: PromptProps) {
     if (store.prompt.text) {
       saveDraft(stashSessionID, { prompt: unwrap(store.prompt), cursor: input.cursorOffset })
     }
+    flushDraft(stashSessionID)
     setInputTarget(undefined)
     props.ref?.(undefined)
   })
