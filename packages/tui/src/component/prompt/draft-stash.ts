@@ -1,6 +1,7 @@
 import type { WidthMethod } from "@opentui/core"
 import { appendPrompt, type PromptInfo } from "../../prompt/history"
 import type { PromptRef } from "./index"
+import { createDraftPersistence } from "./draft-persistence"
 
 // Holds one in-progress draft per tab across Prompt remounts. A draft is
 // consumed on take: restoring it moves it out of the stash, so a stale copy
@@ -8,6 +9,27 @@ import type { PromptRef } from "./index"
 export type DraftEntry = { prompt: PromptInfo; cursor: number }
 
 const byTab = new Map<string | undefined, DraftEntry>()
+let persistence: ReturnType<typeof createDraftPersistence> | undefined
+let stateDirectory: string | undefined
+
+export function configureDraftPersistence(state: string) {
+  if (stateDirectory === state) return
+  stateDirectory = state
+  persistence = createDraftPersistence(state)
+}
+
+export function persistedDraft(sessionID: string | undefined) {
+  const prompt = persistence?.read(sessionID)
+  if (prompt?.text) return { prompt, cursor: Infinity }
+}
+
+export function persistDraft(sessionID: string | undefined, prompt: PromptInfo) {
+  persistence?.save(sessionID, prompt)
+}
+
+export function flushDraft(sessionID: string | undefined) {
+  persistence?.flush(sessionID)
+}
 
 export function takeDraft(sessionID: string | undefined) {
   const entry = byTab.get(sessionID)
@@ -17,6 +39,7 @@ export function takeDraft(sessionID: string | undefined) {
 
 export function saveDraft(sessionID: string | undefined, entry: DraftEntry) {
   byTab.set(sessionID, entry)
+  persistDraft(sessionID, entry.prompt)
 }
 
 const composers = new Map<string | undefined, PromptRef>()
@@ -37,7 +60,7 @@ export function registerComposer(sessionID: string | undefined, composer: Prompt
 export function appendToSessionPrompt(sessionID: string, prompt: PromptInfo, widthMethod: WidthMethod) {
   const composer = composers.get(sessionID)
   if (!composer) {
-    const draft = takeDraft(sessionID)?.prompt
+    const draft = (takeDraft(sessionID) ?? persistedDraft(sessionID))?.prompt
     saveDraft(sessionID, { prompt: draft ? appendPrompt(draft, prompt, widthMethod) : prompt, cursor: Infinity })
     return
   }
