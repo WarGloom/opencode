@@ -5,10 +5,12 @@ import { createWrapper } from "@parcel/watcher/wrapper.js"
 import type ParcelWatcher from "@parcel/watcher"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
 import { FSUtil } from "@opencode/util/fs-util"
+import { Glob } from "@opencode/util/glob"
 import { isRecord } from "@opencode/util/record"
 import { Cause, Context, Effect, Layer, PubSub, RcMap, Stream } from "effect"
 import { lazy } from "../util/lazy.js"
-import { watch } from "node:fs"
+import { lstatSync, watch } from "node:fs"
+import fs from "node:fs/promises"
 import path from "path"
 import loadBinding from "./watcher-binding.js"
 
@@ -255,22 +257,90 @@ function subscribeDirectory(
       Effect.as(undefined),
     )
   }
-  const callback: ParcelWatcher.SubscribeCallback = (error, updates) => {
-    if (error) Effect.runFork(Effect.logError("watcher callback failed", { error }))
-    for (const update of updates) publish(update)
-  }
-  // Copy `ignore`: it aliases the RcMap key, whose structural hash is cached,
-  // so the array handed to native code must never be the mutable original.
-  const pending = native.subscribe(directory, callback, { ignore: [...ignore], backend })
-  return Effect.promise(() => pending).pipe(
-    Effect.map((subscription) => ({ unsubscribe: () => subscription.unsubscribe(), backend })),
-    // Interruption (including the timeout below) abandons the pending native
-    // subscription, so close it once it eventually resolves.
-    Effect.onInterrupt(() =>
-      Effect.sync(() => {
-        pending.then((subscription) => subscription.unsubscribe()).catch(() => {})
-      }),
-    ),
+  return Effect.gen(function* () {
+    // Parcel does not follow directory symlinks when attaching its native watch.
+    const resolved = yield* Effect.tryPromise({
+      try: async () => {
+        const target = await fs.realpath(directory)
+        return (await fs.stat(target)).isDirectory() ? target : undefined
+      },
+      catch: (error) => error,
+    }).pipe(
+      Effect.catch((error) =>
+        isRecord(error) && (error.code === "ENOENT" || error.code === "ENOTDIR")
+          ? Effect.undefined
+          : Effect.fail(error),
+      ),
+    )
+    if (!resolved) return
+    const callback: ParcelWatcher.SubscribeCallback = (error, updates) => {
+      if (error) Effect.runFork(Effect.logError("watcher callback failed", { error }))
+      for (const update of updates) {
+        publish({ ...update, path: path.join(directory, path.relative(resolved, update.path)) })
+      }
+    }
+    // Copy `ignore`: native code must not mutate the structurally hashed RcMap key.
+    const ignores = ignore.map((entry) =>
+      path.isAbsolute(entry) && FSUtil.contains(directory, entry)
+        ? path.join(resolved, path.relative(directory, entry))
+        : entry,
+    )
+    const pending = native
+      .subscribe(resolved, callback, { ignore: ignores, backend })
+      .then((subscription) => ({ ...subscription, backend }))
+      .catch(async (error: unknown) => {
+        const missing =
+          error instanceof Error &&
+          /^inotify_add_watch on '(.+)' failed: No such file or directory$/.exec(error.message)
+        const child = missing ? missing[1] : undefined
+        if (!child || child === resolved || !FSUtil.contains(resolved, child)) throw error
+        const vanished = await fs.lstat(child).then(
+          () => false,
+          (cause: unknown) => {
+            if (isRecord(cause) && (cause.code === "ENOENT" || cause.code === "ENOTDIR")) return true
+            throw cause
+          },
+        )
+        if (!vanished || !(await fs.stat(resolved)).isDirectory()) throw error
+        // Parcel retains its failed directory tree while other subscriptions exist.
+        const subscription = watch(resolved, { recursive: true }, (event, file) => {
+          const target = file ? path.join(resolved, file) : resolved
+          const relative = path.relative(resolved, target)
+          const ancestors = relative.split(path.sep).map((_, index, parts) => parts.slice(0, index + 1).join("/"))
+          if (
+            ignores.some(
+              (entry) =>
+                FSUtil.contains(path.resolve(resolved, entry), target) ||
+                ancestors.some((ancestor) => Glob.match(entry, ancestor) || Glob.match(entry, ancestor + "/")),
+            )
+          ) {
+            return
+          }
+          try {
+            if (event === "rename") lstatSync(target)
+            publish({ path: path.join(directory, relative), type: event === "rename" ? "create" : "update" })
+          } catch (cause) {
+            if (isRecord(cause) && (cause.code === "ENOENT" || cause.code === "ENOTDIR")) {
+              publish({ path: path.join(directory, relative), type: "delete" })
+              return
+            }
+            Effect.runFork(Effect.logError("watcher callback failed", { error: cause }))
+          }
+        })
+        subscription.on("error", (cause: unknown) =>
+          Effect.runFork(Effect.logError("watcher callback failed", { error: cause })),
+        )
+        return { unsubscribe: () => Promise.resolve(subscription.close()), backend: "node" }
+      })
+    return yield* Effect.promise(() => pending).pipe(
+      // Close an abandoned native subscription once its acquisition resolves.
+      Effect.onInterrupt(() =>
+        Effect.sync(() => {
+          pending.then((subscription) => subscription.unsubscribe()).catch(() => {})
+        }),
+      ),
+    )
+  }).pipe(
     Effect.timeout(SUBSCRIBE_TIMEOUT_MS),
     Effect.catchCause((cause) =>
       Effect.logError("failed to subscribe", {
