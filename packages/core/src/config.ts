@@ -4,7 +4,7 @@ import { makeLocationNode } from "@opencode/util/effect/app-node"
 import path from "path"
 import { isDeepStrictEqual } from "node:util"
 import { applyEdits, modify, type ParseError, parse } from "jsonc-parser"
-import { Context, Effect, FiberMap, Layer, Option, PubSub, Ref, Schema, Semaphore, Stream } from "effect"
+import { Context, Effect, Exit, FiberMap, Layer, Option, PubSub, Ref, Schema, Semaphore, Stream } from "effect"
 import { Directory, Document, Info, type Patch, type Entry, Event } from "@opencode/schema/config"
 import { Credential } from "./credential.js"
 import { Bus } from "./bus.js"
@@ -171,7 +171,9 @@ export const layer = (options?: Options) =>
       })
 
       const loadFile = Effect.fnUntraced(function* (filepath: string) {
-        const text = yield* fs.readFileStringSafe(filepath)
+        // Read through the context so the load can record this read as an input.
+        const files = yield* FSUtil.Service
+        const text = yield* files.readFileStringSafe(filepath)
         if (text === undefined) return
         const substituted = yield* ConfigVariable.substitute({ type: "path", path: filepath, text })
         const info = yield* parseInfo(substituted, filepath)
@@ -276,6 +278,49 @@ export const layer = (options?: Options) =>
         ]
       })
 
+      // Files the latest completed load read (config documents, missing candidates and {file:...} dependencies), each
+      // keyed as `<real parent>/<name>` and by its own real path, so an update to one of them or to a symlinked document's
+      // target reloads config, and an update to any other file under a config root does not. `reading` holds the keys of
+      // the load in progress: a read records its keys before it starts, so an update either matches them or the read
+      // that follows sees it.
+      let inputs = new Set<string>()
+      let reading: Set<string> | undefined
+      // Bookkeeping must not fail a load: a path that cannot be resolved (missing, ENOTDIR, ELOOP) keys as itself.
+      const realPath = (file: string) => {
+        const lexical = path.resolve(file)
+        return fs.realPath(lexical).pipe(Effect.orElseSucceed(() => lexical))
+      }
+      const canonical = Effect.fnUntraced(function* (file: string) {
+        return path.join(yield* realPath(path.dirname(file)), path.basename(file))
+      })
+      const recordInputs = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        Effect.suspend(() => {
+          const read = new Set<string>()
+          reading = read
+          const track = <B, F, S>(file: string, operation: Effect.Effect<B, F, S>) =>
+            Effect.all([canonical(file), realPath(file)]).pipe(
+              Effect.flatMap((keys) => Effect.sync(() => keys.forEach((key) => read.add(key)))),
+              Effect.andThen(operation),
+            )
+          return effect.pipe(
+            Effect.provideService(
+              FSUtil.Service,
+              FSUtil.Service.of({
+                ...fs,
+                readFileString: (file, encoding) => track(file, fs.readFileString(file, encoding)),
+                readFileStringSafe: (file) => track(file, fs.readFileStringSafe(file)),
+              }),
+            ),
+            Effect.onExit((exit) =>
+              Effect.sync(() => {
+                // A failed load keeps its new inputs too, so fixing a broken new dependency still reloads.
+                inputs = Exit.isSuccess(exit) ? read : new Set([...inputs, ...read])
+                reading = undefined
+              }),
+            ),
+          )
+        })
+
       const load = Effect.fn("Config.load")(function* (sources: ConfigDiscovery.Sources) {
         const direct = yield* Effect.forEach(sources.direct, (filepath) => loadFile(filepath)).pipe(
           Effect.orDie,
@@ -375,7 +420,7 @@ export const layer = (options?: Options) =>
           ...content,
           ...managedSettings,
         ]
-      })
+      }, recordInputs)
 
       const initial = yield* ConfigDiscovery.discover(options)
       let sources = initial
@@ -385,7 +430,9 @@ export const layer = (options?: Options) =>
       // Readiness rescans recover writes made before a watch attached.
       const requestReload = PubSub.publish(reloads, undefined).pipe(Effect.asVoid)
       const watched = yield* FiberMap.make<string>()
+      let watching: ConfigDiscovery.Sources = initial
       const reconcile = Effect.fn("Config.reconcileWatches")(function* (sources: ConfigDiscovery.Sources) {
+        watching = sources
         const plan = ConfigWatch.plan(sources)
         for (const key of Array.from(watched, ([key]) => key)) {
           if (!plan.has(key)) yield* FiberMap.remove(watched, key)
@@ -395,7 +442,20 @@ export const layer = (options?: Options) =>
             .subscribe(target, requestReload)
             .pipe(
               Effect.flatMap(
-                Stream.runForEach((update) => PubSub.publish(updates, update).pipe(Effect.andThen(requestReload))),
+                Stream.runForEach((update) =>
+                  PubSub.publish(updates, update).pipe(
+                    // Other files under a config root, such as plugin state, reach changes() but cannot change config.
+                    Effect.andThen(
+                      ConfigWatch.reloads(watching, update.path)
+                        ? requestReload
+                        : canonical(update.path).pipe(
+                            Effect.flatMap((file) =>
+                              inputs.has(file) || reading?.has(file) ? requestReload : Effect.void,
+                            ),
+                          ),
+                    ),
+                  ),
+                ),
               ),
               FiberMap.run(watched, key, { onlyIfMissing: true, startImmediately: true }),
             )
