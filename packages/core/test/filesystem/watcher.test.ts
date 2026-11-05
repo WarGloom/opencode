@@ -54,6 +54,56 @@ function countingNative() {
 }
 
 describe("Watcher lifecycle", () => {
+  it.live("follows a directory symlink with logical absolute ignores and publishes logical paths after readiness", () =>
+    Effect.acquireDisposable(Effect.promise(() => tmpdir())).pipe(
+      Effect.flatMap((tmp) =>
+        Effect.gen(function* () {
+          const root = path.join(tmp.path, "real")
+          const link = path.join(tmp.path, ".opencode")
+          yield* Effect.promise(async () => {
+            await fs.mkdir(root)
+            await fs.mkdir(path.join(root, "ignored"))
+            await fs.symlink(root, link, process.platform === "win32" ? "junction" : "dir")
+          })
+          const watcher = yield* Watcher.Service
+          const ready = yield* Deferred.make<void>()
+          const updates = yield* watcher.subscribe(
+            { path: link, type: "directory", ignore: [path.join(link, "ignored")] },
+            Deferred.succeed(ready, undefined).pipe(Effect.asVoid),
+          )
+          const event = yield* updates.pipe(Stream.runHead, Effect.forkScoped({ startImmediately: true }))
+          yield* Deferred.await(ready).pipe(Effect.timeout("2 seconds"))
+          yield* Effect.promise(() => fs.writeFile(path.join(link, "ignored", "noise.json"), "{}"))
+          yield* Effect.promise(() => fs.writeFile(path.join(link, "opencode.json"), "{}"))
+          expect(Option.getOrUndefined(yield* Fiber.join(event).pipe(Effect.timeout("2 seconds")))?.path).toBe(
+            path.join(link, "opencode.json"),
+          )
+        }).pipe(Effect.provide(AppNodeBuilder.build(Watcher.node))),
+      ),
+    ),
+  )
+
+  for (const kind of ["missing", "file"] as const) {
+    it.live(`ends a recursive stream without logging an error for a ${kind} root`, () => {
+      const errors: unknown[] = []
+      const logger = Logger.make(({ logLevel, message }) => {
+        if (logLevel === "Error") errors.push(message)
+      })
+      return Effect.acquireDisposable(Effect.promise(() => tmpdir())).pipe(
+        Effect.flatMap((tmp) =>
+          Effect.gen(function* () {
+            const target = path.join(tmp.path, kind)
+            if (kind === "file") yield* Effect.promise(() => fs.writeFile(target, "{}"))
+            const watcher = yield* Watcher.Service
+            const updates = yield* watcher.subscribe({ path: target, type: "directory" })
+            expect(Option.isNone(yield* Stream.runHead(updates))).toBe(true)
+            expect(errors).toEqual([])
+          }).pipe(Effect.provide(AppNodeBuilder.build(Watcher.node)), Effect.provide(Logger.layer([logger]))),
+        ),
+      )
+    })
+  }
+
   it.live("ends the stream without logging an error when the watched directory is missing", () => {
     const errors: unknown[] = []
     const logger = Logger.make(({ logLevel, message }) => {
@@ -69,23 +119,25 @@ describe("Watcher lifecycle", () => {
     )
   })
 
-  it.live("still logs an error when watching fails for a reason other than ENOENT", () => {
-    const errors: unknown[] = []
-    const logger = Logger.make(({ logLevel, message }) => {
-      if (logLevel === "Error") errors.push(message)
+  for (const type of ["file", "directory"] as const) {
+    it.live(`still logs unexpected ${type} watch failures`, () => {
+      const errors: unknown[] = []
+      const logger = Logger.make(({ logLevel, message }) => {
+        if (logLevel === "Error") errors.push(message)
+      })
+      return withTmp((directory) =>
+        Effect.gen(function* () {
+          const watcher = yield* Watcher.Service
+          const updates = yield* watcher.subscribe({
+            path: path.join(directory, "bad\0dir", "a.ts"),
+            type,
+          })
+          expect(Option.isNone(yield* Stream.runHead(updates))).toBe(true)
+          expect(errors).toHaveLength(1)
+        }).pipe(Effect.provide(AppNodeBuilder.build(Watcher.node)), Effect.provide(Logger.layer([logger]))),
+      )
     })
-    return withTmp((directory) =>
-      Effect.gen(function* () {
-        const watcher = yield* Watcher.Service
-        const updates = yield* watcher.subscribe({
-          path: path.join(directory, "bad\0dir", "a.ts"),
-          type: "file",
-        })
-        expect(Option.isNone(yield* Stream.runHead(updates))).toBe(true)
-        expect(errors).toHaveLength(1)
-      }).pipe(Effect.provide(AppNodeBuilder.build(Watcher.node)), Effect.provide(Logger.layer([logger]))),
-    )
-  })
+  }
 
   it.effect("signals readiness after acquisition and buffers updates published by the ready callback", () =>
     Effect.gen(function* () {

@@ -53,6 +53,92 @@ const decode = Schema.decodeUnknownSync(Info)
 const document = path.join(import.meta.dir, "opencode.json")
 
 describe("config plugin reloads", () => {
+  it.live("reloads a symlinked config root after edits and recreation and releases its watches", () =>
+    Effect.acquireDisposable(Effect.promise(() => tmpdir())).pipe(
+      Effect.flatMap((tmp) =>
+        Effect.gen(function* () {
+          const project = path.join(tmp.path, "project")
+          const actual = path.join(tmp.path, "actual")
+          const root = path.join(project, ".opencode")
+          const file = path.join(root, "opencode.json")
+          yield* Effect.promise(async () => {
+            await fs.mkdir(project)
+            await fs.mkdir(actual)
+            await fs.writeFile(path.join(actual, "opencode.json"), JSON.stringify({ shell: "initial" }))
+            await fs.symlink(actual, root, process.platform === "win32" ? "junction" : "dir")
+          })
+          const native = yield* Watcher.Native
+          const ready = yield* Deferred.make<void>()
+          const counts = { active: 0 }
+          yield* Effect.gen(function* () {
+            const config = yield* Config.Service
+            const bus = yield* Bus.Service
+            yield* Deferred.await(ready).pipe(Effect.timeout("2 seconds"))
+            for (const change of [
+              { shell: "edited", run: () => fs.writeFile(file, JSON.stringify({ shell: "edited" })) },
+              { shell: undefined, run: () => fs.unlink(root) },
+              {
+                shell: "recreated",
+                run: async () => {
+                  await fs.writeFile(path.join(actual, "opencode.json"), JSON.stringify({ shell: "recreated" }))
+                  await fs.symlink(actual, root, process.platform === "win32" ? "junction" : "dir")
+                },
+              },
+              { shell: "later", run: () => fs.writeFile(file, JSON.stringify({ shell: "later" })) },
+            ]) {
+              yield* Effect.gen(function* () {
+                const changed = yield* Deferred.make<void>()
+                yield* Effect.acquireRelease(
+                  bus.listen((event) =>
+                    event.type === Event.Updated.type
+                      ? config.entries().pipe(
+                          Effect.flatMap((entries) =>
+                            Config.latest(entries, "shell") === change.shell
+                              ? Deferred.succeed(changed, undefined)
+                              : Effect.void,
+                          ),
+                          Effect.asVoid,
+                        )
+                      : Effect.void,
+                  ),
+                  (release) => release,
+                )
+                yield* Effect.promise(change.run)
+                yield* Deferred.await(changed).pipe(Effect.timeout("3 seconds"))
+                expect(Config.latest(yield* config.entries(), "shell")).toBe(change.shell)
+              }).pipe(Effect.scoped)
+            }
+          }).pipe(
+            Effect.provide(
+              liveConfig(project, {
+                subscribe: (input) =>
+                  native.subscribe(input).pipe(
+                    Effect.map((subscription) => {
+                      if (!subscription) return undefined
+                      counts.active++
+                      return {
+                        ...subscription,
+                        unsubscribe: async () => {
+                          await subscription.unsubscribe()
+                          counts.active--
+                        },
+                      }
+                    }),
+                    Effect.tap((subscription) =>
+                      subscription && input.type === "directory" && input.target === root
+                        ? Deferred.succeed(ready, undefined)
+                        : Effect.void,
+                    ),
+                  ),
+              }),
+            ),
+          )
+          expect(counts.active).toBe(0)
+        }).pipe(Effect.provide(Watcher.nativeLayer)),
+      ),
+    ),
+  )
+
   for (const input of [
     { root: ".agents", global: false },
     { root: "../.claude", global: false },
