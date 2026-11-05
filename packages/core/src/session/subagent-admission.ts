@@ -18,7 +18,7 @@ import type { LayerNode } from "@opencode/util/effect/layer-node"
 
 export interface Interface {
   readonly prepare: (pluginID: string, input: PrepareInput) => Effect.Effect<Receipt, unknown>
-  readonly check: (entry: SubagentAdmissionStore.Entry) => Effect.Effect<void, Permission.BlockedError | Session.NotFoundError | SubagentAdmissionStore.Conflict>
+  readonly check: (entry: SubagentAdmissionStore.Entry, phase?: "start" | "resume") => Effect.Effect<void, Permission.BlockedError | Session.NotFoundError | SubagentAdmissionStore.Conflict>
 }
 
 export function receipt(entry: SubagentAdmissionStore.Entry): Receipt {
@@ -70,12 +70,13 @@ export const make: Effect.Effect<Interface, never, Session.Service | SessionInbo
     return anchor
   })
 
-  const check = Effect.fn(function* (entry: SubagentAdmissionStore.Entry) {
+  const check = Effect.fn(function* (entry: SubagentAdmissionStore.Entry, phase: "start" | "resume" = "start") {
     const child = yield* sessions.get(entry.childSessionID)
     // Projected sessions report an omitted variant as "default"; compare with the same rule as Session model switching.
     const sameModel = child.model?.providerID === entry.model.providerID && child.model.id === entry.model.id &&
       (child.model.variant ?? "default") === (entry.model.variant ?? "default")
-    if (child.parentID !== entry.parentSessionID || child.agent !== entry.agent || !sameModel)
+    // A resumed running generation retains the runtime model selected after its first authorization.
+    if (child.parentID !== entry.parentSessionID || child.agent !== entry.agent || (phase === "start" && !sameModel))
       return yield* new SubagentAdmissionStore.Conflict({ admissionID: entry.admissionID, reason: "Prepared child binding changed" })
     if (entry.invocation.kind === "team") yield* anchorFor(entry)
     yield* permission.assertNotDenied({
