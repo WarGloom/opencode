@@ -71,6 +71,7 @@ import { SessionCompaction } from "../session/compaction.js"
 import { SessionInstructions } from "../session/instructions.js"
 import { SessionSearch } from "../session/search.js"
 import { SessionSearchBuild } from "../session/search-build.js"
+import { SessionEnvironment } from "../session/environment.js"
 import { SubagentJob } from "../session/subagent-job.js"
 import { SharedCache } from "../shared-cache.js"
 import { Shell } from "../shell.js"
@@ -135,6 +136,7 @@ import { WarmingPlugin } from "./warming.js"
 import { WellKnownPlugin } from "../wellknown/plugin.js"
 
 const nodes = [
+  SessionEnvironment.node,
   Agent.node,
   // Activation clears the ambient context, so built-ins see the configured build channel only through this.
   App.node,

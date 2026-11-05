@@ -20,4 +20,4 @@ Returns: nothing
 - `Prompt.FileSource`: `{ type: "inline" } | { type: "uri"; uri: string }`
 - `Prompt.Mention`: `{ start: number; end: number; text: string }`
 - `PromptInput.FileAttachment`: `{ uri: string; source?: Prompt.FileSource; name?: string; description?: string; mention?: Prompt.Mention }`
-- `PromptInput.SkillAttachment`: `{ id: string; mention?: Prompt.Mention }`
+- `PromptInput.SkillAttachment`: `{ id: string; arguments?: string; mention?: Prompt.Mention }`

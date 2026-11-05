@@ -34,6 +34,11 @@ import { PluginHooks } from "@opencode/core/plugin/hooks"
 import { Provider } from "@opencode/core/provider"
 import { Session } from "@opencode/core/session"
 import { SessionInbox } from "@opencode/core/session/inbox"
+import { SessionEnvironment } from "@opencode/core/session/environment"
+import { SubagentAdmission } from "@opencode/core/session/subagent-admission"
+import { SubagentAdmissionRun } from "@opencode/core/session/subagent-admission-run"
+import { SubagentAdmissionStore } from "@opencode/core/session/subagent-admission-store"
+import { SessionExecution } from "@opencode/core/session/execution"
 import { SharedCache } from "@opencode/core/shared-cache"
 import { InstructionEntry } from "@opencode/core/session/instruction-entry"
 import { PersistentPty } from "@opencode/core/persistent-pty"
@@ -127,6 +132,10 @@ export const makePluginTestLayer = (
       Generate.node,
       LayerNodePlatform.httpClient,
       Plugin.node,
+      SubagentAdmission.node,
+      SubagentAdmissionRun.node,
+      SubagentAdmissionStore.node,
+      SessionExecution.node,
       Agent.node,
       Artifact.node,
       AISDK.node,
@@ -143,6 +152,7 @@ export const makePluginTestLayer = (
       Mcp.node,
       SessionInbox.node,
       Session.node,
+      SessionEnvironment.node,
       SharedCache.node,
       InstructionEntry.node,
       PersistentPty.node,

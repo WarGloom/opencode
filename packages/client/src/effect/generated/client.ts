@@ -99,6 +99,10 @@ import type {
   ExperimentalSessionExportOutput,
   ExperimentalSessionSkillInput,
   ExperimentalSessionSkillOutput,
+  ExperimentalSessionSkillActivationsInput,
+  ExperimentalSessionSkillActivationsOutput,
+  ExperimentalSessionSkillActivationInput,
+  ExperimentalSessionSkillActivationOutput,
   ExperimentalSessionWaitInput,
   ExperimentalSessionWaitOutput,
   ExperimentalSessionInstructionsEntryListInput,
@@ -872,9 +876,25 @@ const EndpointExperimentalSessionSkill = (raw: RawClient["server.session"]) => (
   preserveEffect<ExperimentalSessionSkillOutput>()(
     raw["session.skill"]({
       params: { sessionID: input["sessionID"] },
-      payload: { id: input["id"], resume: input["resume"] },
+      payload: { id: input["id"], arguments: input["arguments"], resume: input["resume"] },
     }).pipe(Effect.mapError(mapClientError)),
   )
+
+const EndpointExperimentalSessionSkillActivations =
+  (raw: RawClient["server.session"]) => (input: ExperimentalSessionSkillActivationsInput) =>
+    preserveEffect<ExperimentalSessionSkillActivationsOutput>()(
+      raw["session.skillActivations"]({ params: { sessionID: input["sessionID"] } }).pipe(
+        Effect.mapError(mapClientError),
+      ),
+    )
+
+const EndpointExperimentalSessionSkillActivation =
+  (raw: RawClient["server.session"]) => (input: ExperimentalSessionSkillActivationInput) =>
+    preserveEffect<ExperimentalSessionSkillActivationOutput>()(
+      raw["session.skillActivation"]({ params: { sessionID: input["sessionID"], skillID: input["skillID"] } }).pipe(
+        Effect.mapError(mapClientError),
+      ),
+    )
 
 const EndpointExperimentalSessionWait = (raw: RawClient["server.session"]) => (input: ExperimentalSessionWaitInput) =>
   preserveEffect<ExperimentalSessionWaitOutput>()(
@@ -925,6 +945,8 @@ const adaptGroupExperimentalSession = (raw: RawClient["server.session"]) => ({
   import: EndpointExperimentalSessionImport(raw),
   export: EndpointExperimentalSessionExport(raw),
   skill: EndpointExperimentalSessionSkill(raw),
+  skillActivations: EndpointExperimentalSessionSkillActivations(raw),
+  skillActivation: EndpointExperimentalSessionSkillActivation(raw),
   wait: EndpointExperimentalSessionWait(raw),
   instructions: {
     entry: {

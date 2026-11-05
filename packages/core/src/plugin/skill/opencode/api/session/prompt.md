@@ -22,8 +22,8 @@ Returns: `{ data: Session.Inbox.User }`
 - `Prompt.FileAttachment`: `{ data: string; mime: string; source: Prompt.FileSource; name?: string; description?: string; mention?: Prompt.Mention }`
 - `Prompt.FileSource`: `{ type: "inline" } | { type: "uri"; uri: string }`
 - `Prompt.Mention`: `{ start: number; end: number; text: string }`
-- `Prompt.SkillAttachment`: `{ id: string; name: string; text?: string; mention?: Prompt.Mention }`
+- `Prompt.SkillAttachment`: `{ id: string; name: string; arguments?: string; text?: string; mention?: Prompt.Mention }`
 - `PromptInput.FileAttachment`: `{ uri: string; source?: Prompt.FileSource; name?: string; description?: string; mention?: Prompt.Mention }`
-- `PromptInput.SkillAttachment`: `{ id: string; mention?: Prompt.Mention }`
+- `PromptInput.SkillAttachment`: `{ id: string; arguments?: string; mention?: Prompt.Mention }`
 - `Session.Inbox.User`: `{ id: string; sessionID: string; time: { created }; type: "user"; payload: Session.Inbox.UserPayload; delivery: "steer" | "queue" }`
 - `Session.Inbox.UserPayload`: `{ text: string; files?: Prompt.FileAttachment[]; agents?: Prompt.AgentAttachment[]; skills?: Prompt.SkillAttachment[]; metadata?: Record<string, unknown> }`

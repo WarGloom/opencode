@@ -26,7 +26,7 @@ Returns: `SessionMessagesResponse`
 - `Prompt.FileAttachment`: `{ data: string; mime: string; source: Prompt.FileSource; name?: string; description?: string; mention?: Prompt.Mention }`
 - `Prompt.FileSource`: `{ type: "inline" } | { type: "uri"; uri: string }`
 - `Prompt.Mention`: `{ start: number; end: number; text: string }`
-- `Prompt.SkillAttachment`: `{ id: string; name: string; text?: string; mention?: Prompt.Mention }`
+- `Prompt.SkillAttachment`: `{ id: string; name: string; arguments?: string; text?: string; mention?: Prompt.Mention }`
 - `Session.Message.AgentSelected`: `{ id: string; metadata?: Record<string, unknown>; time: { created }; type: "agent-switched"; agent: string; previous?: string }`
 - `Session.Message.Assistant`: `{ id, metadata, time, type, agent, model, content, snapshot, finish, rawFinish, native, cost, tokens, error, retry }`
 - `Session.Message.Compaction`: `Session.Message.Compaction.Running | Session.Message.Compaction.Completed | Session.Message.Compaction.Failed`
@@ -38,7 +38,7 @@ Returns: `SessionMessagesResponse`
 - `Session.Message.LocationSwitched`: `{ id: string; metadata?: Record<string, unknown>; time: { created }; type: "location-switched"; projectID?: string; subpath?: string; location: Location.PublicRef; previous?: { location, projectID, subpath } }`
 - `Session.Message.ModelSelected`: `{ id: string; metadata?: Record<string, unknown>; time: { created }; type: "model-switched"; model: Model.Ref; previous?: Model.Ref }`
 - `Session.Message.Shell`: `{ id, metadata, time, type, shellID, command, status, exit, output }`
-- `Session.Message.Skill`: `{ id: string; metadata?: Record<string, unknown>; time: { created }; type: "skill"; skill: string; name: string; text: string }`
+- `Session.Message.Skill`: `{ id, metadata, time, type, activationID, agent, source, skill, name, definition, arguments, revision, text }`
 - `Session.Message.Synthetic`: `{ id: string; metadata?: Record<string, unknown>; time: { created }; text: string; description?: string; type: "synthetic" }`
 - `Session.Message.System`: `{ id: string; metadata?: Record<string, unknown>; time: { created }; type: "system"; text: string; description?: string }`
 - `Session.Message.User`: `{ id: string; metadata?: Record<string, unknown>; time: { created }; text: string; files?: Prompt.FileAttachment[]; agents?: Prompt.AgentAttachment[]; skills?: Prompt.SkillAttachment[]; type: "user" }`

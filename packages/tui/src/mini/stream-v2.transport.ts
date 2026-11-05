@@ -780,6 +780,10 @@ export async function createSessionTransport(input: StreamInput): Promise<Sessio
     }
     if (message.type === "skill") {
       if (state.wait?.messageID === message.id) promoteWait(state.wait, false)
+      if (message.source !== undefined && message.source.kind !== "session") {
+        state.skillMessages.add(message.id)
+        return
+      }
       if (!render || !showTools() || state.skillMessages.has(message.id)) {
         state.skillMessages.add(message.id)
         return
@@ -1099,7 +1103,9 @@ export async function createSessionTransport(input: StreamInput): Promise<Sessio
       if (state.wait?.messageID === messageID) promoteWait(state.wait, true)
       if (state.skillMessages.has(messageID)) return
       state.skillMessages.add(messageID)
-      if (showTools()) write([skillCommit(messageID, event.data.name)])
+      // Prompt and tool activations render through their prompt's skill attachments or their tool part.
+      if (event.data.source.kind !== "session") return
+      if (showTools()) write([skillCommit(messageID, event.data.skill.name)])
       return
     }
     if (event.type === "session.compaction.started") {

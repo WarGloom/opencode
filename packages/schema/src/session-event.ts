@@ -205,6 +205,40 @@ export const Forked = Event.durable({
 })
 export type Forked = typeof Forked.Type
 
+export const ChildAccepted = Event.durable({
+  type: "session.child.accepted",
+  ...options,
+  schema: {
+    ...Base,
+    childSessionID: SessionID,
+    generation: Schema.String,
+  },
+})
+export type ChildAccepted = typeof ChildAccepted.Type
+
+/** A parent has an authorized child admission that has not started or been cancelled yet. */
+export const ChildPrepared = Event.durable({
+  type: "session.child.prepared",
+  ...options,
+  schema: {
+    ...Base,
+    admissionID: Schema.String,
+    childSessionID: SessionID,
+  },
+})
+export type ChildPrepared = typeof ChildPrepared.Type
+
+export const ChildResolved = Event.durable({
+  type: "session.child.resolved",
+  ...options,
+  schema: {
+    ...Base,
+    admissionID: Schema.String,
+    outcome: Schema.Literals(["started", "cancelled"]),
+  },
+})
+export type ChildResolved = typeof ChildResolved.Type
+
 const InboxRef = {
   ...Base,
   inboxID: SessionMessage.ID,
@@ -299,9 +333,14 @@ export namespace Skill {
     ...options,
     schema: {
       ...Base,
-      id: SkillSchema.ID,
-      name: SkillSchema.Name,
-      text: Schema.String,
+      activationID: SkillSchema.ActivationID,
+      agent: Agent.ID,
+      source: SessionMessage.SkillActivationSource,
+      skill: SkillSchema.Info,
+      arguments: Schema.String.pipe(optional),
+      revision: Schema.String,
+      content: Schema.String,
+      metadata: Schema.Record(Schema.String, Schema.Json),
     },
   })
   export type Activated = typeof Activated.Type
@@ -720,6 +759,9 @@ export const Definitions = Event.inventory(
 // Internal and replay-only events are excluded from the public manifest.
 export const DurableDefinitions = Event.inventory(
   ...Definitions.filter((definition) => definition.durability === "durable"),
+  ChildAccepted,
+  ChildPrepared,
+  ChildResolved,
   UsageRecorded,
   MessageContentUpdated,
 )

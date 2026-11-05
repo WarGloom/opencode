@@ -28,7 +28,7 @@ Returns: nothing
 - `Prompt.FileAttachment`: `{ data: string; mime: string; source: Prompt.FileSource; name?: string; description?: string; mention?: Prompt.Mention }`
 - `Prompt.FileSource`: `{ type: "inline" } | { type: "uri"; uri: string }`
 - `Prompt.Mention`: `{ start: number; end: number; text: string }`
-- `Prompt.SkillAttachment`: `{ id: string; name: string; text?: string; mention?: Prompt.Mention }`
+- `Prompt.SkillAttachment`: `{ id: string; name: string; arguments?: string; text?: string; mention?: Prompt.Mention }`
 - `Session.Inbox.Compaction`: `{ id: string; sessionID: string; time: { created }; type: "compaction"; payload: unknown; delivery: "steer" | "queue" }`
 - `Session.Inbox.Info`: `Session.Inbox.User | Session.Inbox.Synthetic | Session.Inbox.Compaction | Session.Inbox.Move`
 - `Session.Inbox.Move`: `{ id: string; sessionID: string; time: { created }; type: "move"; delivery: "steer" | "queue"; payload: Session.Inbox.MovePayload }`

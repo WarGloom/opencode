@@ -1,8 +1,8 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "ea7fb45e-fef3-40b6-8e09-42b781c5bf23",
-  "prevIds": ["6fdb1fc8-74cd-4f15-8faa-e109d3030da9"],
+  "id": "0f6a2ef2-7bfa-42f1-ba88-44f115c1593c",
+  "prevIds": ["ea7fb45e-fef3-40b6-8e09-42b781c5bf23"],
   "ddl": [
     {
       "name": "account_state",
@@ -74,6 +74,10 @@
     },
     {
       "name": "instruction_state",
+      "entityType": "tables"
+    },
+    {
+      "name": "session_child_preparation",
       "entityType": "tables"
     },
     {
@@ -1380,6 +1384,56 @@
       "autoincrement": false,
       "default": null,
       "generated": null,
+      "name": "admission_id",
+      "entityType": "columns",
+      "table": "session_child_preparation"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "session_id",
+      "entityType": "columns",
+      "table": "session_child_preparation"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "child_session_id",
+      "entityType": "columns",
+      "table": "session_child_preparation"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "status",
+      "entityType": "columns",
+      "table": "session_child_preparation"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_created",
+      "entityType": "columns",
+      "table": "session_child_preparation"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
       "name": "id",
       "entityType": "columns",
       "table": "session_inbox"
@@ -2189,6 +2243,17 @@
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
       "nameExplicit": false,
+      "name": "fk_session_child_preparation_session_id_session_v2_id_fk",
+      "entityType": "fks",
+      "table": "session_child_preparation"
+    },
+    {
+      "columns": ["session_id"],
+      "tableTo": "session_v2",
+      "columnsTo": ["id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
       "name": "fk_session_inbox_session_id_session_v2_id_fk",
       "entityType": "fks",
       "table": "session_inbox"
@@ -2393,6 +2458,13 @@
       "nameExplicit": false,
       "name": "instruction_state_pk",
       "table": "instruction_state",
+      "entityType": "pks"
+    },
+    {
+      "columns": ["admission_id"],
+      "nameExplicit": false,
+      "name": "session_child_preparation_pk",
+      "table": "session_child_preparation",
       "entityType": "pks"
     },
     {
@@ -2614,6 +2686,24 @@
       "name": "blob_ref_session_seq_idx",
       "entityType": "indexes",
       "table": "blob_ref"
+    },
+    {
+      "columns": [
+        {
+          "value": "session_id",
+          "isExpression": false
+        },
+        {
+          "value": "status",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "session_child_preparation_session_status_idx",
+      "entityType": "indexes",
+      "table": "session_child_preparation"
     },
     {
       "columns": [

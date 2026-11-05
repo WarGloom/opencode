@@ -13,6 +13,7 @@ import { Session } from "../../session.js"
 import { SessionSchema } from "../../session/schema.js"
 import { SubagentDepth } from "../../session/subagent-depth.js"
 import { SubagentJob } from "../../session/subagent-job.js"
+import { SessionMessage } from "../../session/message.js"
 
 export const name = "subagent"
 
@@ -164,6 +165,7 @@ export const Plugin = {
 
               yield* sessions
                 .prompt({
+                  id: SessionMessage.ID.make(`msg_subagent_${context.messageID}_${context.id}`),
                   sessionID: child.id,
                   text:
                     existing === undefined

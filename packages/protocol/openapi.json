@@ -2366,8 +2366,252 @@
         ],
         "security": [],
         "responses": {
-          "204": {
-            "description": "<No Content>"
+          "200": {
+            "description": "Session.Message.SkillActivation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session.Message.SkillActivation"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "InvalidRequestError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvalidRequestErrorEncoded"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedErrorEncoded"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "ForbiddenError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForbiddenErrorEncoded"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "SessionNotFoundError | SkillNotFoundError | LocationNotFoundError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/SessionNotFoundErrorEncoded"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SkillNotFoundErrorEncoded"
+                    },
+                    {
+                      "$ref": "#/components/schemas/LocationNotFoundErrorEncoded"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "ConflictError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictErrorEncoded"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "UnknownError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnknownErrorEncoded"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "SkillLoadError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLoadErrorEncoded"
+                }
+              }
+            }
+          }
+        },
+        "description": "Experimental: may change without compatibility guarantees. Activate a skill for a session by appending its accepted snapshot and resuming execution. An archived session is unarchived.",
+        "summary": "Activate skill",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "$ref": "#/components/schemas/Skill.ID"
+                  },
+                  "arguments": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "resume": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": ["id"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": true
+        }
+      }
+    },
+    "/api/experimental/session/{sessionID}/skill/activation": {
+      "get": {
+        "tags": ["session"],
+        "operationId": "experimental.session.skillActivations",
+        "parameters": [
+          {
+            "name": "sessionID",
+            "in": "path",
+            "schema": {
+              "$ref": "#/components/schemas/Session.ID"
+            },
+            "required": true
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Session.Message.SkillActivation"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "InvalidRequestError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvalidRequestErrorEncoded"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedErrorEncoded"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "SessionNotFoundError | LocationNotFoundError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/SessionNotFoundErrorEncoded"
+                    },
+                    {
+                      "$ref": "#/components/schemas/LocationNotFoundErrorEncoded"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "UnknownError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnknownErrorEncoded"
+                }
+              }
+            }
+          }
+        },
+        "description": "Experimental: may change without compatibility guarantees. List the session's accepted skill activation snapshots in order.",
+        "summary": "List skill activations"
+      }
+    },
+    "/api/experimental/session/{sessionID}/skill/activation/{skillID}": {
+      "get": {
+        "tags": ["session"],
+        "operationId": "experimental.session.skillActivation",
+        "parameters": [
+          {
+            "name": "sessionID",
+            "in": "path",
+            "schema": {
+              "$ref": "#/components/schemas/Session.ID"
+            },
+            "required": true
+          },
+          {
+            "name": "skillID",
+            "in": "path",
+            "schema": {
+              "$ref": "#/components/schemas/Skill.ID"
+            },
+            "required": true
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Session.Message.SkillActivation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session.Message.SkillActivation"
+                }
+              }
+            }
           },
           "400": {
             "description": "InvalidRequestError",
@@ -2409,46 +2653,19 @@
               }
             }
           },
-          "502": {
-            "description": "SkillLoadError",
+          "500": {
+            "description": "UnknownError",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SkillLoadErrorEncoded"
+                  "$ref": "#/components/schemas/UnknownErrorEncoded"
                 }
               }
             }
           }
         },
-        "description": "Activate a skill for a session by appending a skill message and resuming execution. An archived session is unarchived.",
-        "summary": "Activate skill",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "id": {
-                    "$ref": "#/components/schemas/Skill.ID"
-                  },
-                  "resume": {
-                    "anyOf": [
-                      {
-                        "type": "boolean"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  }
-                },
-                "required": ["id"],
-                "additionalProperties": false
-              }
-            }
-          },
-          "required": true
-        }
+        "description": "Experimental: may change without compatibility guarantees. Get the latest accepted activation snapshot of one skill.",
+        "summary": "Get skill activation"
       }
     },
     "/api/session/{sessionID}/synthetic": {
@@ -24586,6 +24803,9 @@
           "name": {
             "$ref": "#/components/schemas/Skill.Name"
           },
+          "arguments": {
+            "type": "string"
+          },
           "text": {
             "type": "string"
           },
@@ -24624,6 +24844,9 @@
         "properties": {
           "id": {
             "$ref": "#/components/schemas/Skill.ID"
+          },
+          "arguments": {
+            "type": "string"
           },
           "mention": {
             "$ref": "#/components/schemas/Prompt.Mention"
@@ -25590,6 +25813,15 @@
           },
           {
             "$ref": "#/components/schemas/session.revert.committed"
+          },
+          {
+            "$ref": "#/components/schemas/session.child.accepted"
+          },
+          {
+            "$ref": "#/components/schemas/session.child.prepared"
+          },
+          {
+            "$ref": "#/components/schemas/session.child.resolved"
           },
           {
             "$ref": "#/components/schemas/session.usage.recorded"
@@ -26708,11 +26940,29 @@
             "type": "string",
             "enum": ["skill"]
           },
+          "activationID": {
+            "$ref": "#/components/schemas/Skill.ActivationID"
+          },
+          "agent": {
+            "$ref": "#/components/schemas/Agent.ID"
+          },
+          "source": {
+            "$ref": "#/components/schemas/Session.Message.SkillActivationSource"
+          },
           "skill": {
             "$ref": "#/components/schemas/Skill.ID"
           },
           "name": {
             "$ref": "#/components/schemas/Skill.Name"
+          },
+          "definition": {
+            "$ref": "#/components/schemas/Skill.Info"
+          },
+          "arguments": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
           },
           "text": {
             "type": "string"
@@ -26720,6 +26970,160 @@
         },
         "required": ["id", "time", "type", "skill", "name", "text"],
         "additionalProperties": false
+      },
+      "Session.Message.SkillActivation": {
+        "type": "object",
+        "properties": {
+          "activationID": {
+            "$ref": "#/components/schemas/Skill.ActivationID"
+          },
+          "sessionID": {
+            "$ref": "#/components/schemas/Session.ID"
+          },
+          "agent": {
+            "$ref": "#/components/schemas/Agent.ID"
+          },
+          "source": {
+            "$ref": "#/components/schemas/Session.Message.SkillActivationSource"
+          },
+          "skill": {
+            "$ref": "#/components/schemas/Skill.Info"
+          },
+          "arguments": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object"
+          }
+        },
+        "required": ["activationID", "sessionID", "agent", "source", "skill", "revision", "content", "metadata"],
+        "additionalProperties": false
+      },
+      "Session.Message.SkillActivationSource": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": ["session"]
+              },
+              "messageID": {
+                "$ref": "#/components/schemas/Session.Message.ID"
+              }
+            },
+            "required": ["kind", "messageID"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": ["prompt"]
+              },
+              "messageID": {
+                "$ref": "#/components/schemas/Session.Message.ID"
+              },
+              "selectionIndex": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "string",
+                    "enum": ["Infinity", "-Infinity", "NaN"]
+                  }
+                ]
+              }
+            },
+            "required": ["kind", "messageID", "selectionIndex"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": ["tool"]
+              },
+              "messageID": {
+                "$ref": "#/components/schemas/Session.Message.ID"
+              },
+              "callID": {
+                "type": "string"
+              }
+            },
+            "required": ["kind", "messageID", "callID"],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "Session.Message.SkillActivationSource_1": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": ["session"]
+              },
+              "messageID": {
+                "$ref": "#/components/schemas/Session.Message.ID"
+              }
+            },
+            "required": ["kind", "messageID"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": ["prompt"]
+              },
+              "messageID": {
+                "$ref": "#/components/schemas/Session.Message.ID"
+              },
+              "selectionIndex": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "string",
+                    "enum": ["NaN", "Infinity", "-Infinity"]
+                  }
+                ]
+              }
+            },
+            "required": ["kind", "messageID", "selectionIndex"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": ["tool"]
+              },
+              "messageID": {
+                "$ref": "#/components/schemas/Session.Message.ID"
+              },
+              "callID": {
+                "type": "string"
+              }
+            },
+            "required": ["kind", "messageID", "callID"],
+            "additionalProperties": false
+          }
+        ]
       },
       "Session.Message.Synthetic": {
         "type": "object",
@@ -27593,6 +27997,10 @@
         },
         "required": ["_tag", "id", "message"],
         "additionalProperties": false
+      },
+      "Skill.ActivationID": {
+        "type": "string",
+        "pattern": "^ska_"
       },
       "Skill.ID": {
         "type": "string"
@@ -30384,6 +30792,172 @@
         "required": ["id", "created", "type", "durable", "data"],
         "additionalProperties": false
       },
+      "session.child.accepted": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Event.ID"
+          },
+          "created": {
+            "type": "number"
+          },
+          "metadata": {
+            "type": "object"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["session.child.accepted"]
+          },
+          "durable": {
+            "type": "object",
+            "properties": {
+              "aggregateID": {
+                "type": "string"
+              },
+              "seq": {
+                "$ref": "#/components/schemas/Event.Seq"
+              },
+              "version": {
+                "$ref": "#/components/schemas/Event.VersionEncoded_c77c5abcb68d"
+              }
+            },
+            "required": ["aggregateID", "seq", "version"],
+            "additionalProperties": false
+          },
+          "location": {
+            "$ref": "#/components/schemas/Location.Ref"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "sessionID": {
+                "$ref": "#/components/schemas/Session.ID"
+              },
+              "childSessionID": {
+                "$ref": "#/components/schemas/Session.ID"
+              },
+              "generation": {
+                "type": "string"
+              }
+            },
+            "required": ["sessionID", "childSessionID", "generation"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["id", "created", "type", "durable", "data"],
+        "additionalProperties": false
+      },
+      "session.child.prepared": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Event.ID"
+          },
+          "created": {
+            "type": "number"
+          },
+          "metadata": {
+            "type": "object"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["session.child.prepared"]
+          },
+          "durable": {
+            "type": "object",
+            "properties": {
+              "aggregateID": {
+                "type": "string"
+              },
+              "seq": {
+                "$ref": "#/components/schemas/Event.Seq"
+              },
+              "version": {
+                "$ref": "#/components/schemas/Event.VersionEncoded_c77c5abcb68d"
+              }
+            },
+            "required": ["aggregateID", "seq", "version"],
+            "additionalProperties": false
+          },
+          "location": {
+            "$ref": "#/components/schemas/Location.Ref"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "sessionID": {
+                "$ref": "#/components/schemas/Session.ID"
+              },
+              "admissionID": {
+                "type": "string"
+              },
+              "childSessionID": {
+                "$ref": "#/components/schemas/Session.ID"
+              }
+            },
+            "required": ["sessionID", "admissionID", "childSessionID"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["id", "created", "type", "durable", "data"],
+        "additionalProperties": false
+      },
+      "session.child.resolved": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Event.ID"
+          },
+          "created": {
+            "type": "number"
+          },
+          "metadata": {
+            "type": "object"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["session.child.resolved"]
+          },
+          "durable": {
+            "type": "object",
+            "properties": {
+              "aggregateID": {
+                "type": "string"
+              },
+              "seq": {
+                "$ref": "#/components/schemas/Event.Seq"
+              },
+              "version": {
+                "$ref": "#/components/schemas/Event.VersionEncoded_c77c5abcb68d"
+              }
+            },
+            "required": ["aggregateID", "seq", "version"],
+            "additionalProperties": false
+          },
+          "location": {
+            "$ref": "#/components/schemas/Location.Ref"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "sessionID": {
+                "$ref": "#/components/schemas/Session.ID"
+              },
+              "admissionID": {
+                "type": "string"
+              },
+              "outcome": {
+                "type": "string",
+                "enum": ["started", "cancelled"]
+              }
+            },
+            "required": ["sessionID", "admissionID", "outcome"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["id", "created", "type", "durable", "data"],
+        "additionalProperties": false
+      },
       "session.compaction.delta": {
         "type": "object",
         "properties": {
@@ -32203,17 +32777,32 @@
               "sessionID": {
                 "$ref": "#/components/schemas/Session.ID"
               },
-              "id": {
-                "$ref": "#/components/schemas/Skill.ID"
+              "activationID": {
+                "$ref": "#/components/schemas/Skill.ActivationID"
               },
-              "name": {
-                "$ref": "#/components/schemas/Skill.Name"
+              "agent": {
+                "$ref": "#/components/schemas/Agent.ID"
               },
-              "text": {
+              "source": {
+                "$ref": "#/components/schemas/Session.Message.SkillActivationSource_1"
+              },
+              "skill": {
+                "$ref": "#/components/schemas/Skill.Info"
+              },
+              "arguments": {
                 "type": "string"
+              },
+              "revision": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string"
+              },
+              "metadata": {
+                "type": "object"
               }
             },
-            "required": ["sessionID", "id", "name", "text"],
+            "required": ["sessionID", "activationID", "agent", "source", "skill", "revision", "content", "metadata"],
             "additionalProperties": false
           }
         },

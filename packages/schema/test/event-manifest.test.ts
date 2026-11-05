@@ -128,6 +128,9 @@ describe("public event manifest", () => {
         "session.message.content.updated.1",
         "session.usage.recorded.1",
         "session.forked.2",
+        "session.child.accepted.1",
+        "session.child.prepared.1",
+        "session.child.resolved.1",
         "session.inbox.delivered.1",
         "session.inbox.enqueued.1",
         "session.inbox.cancelled.1",
@@ -167,6 +170,9 @@ describe("public event manifest", () => {
     )
     expect(SessionEvent.DurableDefinitions).toEqual([
       ...SessionEvent.Definitions.filter((definition) => definition.durability === "durable"),
+      SessionEvent.ChildAccepted,
+      SessionEvent.ChildPrepared,
+      SessionEvent.ChildResolved,
       SessionEvent.UsageRecorded,
       SessionEvent.MessageContentUpdated,
     ])

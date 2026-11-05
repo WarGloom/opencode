@@ -17,6 +17,7 @@ import {
   LocationNotFoundError,
   CommandExecutionError,
   CommandNotFoundError,
+  ForbiddenError,
   FormAlreadySettledError,
   FormInvalidAnswerError,
   FormNotFoundError,
@@ -440,10 +441,11 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
         params: { sessionID: Session.ID },
         payload: Schema.Struct({
           id: Skill.ID,
+          arguments: Schema.String.pipe(Schema.optional),
           resume: Schema.Boolean.pipe(Schema.optional),
         }),
-        success: HttpApiSchema.NoContent,
-        error: [SessionNotFoundError, SkillNotFoundError, SkillLoadError],
+        success: SessionMessage.SkillActivation,
+        error: [SessionNotFoundError, SkillNotFoundError, SkillLoadError, ForbiddenError, ConflictError, UnknownError],
       })
         .middleware(sessionLocationMiddleware)
         .annotateMerge(
@@ -451,7 +453,39 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
             identifier: "experimental.session.skill",
             summary: "Activate skill",
             description:
-              "Activate a skill for a session by appending a skill message and resuming execution. An archived session is unarchived.",
+              "Experimental: may change without compatibility guarantees. Activate a skill for a session by appending its accepted snapshot and resuming execution. An archived session is unarchived.",
+          }),
+        ),
+    )
+    .add(
+      HttpApiEndpoint.get("session.skillActivations", "/api/experimental/session/:sessionID/skill/activation", {
+        params: { sessionID: Session.ID },
+        success: Schema.Array(SessionMessage.SkillActivation),
+        error: [SessionNotFoundError, UnknownError],
+      })
+        .middleware(sessionLocationMiddleware)
+        .annotateMerge(
+          OpenApi.annotations({
+            identifier: "experimental.session.skillActivations",
+            summary: "List skill activations",
+            description:
+              "Experimental: may change without compatibility guarantees. List the session's accepted skill activation snapshots in order.",
+          }),
+        ),
+    )
+    .add(
+      HttpApiEndpoint.get("session.skillActivation", "/api/experimental/session/:sessionID/skill/activation/:skillID", {
+        params: { sessionID: Session.ID, skillID: Skill.ID },
+        success: SessionMessage.SkillActivation,
+        error: [SessionNotFoundError, SkillNotFoundError, UnknownError],
+      })
+        .middleware(sessionLocationMiddleware)
+        .annotateMerge(
+          OpenApi.annotations({
+            identifier: "experimental.session.skillActivation",
+            summary: "Get skill activation",
+            description:
+              "Experimental: may change without compatibility guarantees. Get the latest accepted activation snapshot of one skill.",
           }),
         ),
     )

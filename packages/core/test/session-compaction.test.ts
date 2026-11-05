@@ -1491,10 +1491,16 @@ it.effect("compaction summarizes as usual when the background summary no longer 
     // About 75k tokens arrived after the summarized prefix, past the 68k that may stay verbatim beside it.
     const burst = [...history.near, textUser("x".repeat(300_000)), measured("Burst handled", 182_000)]
 
+    let applied: SessionCompaction.Applied | undefined
     yield* compaction.precompute(Effect.succeed(loaded(session, history.near)))
-    expect(yield* compaction.compact({ reason: "auto", context: loaded(session, burst) })).toEqual({
+    expect(yield* compaction.compact({
+      reason: "auto",
+      context: loaded(session, burst),
+      onApplied: (receipt) => Effect.sync(() => (applied = receipt)),
+    })).toEqual({
       status: "completed",
     })
+    expect(applied).toMatchObject({ reason: "auto", compactionID: expect.stringMatching(/^msg_/) })
     // The background summary is stopped; the summary that is kept covers the whole conversation.
     expect(JSON.stringify(requests.at(-1)?.messages)).toContain("Burst handled")
   }),

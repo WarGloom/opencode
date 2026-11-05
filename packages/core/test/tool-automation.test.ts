@@ -11,6 +11,7 @@ import { Session } from "@opencode/core/session"
 import { Tool } from "@opencode/core/tool"
 import { AutomationTools } from "@opencode/core/tool/plugin/automation"
 import { Document, Info } from "@opencode/schema/config"
+import { Command } from "@opencode/schema/command"
 import type { CommandDefinition } from "@opencode/plugin/effect/command"
 import { testEffect } from "./lib/effect"
 import { permissionLayer } from "./lib/permission"
@@ -104,6 +105,7 @@ const setup = (automationsEnabled?: boolean) =>
       event: { subscribe: () => Stream.never },
       command: {
         list: () => Effect.die("unused command.list"),
+        hook: () => Effect.die("unused command.hook"),
         reload: () => Effect.void,
         transform: (callback) =>
           Effect.sync(() => {
@@ -230,7 +232,13 @@ describe("AutomationTools", () => {
     Effect.gen(function* () {
       const { commands, prompts } = yield* setup()
       yield* commands[0]!
-        .execute({ sessionID, prompt: { text: "  every morning at 9 check CI  " }, delivery: "steer" })
+        .execute({
+          invocationID: Command.InvocationID.create(),
+          agent: Agent.ID.make("build"),
+          sessionID,
+          prompt: { text: "  every morning at 9 check CI  " },
+          delivery: "steer",
+        })
         .pipe(Effect.orDie)
       expect(prompts).toHaveLength(1)
       expect(prompts[0]).toMatchObject({ sessionID, delivery: "steer" })

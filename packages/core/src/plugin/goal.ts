@@ -150,7 +150,7 @@ export const Plugin = define({
       if (
         background.some(
           (work) =>
-            (work.kind === "subagent" || work.kind === "image" || work.kind === "video" || work.kind === "codemode") &&
+            ((work.kind === "subagent" && work.wakes !== false) || work.kind === "image" || work.kind === "video" || work.kind === "codemode") &&
             work.sessionID === sessionID,
         )
       )

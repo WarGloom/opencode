@@ -149,6 +149,32 @@ function configuredProviders(entries: readonly Entry[]) {
     .flatMap((file) => Object.entries(file.info.providers ?? {}))
 }
 
+export interface ConfiguredInput {
+  readonly providerID: string
+  readonly modelID: string
+  readonly input: readonly string[]
+}
+
+/** Explicit effective model input overrides. Catalog-derived capabilities are intentionally excluded. */
+export function configuredInputs(entries: readonly Entry[], models: readonly Model.Info[]): readonly ConfiguredInput[] {
+  const configured = new Map<string, ConfiguredInput>()
+  for (const entry of entries) {
+    if (entry.type !== "document") continue
+    for (const [providerID, provider] of Object.entries(entry.info.providers ?? {})) {
+      for (const [modelID, model] of Object.entries(provider.models ?? {})) {
+        if (model.capabilities?.input === undefined) continue
+        configured.set(`${providerID}\u0000${modelID}`, {
+          providerID,
+          modelID,
+          input: [...model.capabilities.input],
+        })
+      }
+    }
+  }
+  const available = new Set(models.filter((model) => model.enabled).map((model) => `${model.providerID}\u0000${model.id}`))
+  return Array.from(configured).flatMap(([key, item]) => (available.has(key) ? [item] : []))
+}
+
 /**
  * Applies an integration document's providers. The integration's plugin calls this at its own position in the
  * provider chain, so provider plugins registered after it treat these providers as configured ones rather than

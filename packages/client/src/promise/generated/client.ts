@@ -93,6 +93,10 @@ import type {
   ExperimentalSessionExportOutput,
   ExperimentalSessionSkillInput,
   ExperimentalSessionSkillOutput,
+  ExperimentalSessionSkillActivationsInput,
+  ExperimentalSessionSkillActivationsOutput,
+  ExperimentalSessionSkillActivationInput,
+  ExperimentalSessionSkillActivationOutput,
   ExperimentalSessionWaitInput,
   ExperimentalSessionWaitOutput,
   ExperimentalSessionInstructionsEntryListInput,
@@ -1145,10 +1149,32 @@ export function make(options: ClientOptions) {
             {
               method: "POST",
               path: `/api/experimental/session/${encodeURIComponent(input.sessionID)}/skill`,
-              body: { id: input["id"], resume: input["resume"] },
-              successStatus: 204,
-              declaredStatuses: [400, 401, 404, 502],
-              empty: true,
+              body: { id: input["id"], arguments: input["arguments"], resume: input["resume"] },
+              successStatus: 200,
+              declaredStatuses: [400, 401, 403, 404, 409, 500, 502],
+              empty: false,
+            },
+            requestOptions,
+          ),
+        skillActivations: (input: ExperimentalSessionSkillActivationsInput, requestOptions?: RequestOptions) =>
+          request<ExperimentalSessionSkillActivationsOutput>(
+            {
+              method: "GET",
+              path: `/api/experimental/session/${encodeURIComponent(input.sessionID)}/skill/activation`,
+              successStatus: 200,
+              declaredStatuses: [400, 401, 404, 500],
+              empty: false,
+            },
+            requestOptions,
+          ),
+        skillActivation: (input: ExperimentalSessionSkillActivationInput, requestOptions?: RequestOptions) =>
+          request<ExperimentalSessionSkillActivationOutput>(
+            {
+              method: "GET",
+              path: `/api/experimental/session/${encodeURIComponent(input.sessionID)}/skill/activation/${encodeURIComponent(input.skillID)}`,
+              successStatus: 200,
+              declaredStatuses: [400, 401, 404, 500],
+              empty: false,
             },
             requestOptions,
           ),

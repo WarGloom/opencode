@@ -32,7 +32,7 @@ export const OutstandingItem = Schema.Union([
   Image,
   Video,
   CodeMode,
-  Schema.Struct({ ...subagent, sessionID: SessionSchema.ID }),
+  Schema.Struct({ ...subagent, sessionID: SessionSchema.ID, wakes: Schema.optionalKey(Schema.Boolean) }),
 ])
 export type OutstandingItem = typeof OutstandingItem.Type
 
@@ -45,6 +45,10 @@ export const RecoverySchema = Schema.Union([
     ...subagent,
     parentSessionID: SessionSchema.ID,
     outstanding: Schema.optionalKey(Schema.Array(OutstandingItem)),
+    pluginID: Schema.optionalKey(Schema.String),
+    admissionID: Schema.optionalKey(Schema.String),
+    generation: Schema.optionalKey(Schema.String),
+    completion: Schema.optionalKey(Schema.Literals(["parent", "none"])),
   }),
 ])
 

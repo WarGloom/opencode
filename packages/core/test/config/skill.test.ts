@@ -59,6 +59,7 @@ const startEntries = Effect.fnUntraced(function* (
   const pluginHost = host({
     skill: {
       list: () => Effect.die("unused skill.list"),
+      hook: () => Effect.die("unused skill.hook"),
       transform: service.transform,
       reload: service.reload,
     },
@@ -564,6 +565,7 @@ describe("ConfigSkillPlugin.Plugin", () => {
             host({
               skill: {
                 list: () => Effect.die("unused skill.list"),
+                hook: () => Effect.die("unused skill.hook"),
                 transform: service.transform,
                 reload: () => service.reload().pipe(Effect.tap(() => Effect.sync(() => reloads++))),
               },

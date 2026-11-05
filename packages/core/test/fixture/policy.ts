@@ -1,9 +1,11 @@
 import { Config } from "@opencode/core/config"
 import { ConfigIntegration } from "@opencode/core/config/integration"
 import { ConfigPolicyPlugin } from "@opencode/core/config/plugin/policy"
+import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { Integration } from "@opencode/core/integration"
 import { Mcp } from "@opencode/core/mcp/index"
 import { Skill } from "@opencode/core/skill"
+import { SessionEnvironment } from "@opencode/core/session/environment"
 import { Info } from "@opencode/schema/config"
 import { ConfigPolicy } from "@opencode/schema/config/policy"
 import { ID } from "@opencode/schema/event"
@@ -57,6 +59,7 @@ export const registerIntegrationPolicy = Effect.fn(function* (input: {
       },
       skill: {
         list: () => Effect.die("unused skill.list"),
+        hook: () => Effect.succeed({ dispose: Effect.void }),
         transform: (callback) => input.skill?.transform(callback) ?? Effect.succeed({ dispose: Effect.void }),
         reload: () => input.skill?.reload() ?? Effect.void,
       },
@@ -69,6 +72,7 @@ export const registerIntegrationPolicy = Effect.fn(function* (input: {
       },
     }),
   ).pipe(
+    Effect.provide(AppNodeBuilder.build(SessionEnvironment.node)),
     Effect.provideService(
       Credential.Service,
       Credential.Service.of({
