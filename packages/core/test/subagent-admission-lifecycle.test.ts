@@ -14,6 +14,8 @@ import { Plugin } from "@opencode/core/plugin"
 import type { SubagentDomain } from "@opencode/plugin/effect/subagent"
 import { SubagentAdmission } from "@opencode/core/session/subagent-admission"
 import { SubagentAdmissionRun } from "@opencode/core/session/subagent-admission-run"
+import { SubagentJob } from "@opencode/core/session/subagent-job"
+import { SessionInbox } from "@opencode/core/session/inbox"
 import { SessionMessage } from "@opencode/core/session/message"
 import { SessionEvent } from "@opencode/core/session/event"
 import { Bus } from "@opencode/core/bus"
@@ -42,7 +44,7 @@ const llmLayer = TestLLM.testLayer({ fallback: TestLLM.text("Review complete", "
 const it = testEffect(
   Layer.merge(
     llmLayer,
-    AppNodeBuilder.build(LayerNode.group([Session.node, Job.node, Bus.node, Database.node, KV.node, SessionStore.node, Instance.node, LocationServiceMap.node, SubagentAdmissionStore.node, SessionRestart.node, SessionExecution.node]), [
+    AppNodeBuilder.build(LayerNode.group([Session.node, Job.node, Bus.node, Database.node, KV.node, SessionStore.node, SessionInbox.node, Instance.node, LocationServiceMap.node, SubagentAdmissionStore.node, SessionRestart.node, SessionExecution.node]), [
       Global.node.replace(tempGlobalLayer),
       offlineModels,
       Watcher.node.replace(Watcher.configured({ enabled: false })),
@@ -112,6 +114,69 @@ const admissionFixture = Effect.gen(function* () {
 })
 
 describe("subagent admission lifecycle", () => {
+  it.live("restarts a running admission after a model change with its original generation and initial model", () =>
+    Effect.gen(function* () {
+      // given
+      const { sessions, host, input, parent, llm, bus } = yield* admissionFixture
+      yield* sessions.setPermissions({ sessionID: parent.id, permissions: [{ action: "subagent", resource: "reviewer", effect: "allow" }] })
+      const prepared = yield* host.experimental.subagent.prepare({ ...input, admissionID: "restart-model-change", target: { kind: "create" } })
+      const locations = yield* LocationServiceMap.Service
+      yield* Effect.gen(function* () {
+        const admissions = yield* SubagentAdmissionStore.Service
+        const ownership = LayerNode.compile(LayerNode.group([Job.node, SubagentJob.node, SubagentAdmissionRun.node]), { replacements: [
+          Session.node.replace(Layer.succeed(Session.Service, sessions)),
+          Database.node.replace(Layer.succeed(Database.Service, yield* Database.Service)),
+          Bus.node.replace(Layer.succeed(Bus.Service, bus)),
+          SubagentAdmissionStore.node.replace(Layer.succeed(SubagentAdmissionStore.Service, admissions)),
+          SessionExecution.node.replace(Layer.succeed(SessionExecution.Service, yield* SessionExecution.Service)),
+          SubagentAdmission.node.replace(Layer.succeed(SubagentAdmission.Service, yield* SubagentAdmission.Service)),
+          SessionInbox.node.replace(Layer.succeed(SessionInbox.Service, yield* SessionInbox.Service)),
+        ] })
+        const originalScope = yield* Scope.make()
+        yield* Effect.addFinalizer(() => Scope.close(originalScope, Exit.void))
+        const original = yield* Layer.buildWithScope(Layer.fresh(ownership), originalScope)
+        const originalRuns = Context.get(original, SubagentAdmissionRun.Service)
+        const model = Model.Ref.make({ providerID: input.model.providerID, id: Model.ID.make("fallback"), variant: Model.VariantID.make("high") })
+        const start = { admissionID: prepared.admissionID, prompt: { text: "restart after model change" }, delivery: "queue" as const, mode: "background" as const, completion: "parent" as const }
+        yield* sessions.switchModel({ sessionID: prepared.childSessionID, model })
+        expect(yield* originalRuns.start("lifetime-owner", start).pipe(Effect.flip)).toMatchObject({ reason: "Prepared child binding changed" })
+        yield* sessions.switchModel({ sessionID: prepared.childSessionID, model: input.model })
+        const primary = yield* llm.gate()
+        yield* Effect.addFinalizer(() => primary.release)
+        const started = yield* originalRuns.start("lifetime-owner", start)
+        if (started.run === undefined) throw new Error("Native start omitted its run reference")
+        const run = started.run
+        yield* primary.started.pipe(Effect.timeout("2 seconds"))
+
+        // when
+        yield* Scope.close(originalScope, Exit.void)
+        yield* sessions.switchModel({ sessionID: prepared.childSessionID, model })
+        const restartedScope = yield* Scope.make()
+        yield* Effect.addFinalizer(() => Scope.close(restartedScope, Exit.void))
+        const restarted = yield* Layer.buildWithScope(Layer.fresh(ownership), restartedScope)
+        const jobs = Context.get(restarted, Job.Service)
+        const runs = Context.get(restarted, SubagentAdmissionRun.Service)
+        expect(yield* jobs.get(run.childSessionID)).toBeUndefined()
+        expect((yield* jobs.pendingBackground).map((job) => [job.status, job.recovery])).toEqual([["running", expect.objectContaining({ pluginID: "lifetime-owner", generation: run.generation, parentSessionID: parent.id, childSessionID: run.childSessionID, agent: input.agent })]])
+        const completion = yield* Deferred.make<void>()
+        yield* bus.listen((event) => event.type === SessionEvent.InboxEnqueued.type && event.durable?.aggregateID === parent.id
+          ? Deferred.succeed(completion, undefined).pipe(Effect.asVoid) : Effect.void)
+        const ready = yield* runs.ready("lifetime-owner", { run }).pipe(Effect.timeout("2 seconds"))
+
+        // then
+        expect(ready).toMatchObject({ status: "running", run })
+        expect((yield* jobs.get(run.childSessionID))?.generation).toBe(run.generation)
+        expect((yield* sessions.get(run.childSessionID)).model).toEqual(model)
+        expect((yield* admissions.get("lifetime-owner", prepared.admissionID))?.model).toEqual(input.model)
+        yield* primary.release
+        expect((yield* runs.wait("lifetime-owner", { run }).pipe(Effect.timeout("2 seconds"))).receipt).toMatchObject({ status: "completed", run, output: "Review complete" })
+        yield* Deferred.await(completion).pipe(Effect.timeout("2 seconds"))
+        yield* runs.ready("lifetime-owner", { run })
+        expect((yield* sessions.inbox(parent.id)).filter((item) => item.type === "synthetic")).toHaveLength(1)
+      }).pipe(Effect.provide(locations.get(parent.location)))
+    }),
+  )
+
   it.live("preserves a delegated generation through a plugin timeout and delivers its recovered result once", () =>
     Effect.gen(function* () {
       // given
