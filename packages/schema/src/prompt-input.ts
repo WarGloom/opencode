@@ -19,6 +19,7 @@ export interface Prompt extends Schema.Schema.Type<typeof Prompt> {}
 export interface SkillAttachment extends Schema.Schema.Type<typeof SkillAttachment> {}
 export const SkillAttachment = Schema.Struct({
   id: Skill.ID,
+  arguments: Schema.String.pipe(optional),
   mention: PromptMention.pipe(optional),
 }).annotate({ identifier: "PromptInput.SkillAttachment" })
 

@@ -65,6 +65,12 @@ export class InvalidDurableEventError extends Schema.TaggedError<InvalidDurableE
   },
 ) {}
 
+export class StaleAggregateError extends Schema.TaggedError<StaleAggregateError>()("Bus.StaleAggregate", {
+  aggregateID: Schema.String,
+  expected: Schema.Number,
+  actual: Schema.Number,
+}) {}
+
 const envelope = (aggregateID: string, seq: number, version: number) => ({
   aggregateID,
   seq: Event.Seq.make(seq),
@@ -106,6 +112,8 @@ export interface PublishOptions {
   readonly global?: boolean
   /** Local operational projection committed atomically with a new durable event. Not replayed or serialized. */
   readonly commit?: (seq: number) => Effect.Effect<void>
+  /** Commit only when the aggregate is still at this sequence. */
+  readonly expectedSequence?: number
 }
 
 export type PublishInput<D extends Event.DurableDefinition = Event.DurableDefinition> = readonly [
@@ -297,6 +305,7 @@ export function configured(options?: Options) {
             readonly strictOwner?: boolean
           },
           commit?: (seq: number) => Effect.Effect<void>,
+          expectedSequence?: number,
         ) {
           return Effect.gen(function* () {
             const durable = definition.durable
@@ -324,6 +333,10 @@ export function configured(options?: Options) {
                           .get()
                           .pipe(Effect.orDie)
                         const latest = row?.seq ?? -1
+                        if (expectedSequence !== undefined && latest !== expectedSequence)
+                          return yield* Effect.die(
+                            new StaleAggregateError({ aggregateID, expected: expectedSequence, actual: latest }),
+                          )
                         const encode = () =>
                           Schema.encodeUnknownSync(definition.data)(event.data) as Record<string, unknown>
                         if (input?.strictOwner && row?.ownerID && row.ownerID !== input.ownerID) {
@@ -452,6 +465,7 @@ export function configured(options?: Options) {
           definition: D,
           event: Event.Payload<D>,
           commit?: PublishOptions["commit"],
+          expectedSequence?: number,
         ) {
           return Effect.gen(function* () {
             if (!definition.durable && commit)
@@ -461,15 +475,34 @@ export function configured(options?: Options) {
                   message: "Local commit hooks require a durable event",
                 }),
               )
+            if (!definition.durable && expectedSequence !== undefined)
+              return yield* Effect.die(
+                new InvalidDurableEventError({
+                  type: event.type,
+                  message: "Expected aggregate sequences require a durable event",
+                }),
+              )
             if (definition.durable) {
               const aggregateID = (event.data as Record<string, unknown>)[definition.durable.aggregate]
               if (typeof aggregateID !== "string")
-                return yield* commitDurableEvent(definition, event as Event.Payload, undefined, commit).pipe(
+                return yield* commitDurableEvent(
+                  definition,
+                  event as Event.Payload,
+                  undefined,
+                  commit,
+                  expectedSequence,
+                ).pipe(
                   Effect.as(event),
                 )
               return yield* durableLocks.withLock(aggregateID)(
                 Effect.gen(function* () {
-                  const committed = yield* commitDurableEvent(definition, event as Event.Payload, undefined, commit)
+                  const committed = yield* commitDurableEvent(
+                    definition,
+                    event as Event.Payload,
+                    undefined,
+                    commit,
+                    expectedSequence,
+                  )
                   if (!committed) return event
                   event = committed.event as Event.Payload<D>
                   yield* notify(event as Event.Payload, true)
@@ -529,7 +562,7 @@ export function configured(options?: Options) {
         function publish<D extends Event.Definition>(definition: D, data: Event.Data<D>, options?: PublishOptions) {
           return Effect.gen(function* () {
             const event = (yield* makePayload(definition, data, options)) as Event.Payload<D>
-            return yield* publishEvent(definition, event, options?.commit)
+            return yield* publishEvent(definition, event, options?.commit, options?.expectedSequence)
           })
         }
 
@@ -542,6 +575,7 @@ export function configured(options?: Options) {
                   definition,
                   aggregateID,
                   commit: options?.commit,
+                  expectedSequence: options?.expectedSequence,
                   event: yield* makePayload(definition, data, options),
                 }
               }),
@@ -569,6 +603,22 @@ export function configured(options?: Options) {
                             .get()
                             .pipe(Effect.orDie)
                           const firstSeq = (row?.seq ?? -1) + 1
+                          const expected = payloads.find((item) => item.expectedSequence !== undefined)?.expectedSequence
+                          if (
+                            payloads.some(
+                              (item) => item.expectedSequence !== undefined && item.expectedSequence !== expected,
+                            )
+                          )
+                            return yield* Effect.die(
+                              new InvalidDurableEventError({
+                                type: payloads[0].definition.type,
+                                message: "Published events must use the same expected aggregate sequence",
+                              }),
+                            )
+                          if (expected !== undefined && firstSeq - 1 !== expected)
+                            return yield* Effect.die(
+                              new StaleAggregateError({ aggregateID, expected, actual: firstSeq - 1 }),
+                            )
                           const finalSeq = firstSeq + payloads.length - 1
                           const queued = payloads.map((item, index) => ({
                             ...item.event,

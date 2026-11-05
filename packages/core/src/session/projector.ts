@@ -16,7 +16,14 @@ import { SessionMessageUpdater } from "./message-updater.js"
 import { SessionInbox } from "./inbox.js"
 import { InstructionState } from "./instruction-state.js"
 import { SessionBlob } from "./blob.js"
-import { SessionInboxTable, SessionMessageTable, SessionPartTable, SessionTable, type SessionPartData } from "./sql.js"
+import {
+  SessionChildPreparationTable,
+  SessionInboxTable,
+  SessionMessageTable,
+  SessionPartTable,
+  SessionTable,
+  type SessionPartData,
+} from "./sql.js"
 import { SessionStored } from "./stored.js"
 import { InstructionEntry } from "./instruction-entry.js"
 import type { SQLiteUpdateSetSource } from "drizzle-orm/sqlite-core/query-builders/update"
@@ -142,6 +149,10 @@ const projectFork = Effect.fn("SessionProjector.projectFork")(function* (
     .pipe(Effect.orDie)
   if (!boundary)
     return yield* Effect.die(new Error(`Fork boundary message not found: ${event.data.boundary.messageID}`))
+  const excludesBoundaryPromptActivation =
+    event.data.boundary.type === "before"
+      ? sql`not (${SessionMessageTable.type} = 'skill' and json_extract(${SessionMessageTable.data}, '$.source.kind') = 'prompt' and json_extract(${SessionMessageTable.data}, '$.source.messageID') = ${event.data.boundary.messageID})`
+      : undefined
   const copied = yield* db
     .select({ seq: SessionMessageTable.seq })
     .from(SessionMessageTable)
@@ -151,6 +162,7 @@ const projectFork = Effect.fn("SessionProjector.projectFork")(function* (
         event.data.boundary.type === "before"
           ? lt(SessionMessageTable.seq, boundary.seq)
           : lte(SessionMessageTable.seq, boundary.seq),
+        excludesBoundaryPromptActivation,
       ),
     )
     .orderBy(desc(SessionMessageTable.seq))
@@ -208,6 +220,7 @@ const projectFork = Effect.fn("SessionProjector.projectFork")(function* (
           eq(SessionMessageTable.session_id, event.data.parentID),
           gt(SessionMessageTable.seq, cursor),
           lt(SessionMessageTable.seq, copiedSeq + 1),
+          excludesBoundaryPromptActivation,
           // Terminal events for active projections stay on the parent, so forks copy only settled history.
           sql`${SessionMessageTable.type} != 'assistant' or json_extract(${SessionMessageTable.data}, '$.time.completed') is not null`,
           sql`${SessionMessageTable.type} != 'shell' or json_extract(${SessionMessageTable.data}, '$.status') != 'running'`,
@@ -1005,6 +1018,34 @@ const layer = Layer.effectDiscard(
     yield* bus.project(SessionEvent.MessageContentUpdated, (event) => run(db, event))
     yield* bus.project(SessionEvent.UsageRecorded, (event) => applyUsage(db, event.data.sessionID, event.data))
     yield* bus.project(SessionEvent.Forked, (event) => projectFork(db, event))
+    yield* bus.project(SessionEvent.ChildPrepared, (event) =>
+      db
+        .insert(SessionChildPreparationTable)
+        .values({
+          admission_id: event.data.admissionID,
+          session_id: event.data.sessionID,
+          child_session_id: event.data.childSessionID,
+          status: "prepared",
+          time_created: event.created,
+        })
+        .onConflictDoNothing()
+        .run()
+        .pipe(Effect.orDie, Effect.asVoid),
+    )
+    yield* bus.project(SessionEvent.ChildResolved, (event) =>
+      db
+        .update(SessionChildPreparationTable)
+        .set({ status: event.data.outcome })
+        .where(
+          and(
+            eq(SessionChildPreparationTable.admission_id, event.data.admissionID),
+            eq(SessionChildPreparationTable.session_id, event.data.sessionID),
+            eq(SessionChildPreparationTable.status, "prepared"),
+          ),
+        )
+        .run()
+        .pipe(Effect.orDie, Effect.asVoid),
+    )
     yield* bus.project(SessionEvent.InboxDelivered, (event) =>
       Effect.gen(function* () {
         const input = yield* SessionInbox.projectDelivered(db, {

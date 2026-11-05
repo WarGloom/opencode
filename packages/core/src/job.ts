@@ -38,6 +38,8 @@ export type Background = typeof Background.Type
 export type Status = Background["status"]
 
 export type SubagentReportState =
+  // The plugin owner settles this job without a parent report.
+  | { readonly mode: "foreground" }
   | {
       readonly mode: "background"
       readonly notificationID: SessionMessage.ID
@@ -60,6 +62,7 @@ const COMPLETED_LIMIT = 25
 
 export type Info = {
   id: string
+  generation: string
   type: string
   title?: string
   status: Status
@@ -122,6 +125,9 @@ type BlockStart =
 
 export type StartInput = {
   id: string
+  generation?: string
+  durable?: boolean
+  accept?: (info: Info) => Effect.Effect<void>
   type: string
   title?: string
   metadata?: Record<string, unknown>
@@ -136,6 +142,7 @@ export type StartInput = {
 
 export type WaitInput = {
   id: string
+  generation?: string
   timeout?: number
 }
 
@@ -163,7 +170,7 @@ export interface Interface {
   readonly block: (input: BlockInput) => Effect.Effect<BlockResult | undefined>
   readonly background: (id: string) => Effect.Effect<Info | undefined>
   readonly backgroundAll: (input: BackgroundAllInput) => Effect.Effect<Info[]>
-  readonly cancel: (id: string) => Effect.Effect<Info | undefined>
+  readonly cancel: (id: string, generation?: string) => Effect.Effect<Info | undefined>
   readonly cancelSession: (sessionID: SessionSchema.ID) => Effect.Effect<Info[]>
   readonly pendingBackground: Effect.Effect<readonly Background[]>
   readonly runningBackground: Effect.Effect<readonly Recovery[]>
@@ -174,7 +181,7 @@ export interface Interface {
   readonly currentGeneration: (
     id: string,
   ) => Effect.Effect<{ readonly generation: number; readonly running: boolean } | undefined>
-  readonly prepareSubagentReport: (id: string, boundGeneration?: number) => Effect.Effect<SubagentReportState>
+  readonly prepareSubagentReport: (id: string, boundGeneration?: number, creationTickCancelled?: boolean) => Effect.Effect<SubagentReportState>
   readonly recordSubagentReport: (report: SubagentOutboxReport) => Effect.Effect<void>
   readonly deleteBackgroundRow: (notificationID: SessionMessage.ID) => Effect.Effect<void>
 }
@@ -326,6 +333,8 @@ export const make = Effect.gen(function* () {
         if (job.info.status !== "running") return [{ info: snapshot(job) }, jobs]
         const next = terminal(job)
         if (job.consumed) {
+          if (job.recovery?.kind === "subagent" && job.recovery.pluginID !== undefined)
+            return [{ info: snapshot(next), done: job.done, scope: job.scope }, new Map(jobs).set(id, next)]
           const remaining = new Map(jobs)
           remaining.delete(id)
           return [{ info: snapshot(next), done: job.done, scope: job.scope }, remaining]
@@ -368,10 +377,11 @@ export const make = Effect.gen(function* () {
             // Closing the registry interrupts the work without settling it; interrupt its observers too.
             yield* Scope.addFinalizer(scope, Deferred.interrupt(done))
             const notificationID =
-              input.notificationID ?? (input.background && input.recovery ? SessionMessage.ID.create() : undefined)
+              input.notificationID ?? ((input.durable || input.background) && input.recovery ? SessionMessage.ID.create() : undefined)
             const job: Active = {
               info: {
                 id: input.id,
+                generation: input.generation ?? crypto.randomUUID(),
                 type: input.type,
                 title: input.title,
                 status: "running" as const,
@@ -394,7 +404,8 @@ export const make = Effect.gen(function* () {
             }
             // Background work becomes durable before its run is forked, so no drain can observe
             // an unmarked period.
-            if (job.isBackgrounded) yield* persistBackground(job)
+            if (job.isBackgrounded || input.durable) yield* persistBackground(job)
+            if (input.accept !== undefined) yield* input.accept(snapshot(job))
             return [{ info: snapshot(job), job }, new Map(jobs).set(input.id, job)]
           }),
         )
@@ -413,6 +424,7 @@ export const make = Effect.gen(function* () {
   const wait: Interface["wait"] = Effect.fn("Job.wait")(function* (input) {
     const job = (yield* SynchronizedRef.get(state.jobs)).get(input.id)
     if (!job) return { timedOut: false }
+    if (input.generation !== undefined && job.info.generation !== input.generation) return { timedOut: false }
     return yield* Effect.gen(function* () {
       if (job.info.status !== "running") return { info: snapshot(job), timedOut: false }
       if (input.timeout === undefined) return { info: yield* Deferred.await(job.done), timedOut: false }
@@ -487,6 +499,7 @@ export const make = Effect.gen(function* () {
       state.jobs,
       Effect.fnUntraced(function* (jobs): Effect.fn.Return<readonly [BackgroundResult, Map<string, Active>]> {
         const job = jobs.get(id)
+        if (job?.consumed && job.recovery?.kind === "subagent" && job.recovery.pluginID !== undefined) return [{}, jobs]
         // Recoverable work may finish before the caller backgrounds it.
         if (!job || (job.info.status !== "running" && !job.recovery)) return [{}, jobs]
         if (job.isBackgrounded) return [{ info: snapshot(job) }, jobs]
@@ -522,13 +535,14 @@ export const make = Effect.gen(function* () {
     return result.map((item) => item.info)
   })
 
-  const cancelInternal = Effect.fnUntraced(function* (id: string, persist = true) {
+  const cancelInternal = Effect.fnUntraced(function* (id: string, persist = true, generation?: string) {
     const completed_at = yield* Clock.currentTimeMillis
     const result = yield* SynchronizedRef.modifyEffect(
       state.jobs,
       Effect.fnUntraced(function* (jobs): Effect.fn.Return<readonly [FinishResult, Map<string, Active>]> {
         const job = jobs.get(id)
         if (!job) return [{}, jobs]
+        if (generation !== undefined && job.info.generation !== generation) return [{}, jobs]
         if (job.info.status !== "running") return [{ info: snapshot(job), generation: job.scope }, jobs]
         const next = {
           ...job,
@@ -555,7 +569,7 @@ export const make = Effect.gen(function* () {
     return result.info
   })
 
-  const cancel: Interface["cancel"] = Effect.fn("Job.cancel")((id) => cancelInternal(id, true))
+  const cancel: Interface["cancel"] = Effect.fn("Job.cancel")((id, generation) => cancelInternal(id, true, generation))
 
   const cancelSession: Interface["cancelSession"] = Effect.fn("Job.cancelSession")(function* (sessionID) {
     const ids = [...(yield* SynchronizedRef.get(state.jobs)).values()]
@@ -596,16 +610,20 @@ export const make = Effect.gen(function* () {
     )
   }).pipe(Effect.withSpan("Job.pendingBackground"))
 
-  const runningBackground: Interface["runningBackground"] = SynchronizedRef.get(state.jobs).pipe(
-    Effect.map((jobs) =>
-      [...jobs.values()].flatMap((job) =>
-        job.isBackgrounded && job.info.status === "running" && !job.settling && !job.consumed && job.recovery
-          ? [job.recovery]
-          : [],
-      ),
-    ),
-    Effect.withSpan("Job.runningBackground"),
-  )
+  const runningBackground: Interface["runningBackground"] = Effect.gen(function* () {
+    const jobs = yield* SynchronizedRef.get(state.jobs)
+    const running = [...jobs.values()].flatMap((job) =>
+      job.isBackgrounded && job.info.status === "running" && !job.settling && !job.consumed && job.recovery ? [job.recovery] : [],
+    )
+    const suspended = (yield* pendingBackground).flatMap((job) => {
+      const recovery = job.recovery
+      if (job.status !== "running" || recovery.kind !== "subagent" || recovery.pluginID === undefined) return []
+      const active = jobs.get(recovery.childSessionID)
+      if (active?.recovery?.kind === "subagent" && active.recovery.generation === recovery.generation) return []
+      return [recovery]
+    })
+    return [...running, ...suspended]
+  }).pipe(Effect.withSpan("Job.runningBackground"))
 
   const completeBackground: Interface["completeBackground"] = Effect.fn("Job.completeBackground")((notificationID) =>
     SynchronizedRef.updateEffect(state.jobs, (jobs) =>
@@ -614,7 +632,8 @@ export const make = Effect.gen(function* () {
         const entry = [...jobs].find(([, job]) => job.info.notificationID === notificationID)
         if (!entry) return jobs
         // Still-running work keeps its entry, but must not persist its row again when it settles.
-        if (entry[1].info.status === "running") return new Map(jobs).set(entry[0], { ...entry[1], consumed: true })
+        if (entry[1].info.status === "running" || (entry[1].recovery?.kind === "subagent" && entry[1].recovery.pluginID !== undefined))
+          return new Map(jobs).set(entry[0], { ...entry[1], consumed: true })
         const next = new Map(jobs)
         next.delete(entry[0])
         return next
@@ -633,14 +652,24 @@ export const make = Effect.gen(function* () {
   })
 
   const prepareSubagentReport: Interface["prepareSubagentReport"] = Effect.fn("Job.prepareSubagentReport")(
-    function* (id, boundGeneration) {
+    function* (id, boundGeneration, creationTickCancelled) {
       return yield* SynchronizedRef.modify(state.jobs, (jobs): readonly [SubagentReportState, Map<string, Active>] => {
         const job = jobs.get(id)
         // A generation reports at most once, even when an earlier attempt only observed a cancel.
-        if (!job?.isBackgrounded || job.reported || !job.info.notificationID || job.recovery?.kind !== "subagent") {
+        if (!job || job.reported) {
           return [{ mode: "none" }, jobs]
         }
         const live = job.info.status === "running" && !job.settling
+        if (job.recovery?.kind === "subagent" && job.recovery.pluginID !== undefined) {
+          if (live) return [{ mode: "foreground" }, jobs]
+          const matches = boundGeneration === job.generation ||
+            (boundGeneration === undefined && creationTickCancelled === true && job.info.status === "cancelled")
+          if (!matches) return [{ mode: "none" }, jobs]
+          return [{ mode: "foreground" }, new Map(jobs).set(id, { ...job, reported: true })]
+        }
+        if (!job.isBackgrounded || !job.info.notificationID || job.recovery?.kind !== "subagent") {
+          return [{ mode: "none" }, jobs]
+        }
         // A cancel within this busy period already consumed the live entry, but it still belongs
         // here. A creation-tick interruption never bound a generation, so any cancel matches.
         const cancelled =

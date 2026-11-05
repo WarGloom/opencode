@@ -10,19 +10,21 @@ import type { CommandDomain } from "./command.js"
 import type { EventDomain } from "./event.js"
 import type { IntegrationDomain } from "./integration.js"
 import type { MCPDomain } from "./mcp.js"
-import type { ModelDomain } from "./model.js"
+import type { ExperimentalModelDomain, ExperimentalVariantDomain, ModelDomain } from "./model.js"
+import type { Session } from "@opencode/schema/session"
 import type { PermissionDomain } from "./permission.js"
 import type { ProviderDomain } from "./provider.js"
 import type { ReferenceDomain } from "./reference.js"
 import type { RpcDomain } from "./rpc.js"
-import type { SessionDomain } from "./session.js"
+import type { ExperimentalSessionDomain, SessionDomain } from "./session.js"
 import type { ShellDomain } from "./shell.js"
-import type { SkillDomain } from "./skill.js"
+import type { ExperimentalSkillDomain, SkillDomain } from "./skill.js"
 import type { StorageDomain } from "./storage.js"
 import type { ToolDomain } from "./tool.js"
 import type { VcsDomain } from "./vcs.js"
 import type { WebSearchDomain } from "./websearch.js"
 import type { WorktreeDomain } from "./worktree.js"
+import type { SubagentDomain } from "./subagent.js"
 
 export interface Context {
   readonly app: App
@@ -34,6 +36,12 @@ export interface Context {
   readonly credential: Pick<CredentialApi, "activate">
   readonly event: EventDomain
   readonly experimental: {
+    readonly skill: ExperimentalSkillDomain
+    readonly formatter: { readonly file: (input: { readonly sessionID: Session.ID; readonly filepath: string }) => Promise<boolean> }
+    readonly variant: ExperimentalVariantDomain
+    readonly model: ExperimentalModelDomain
+    readonly subagent: SubagentDomain
+    readonly session: ExperimentalSessionDomain
     readonly terminal: Pick<OpenCodeClient["experimental"]["persistentPty"], "read">
     /** Stateless generation with a model and a prompt: no session, history or tools. */
     readonly generate: ExperimentalGenerateApi

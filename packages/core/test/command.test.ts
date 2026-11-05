@@ -1,6 +1,7 @@
 import { describe, expect } from "bun:test"
 import { Command } from "@opencode/core/command"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
+import { Agent } from "@opencode/schema/agent"
 import { Session } from "@opencode/schema/session"
 import { Effect } from "effect"
 import { testEffect } from "./lib/effect"
@@ -24,6 +25,8 @@ describe("Command", () => {
         Command.Info.make({ name: "goal", description: "Manage the session goal" }),
       )
       const invocation = {
+        invocationID: Command.InvocationID.create(),
+        agent: Agent.ID.make("build"),
         sessionID: Session.ID.make("ses_test"),
         prompt: { text: "ship it", files: [{ uri: "file:///tmp/plan.md" }] },
         delivery: "steer" as const,
@@ -59,6 +62,8 @@ describe("Command", () => {
         .execute({
           name: "fail",
           invocation: {
+            invocationID: Command.InvocationID.create(),
+            agent: Agent.ID.make("build"),
             sessionID: Session.ID.make("ses_test"),
             prompt: { text: "" },
             delivery: "steer",
@@ -66,6 +71,42 @@ describe("Command", () => {
         })
         .pipe(Effect.flip)
       expect(error).toMatchObject({ _tag: "Command.ExecutionError", message: "command failed" })
+    }),
+  )
+
+  it.effect("resolves only the active canonical invocation", () =>
+    Effect.gen(function* () {
+      const command = yield* Command.Service
+      const invocation = {
+        invocationID: Command.InvocationID.create(),
+        sessionID: Session.ID.make("ses_test"),
+        command: "goal",
+        agent: Agent.ID.make("build"),
+      }
+      expect(
+        yield* command.withInvocation(
+          invocation,
+          command.resolveInvocation({
+            kind: "command",
+            invocationID: invocation.invocationID,
+            command: invocation.command,
+            agent: invocation.agent,
+          }),
+        ),
+      ).toEqual(invocation)
+
+      const error = yield* command
+        .resolveInvocation({
+          kind: "command",
+          invocationID: invocation.invocationID,
+          command: invocation.command,
+          agent: invocation.agent,
+        })
+        .pipe(Effect.flip)
+      expect(error).toMatchObject({
+        _tag: "Command.InvalidInvocationError",
+        invocationID: invocation.invocationID,
+      })
     }),
   )
 })

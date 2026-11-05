@@ -3,6 +3,8 @@ import type { Model } from "@opencode/schema/model"
 import type { Types } from "effect"
 import type { ProviderRecord } from "./provider.js"
 import type { Transform } from "./registration.js"
+import type { ConfiguredInputs, VariantSupport } from "../effect/model.js"
+export type { ConfiguredInputs, VariantSupport } from "../effect/model.js"
 
 export interface ModelEditor {
   /** Candidates from available providers, including models disabled by earlier transforms. */
@@ -25,4 +27,12 @@ export interface ModelEditor {
 export interface ModelDomain extends ModelApi {
   readonly transform: Transform<ModelEditor>
   readonly reload: () => Promise<void>
+}
+
+export interface ExperimentalModelDomain {
+  readonly configuredInputs: () => Promise<readonly ConfiguredInputs[]>
+}
+
+export interface ExperimentalVariantDomain {
+  readonly resolve: (input: { readonly model: Model.Info; readonly supports?: readonly VariantSupport[] }) => Promise<Model.Info["variants"]>
 }

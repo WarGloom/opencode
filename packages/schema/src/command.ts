@@ -2,9 +2,17 @@ export * as Command from "./command.js"
 
 import { Schema } from "effect"
 import { ephemeral, inventory } from "./event.js"
-import { optional } from "./schema.js"
+import { ascending } from "./identifier.js"
+import { optional, statics } from "./schema.js"
 
 const Updated = ephemeral({ type: "command.updated", schema: {} })
+
+export const InvocationID = Schema.String.check(Schema.isStartingWith("cmdinv_")).pipe(
+  Schema.brand("Command.InvocationID"),
+  Schema.annotate({ identifier: "Command.InvocationID" }),
+  statics((schema) => ({ create: () => schema.make("cmdinv_" + ascending()) })),
+)
+export type InvocationID = typeof InvocationID.Type
 
 export interface Info extends Schema.Schema.Type<typeof Info> {}
 export const Info = Schema.Struct({

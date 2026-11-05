@@ -1,6 +1,7 @@
 import { describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
 import { Command } from "@opencode/core/command"
+import { Agent } from "@opencode/schema/agent"
 import { Bus } from "@opencode/core/bus"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { Location } from "@opencode/core/location"
@@ -44,6 +45,7 @@ describe("CommandPlugin.Plugin", () => {
       yield* CommandPlugin.Plugin.effect(
         host({
           command: {
+            hook: () => Effect.die("unused command.hook"),
             list: () => Effect.die("unused command.list"),
             transform: command.transform,
             reload: command.reload,
@@ -81,6 +83,8 @@ describe("CommandPlugin.Plugin", () => {
       yield* command.execute({
         name: "init",
         invocation: {
+          invocationID: Command.InvocationID.create(),
+          agent: Agent.ID.make("build"),
           sessionID: Session.ID.make("ses_test"),
           prompt: { text: "extra context", files: [{ uri: "file:///tmp/context.md" }] },
           delivery: "queue",
@@ -89,6 +93,8 @@ describe("CommandPlugin.Plugin", () => {
       yield* command.execute({
         name: "review",
         invocation: {
+          invocationID: Command.InvocationID.create(),
+          agent: Agent.ID.make("build"),
           sessionID: Session.ID.make("ses_test"),
           prompt: { text: "  branch $& $$ $` $'  " },
           delivery: "steer",
@@ -97,6 +103,8 @@ describe("CommandPlugin.Plugin", () => {
       yield* command.execute({
         name: "init",
         invocation: {
+          invocationID: Command.InvocationID.create(),
+          agent: Agent.ID.make("build"),
           sessionID: Session.ID.make("ses_test"),
           prompt: { text: "" },
           delivery: "steer",
@@ -105,6 +113,8 @@ describe("CommandPlugin.Plugin", () => {
       yield* command.execute({
         name: "review",
         invocation: {
+          invocationID: Command.InvocationID.create(),
+          agent: Agent.ID.make("build"),
           sessionID: Session.ID.make("ses_test"),
           prompt: { text: "   " },
           delivery: "steer",

@@ -103,6 +103,7 @@ const executionNode = makeGlobalNode({
         })
       })
       return SessionExecution.Service.of({
+        ...SessionExecution.noop,
         active: Effect.succeed(new Set()),
         isActive: () => Effect.succeed(false),
         resume: complete,
@@ -927,6 +928,51 @@ describe("SubagentTool reporting", () => {
       const reports = (yield* fixture.notices).filter((notice) => notice.metadata?.["source"] === "subagent")
       expect(reports).toHaveLength(1)
       expect(reports[0]?.text).toContain(`<subagent sessionID="${childID}" state="completed"`)
+      expect(reports[0]?.text).toContain(childText)
+    }),
+  )
+
+  completionIt.live("reports the recovered answer once for a held background child", () =>
+    Effect.gen(function* () {
+      const fixture = yield* reportingFixture()
+      const llm = yield* TestLLM.Test
+      const child = yield* fixture.sessions.create({
+        parentID: fixture.parent.id,
+        title: "review",
+        agent: Agent.ID.make("reviewer"),
+        model: childModel,
+      })
+      const primary = yield* llm.gate()
+      yield* Effect.addFinalizer(() => primary.release)
+      yield* fixture.call("call-background-recovery", { sessionID: child.id })
+      yield* primary.started.pipe(Effect.timeout("2 seconds"))
+      const fallback = yield* llm.gate()
+      yield* Effect.addFinalizer(() => fallback.release)
+      const owner = { pluginID: "recovery-test", lifetime: "foreground" }
+      expect(yield* fixture.sessions.recover({ sessionID: child.id, owner }, (boundaryID) =>
+        fixture.sessions.continueAfterFailure({
+          sessionID: child.id,
+          boundaryID,
+          id: SessionMessage.ID.create(),
+          text: "Continue the task",
+          recovery: owner,
+        }).pipe(Effect.map((result) => result === "admitted")),
+      )).toBe(true)
+      yield* fallback.started.pipe(Effect.timeout("2 seconds"))
+      const bus = yield* Bus.Service
+      const admitted = yield* bus.subscribe(SessionEvent.InboxEnqueued).pipe(
+        Stream.filter((event) => event.data.sessionID === fixture.parent.id && event.data.item.type === "synthetic"),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkScoped({ startImmediately: true }),
+      )
+      yield* fallback.release
+      yield* Fiber.join(admitted).pipe(Effect.timeout("2 seconds"))
+      yield* fixture.sessions.wait(child.id)
+      yield* fixture.sessions.wait(fixture.parent.id)
+      const reports = (yield* fixture.notices).filter((notice) => notice.metadata?.["source"] === "subagent")
+      expect(reports).toHaveLength(1)
+      expect(reports[0]?.text).toContain(`<subagent sessionID="${child.id}" state="completed"`)
       expect(reports[0]?.text).toContain(childText)
     }),
   )

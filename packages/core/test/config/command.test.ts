@@ -113,6 +113,7 @@ describe("ConfigCommandPlugin.Plugin", () => {
         yield* ConfigCommandPlugin.Plugin.effect(
           host({
             command: {
+              hook: () => Effect.die("unused command.hook"),
               list: () => Effect.die(new Error("unused command.list")),
               transform: command.transform,
               reload: command.reload,
@@ -144,7 +145,9 @@ describe("ConfigCommandPlugin.Plugin", () => {
         )
         yield* command.execute({
           name: "explain",
-          invocation: {
+      invocation: {
+        invocationID: Command.InvocationID.create(),
+        agent: Agent.ID.make("build"),
             sessionID: Session.ID.make("ses_test"),
             prompt: { text: item.input },
             delivery: "queue",
@@ -183,6 +186,7 @@ Review files`,
           yield* ConfigCommandPlugin.Plugin.effect(
             host({
               command: {
+                hook: () => Effect.die("unused command.hook"),
                 list: () => Effect.die("unused command.list"),
                 transform: command.transform,
                 reload: command.reload,
@@ -225,7 +229,9 @@ Review files`,
           ])
           yield* command.execute({
             name: "nested/docs",
-            invocation: {
+      invocation: {
+        invocationID: Command.InvocationID.create(),
+        agent: Agent.ID.make("build"),
               sessionID: Session.ID.make("ses_test"),
               prompt: { text: "details", files: [{ uri: "file:///tmp/context.md" }] },
               delivery: "queue",
@@ -251,7 +257,9 @@ Review files`,
           expect((yield* command.get("review"))?.description).toBe("Review again")
           yield* command.execute({
             name: "review",
-            invocation: {
+      invocation: {
+        invocationID: Command.InvocationID.create(),
+        agent: Agent.ID.make("build"),
               sessionID: Session.ID.make("ses_test"),
               prompt: { text: "latest" },
               delivery: "steer",
@@ -278,6 +286,7 @@ Review files`,
             yield* ConfigCommandPlugin.Plugin.effect(
               host({
                 command: {
+                  hook: () => Effect.die("unused command.hook"),
                   list: () => Effect.die("unused command.list"),
                   transform: command.transform,
                   reload: command.reload,
@@ -320,6 +329,7 @@ Review files`,
           yield* ConfigCommandPlugin.Plugin.effect(
             host({
               command: {
+                hook: () => Effect.die("unused command.hook"),
                 list: () => Effect.die("unused command.list"),
                 transform: command.transform,
                 reload: () => command.reload().pipe(Effect.tap(() => Effect.sync(() => reloads++))),
@@ -355,6 +365,7 @@ Review files`,
       yield* ConfigCommandPlugin.Plugin.effect(
         host({
           command: {
+            hook: () => Effect.die("unused command.hook"),
             list: () => Effect.die("unused command.list"),
             transform: command.transform,
             reload: () => command.reload().pipe(Effect.tap(() => Effect.sync(() => reloads++))),
@@ -384,6 +395,7 @@ Review files`,
           yield* ConfigCommandPlugin.Plugin.effect(
             host({
               command: {
+                hook: () => Effect.die("unused command.hook"),
                 list: () => Effect.die("unused command.list"),
                 transform: command.transform,
                 reload: () => command.reload().pipe(Effect.tap(() => Effect.sync(() => reloads++))),
@@ -430,6 +442,7 @@ describeNative("ConfigCommandPlugin native watcher", () => {
         yield* ConfigCommandPlugin.Plugin.effect(
           host({
             command: {
+              hook: () => Effect.die("unused command.hook"),
               list: () => Effect.die("unused command.list"),
               transform: command.transform,
               reload: command.reload,

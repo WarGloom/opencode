@@ -26,6 +26,10 @@ export interface Coordinator<Key, E, Reason = never> {
   readonly interruption: (key: Key) => Reason | undefined
   /** Resolves once no execution is active for the key. Returns immediately when already idle and never starts work. */
   readonly awaitIdle: (key: Key) => Effect.Effect<void>
+  readonly capture: (key: Key) => Effect.Effect<{
+    readonly interrupt: (reason?: Reason) => Effect.Effect<boolean>
+    readonly settled: Effect.Effect<void>
+  } | undefined>
 }
 
 /**
@@ -185,6 +189,14 @@ export const make = <Key, E, Reason = never>(options: {
         ),
     )
 
+    const capture = (key: Key) => Effect.sync(() => {
+      const execution = executions.get(key)
+      if (!execution?.owner || execution.stopping) return undefined
+      return {
+        interrupt: (reason?: Reason) => Effect.suspend(() => executions.get(key) === execution ? interrupt(key, reason) : Effect.succeed(false)),
+        settled: Deferred.await(execution.done).pipe(Effect.ignoreCause),
+      }
+    })
     return {
       active: Effect.sync(() => new Set(executions.keys())),
       draining,
@@ -194,5 +206,6 @@ export const make = <Key, E, Reason = never>(options: {
       interrupt,
       interruption,
       awaitIdle,
+      capture,
     }
   })

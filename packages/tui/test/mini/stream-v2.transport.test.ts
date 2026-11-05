@@ -3628,6 +3628,7 @@ describe("V2 mini transport", () => {
   test("hydrates skill activation messages once and dedupes live redelivery", async () => {
     const events = feed()
     events.push(connected())
+    const skill = (name: string) => ({ id: name, name, path: `/skills/${name}/SKILL.md`, content: "skill instructions" })
     const client = sdk({
       streams: [events],
       messages: {
@@ -3635,8 +3636,13 @@ describe("V2 mini transport", () => {
           {
             id: "msg_skill",
             type: "skill" as const,
+            activationID: "ska_skill",
+            agent: "build",
+            source: { kind: "session" as const, messageID: "msg_skill" },
             skill: "tigerstyle",
             name: "tigerstyle",
+            definition: skill("tigerstyle"),
+            revision: "revision",
             text: "skill instructions",
             time: { created: 2 },
           },
@@ -3644,6 +3650,13 @@ describe("V2 mini transport", () => {
       },
     })
     const ui = footer()
+    // The barrier activation is processed after every earlier event on the same ordered stream.
+    const barrier = defer()
+    const append = ui.api.append
+    ui.api.append = (commit) => {
+      append(commit)
+      if (commit.text === '→ Skill "barrier"') barrier.resolve()
+    }
     const transport = await createSessionTransport({
       sdk: client,
       sessionID: "ses_1",
@@ -3651,22 +3664,42 @@ describe("V2 mini transport", () => {
       replay: true,
       footer: ui.api,
     })
-    events.push({
-      id: "evt_skill",
-      created: 0,
-      type: "session.skill.activated",
-      durable: durable("ses_1"),
-      data: {
-        sessionID: "ses_1",
-        id: "tigerstyle",
-        name: "tigerstyle",
-        text: "skill instructions",
-      },
-    })
-    await Bun.sleep(0)
-    await Bun.sleep(0)
+    const activated = (
+      id: string,
+      name: string,
+      source:
+        | { kind: "session"; messageID: string }
+        | { kind: "prompt"; messageID: string; selectionIndex: number },
+    ) =>
+      ({
+        id,
+        created: 0,
+        type: "session.skill.activated",
+        durable: durable("ses_1"),
+        data: {
+          sessionID: "ses_1",
+          activationID: id.replace(/^evt_/, "ska_"),
+          agent: "build",
+          source,
+          skill: skill(name),
+          revision: "revision",
+          content: "skill instructions",
+          metadata: {},
+        },
+      }) satisfies RunV2Event
+    events.push(activated("evt_skill", "tigerstyle", { kind: "session", messageID: "msg_skill" }))
+    // Prompt-selected skills render through the prompt's attachments, not as a separate activation.
+    events.push(
+      activated("evt_prompt_skill", "selected", { kind: "prompt", messageID: "msg_prompt", selectionIndex: 0 }),
+    )
+    events.push(activated("evt_barrier", "barrier", { kind: "session", messageID: "msg_barrier" }))
+    const timeout = defer()
+    const timer = setTimeout(() => timeout.resolve(), 5_000)
+    await Promise.race([barrier.promise, timeout.promise.then(() => Promise.reject(new Error("barrier timeout")))])
+    clearTimeout(timer)
 
     expect(ui.commits.filter((item) => item.text === '→ Skill "tigerstyle"')).toHaveLength(1)
+    expect(ui.commits.filter((item) => item.text === '→ Skill "selected"')).toHaveLength(0)
     await transport.close()
   })
 

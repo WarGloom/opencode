@@ -22,12 +22,14 @@ import { SessionBlob } from "./session/blob.js"
 import { SessionSchema } from "./session/schema.js"
 import { RelativePath } from "./schema.js"
 import { Agent } from "@opencode/schema/agent"
+import { Skill } from "@opencode/schema/skill"
 import type { Permission } from "@opencode/schema/permission"
 import { App } from "./app.js"
 import { Slug } from "./util/slug.js"
 import path from "path"
 import { SessionRunner } from "./session/runner/index.js"
 import { SessionStore } from "./session/store.js"
+import { SessionSkill } from "./session/skill.js"
 import { SessionExecution } from "./session/execution.js"
 import {
   AttachmentError,
@@ -69,6 +71,8 @@ import { Job } from "./job.js"
 import type { Command } from "./command.js"
 import { SessionEnvironment } from "./session/environment.js"
 import { InstructionEntry } from "./session/instruction-entry.js"
+import type { SessionInterruptJournal } from "./session/interrupt-journal.js"
+import { SessionBackground } from "./session/background.js"
 
 // get project -> project.locations
 //
@@ -95,7 +99,7 @@ type CreateBaseInput = {
   permissions?: Permission.Ruleset
 }
 type CreateInput = CreateBaseInput &
-  ({ location: Location.Ref; parentID?: never } | { parentID: SessionSchema.ID; location?: never })
+  ({ location: Location.Ref; parentID?: never } | { parentID: SessionSchema.ID; location?: Location.Ref })
 
 type CompactInput = Parameters<Session.Handle["compact"]>[0] & { sessionID: SessionSchema.ID }
 
@@ -235,6 +239,20 @@ export interface Interface {
   readonly skill: (
     input: Parameters<Session.Handle["skill"]>[0] & { sessionID: SessionSchema.ID },
   ) => ReturnType<Session.Handle["skill"]>
+  /** Core-only: accepts a delegated child prompt's skill batch under the parent's authorization. */
+  readonly acceptSkills: (
+    input: Parameters<Session.Handle["acceptSkills"]>[0] & { sessionID: SessionSchema.ID },
+  ) => ReturnType<Session.Handle["acceptSkills"]>
+  readonly skillActivations: (input: {
+    sessionID: SessionSchema.ID
+  }) => Effect.Effect<readonly SessionMessage.SkillActivation[], MessageDecodeError>
+  readonly skillActivation: (input: {
+    sessionID: SessionSchema.ID
+    skillID: Skill.ID
+  }) => Effect.Effect<
+    SessionMessage.SkillActivation,
+    MessageDecodeError | SessionSkill.NotAcceptedError
+  >
   readonly compact: (
     input: CompactInput,
   ) => Effect.Effect<SessionInbox.Compaction, NotFoundError | CompactionConflictError>
@@ -243,9 +261,33 @@ export interface Interface {
   readonly background: (sessionID: SessionSchema.ID) => Effect.Effect<void, NotFoundError>
   readonly resume: (sessionID: SessionSchema.ID) => Effect.Effect<void, NotFoundError | SessionRunner.RunError>
   readonly interrupt: (sessionID: SessionSchema.ID, options?: { readonly resume?: boolean }) => Effect.Effect<boolean>
+  readonly recover: SessionExecution.Interface["recover"]
+  readonly closeRecovery: SessionExecution.Interface["closeRecovery"]
   readonly synthetic: (
     input: Parameters<Session.Handle["synthetic"]>[0] & { sessionID: SessionSchema.ID },
   ) => ReturnType<Session.Handle["synthetic"]>
+  readonly continueAfterIdle: (input: {
+    readonly sessionID: SessionSchema.ID
+    readonly boundaryID: SessionMessage.ID
+    readonly id: SessionMessage.ID
+    readonly text: string
+    readonly description?: string
+  }) => Effect.Effect<SessionInbox.IdleAdmission, NotFoundError>
+  /**
+   * Core and plugin-only: admits an optional model change and a steered continuation in one conditional
+   * write, only while `boundaryID` is the Session's newest durable entry. Wakes once when admitted.
+   */
+  readonly continueAfterFailure: (input: {
+    sessionID: SessionSchema.ID
+    boundaryID: SessionMessage.ID
+    id: SessionMessage.ID
+    text: string
+    description?: string
+    model?: Model.Ref
+    /** Idle outcomes the boundary may have. Defaults to failed only; PluginHost adds interrupted for its own journaled interrupts. */
+    outcomes?: ReadonlyArray<"failed" | "interrupted">
+    recovery?: SessionInterruptJournal.Owner
+  }) => Effect.Effect<"admitted" | "duplicate" | "stale", NotFoundError>
   readonly revert: {
     readonly stage: (input: {
       sessionID: SessionSchema.ID
@@ -281,6 +323,7 @@ const layer = Layer.effect(
     const jobs = yield* Job.Service
     const environments = yield* SessionEnvironment.Service
     const locations = yield* LocationServiceMap.Service
+    const inbox = yield* SessionInbox.Service
     const sessions = yield* Session.make()
     const mediaBlob = (session: SessionSchema.Info) => SessionBlob.enabledFor(instances, session)
     const isDurableSessionEvent = (item: Bus.LogItem): item is SessionEvent.DurableEvent =>
@@ -293,7 +336,7 @@ const layer = Layer.effect(
         if (recorded) return recorded
         const parent = input.parentID ? yield* store.get(input.parentID) : undefined
         if (input.parentID && parent === undefined) return yield* new NotFoundError({ sessionID: input.parentID })
-        const location = parent?.location ?? (input.location && LocationServiceMap.canonical(input.location))
+        const location = input.location === undefined ? parent?.location : LocationServiceMap.canonical(input.location)
         if (location === undefined)
           return yield* Effect.die(new Error("Session.create requires either location or an existing parentID"))
         const project = yield* projects.resolve(location.directory)
@@ -510,6 +553,11 @@ const layer = Layer.effect(
       }),
       shell: (input) => sessions.forSession(input.sessionID).shell(input),
       skill: (input) => sessions.forSession(input.sessionID).skill(input),
+      acceptSkills: (input) => sessions.forSession(input.sessionID).acceptSkills(input),
+      skillActivations: (input) =>
+        SessionSkill.activations(input.sessionID).pipe(Effect.provideService(SessionStore.Service, store)),
+      skillActivation: (input) =>
+        SessionSkill.activation(input).pipe(Effect.provideService(SessionStore.Service, store)),
       switchAgent: (input) => sessions.forSession(input.sessionID).switchAgent(input),
       switchModel: (input) => sessions.forSession(input.sessionID).switchModel(input),
       rename: (input) => sessions.forSession(input.sessionID).rename(input),
@@ -541,7 +589,41 @@ const layer = Layer.effect(
       }),
       resume: (sessionID) => sessions.forSession(sessionID).resume(),
       synthetic: (input) => sessions.forSession(input.sessionID).synthetic(input),
+      continueAfterIdle: (input) =>
+        Effect.uninterruptible(
+          Effect.gen(function* () {
+            yield* result.get(input.sessionID)
+            const outcome = yield* inbox.admitAfter({
+              ...input,
+              outcomes: ["succeeded"],
+              authority: SessionBackground.outstanding(jobs, store, input.sessionID).pipe(
+                Effect.map((background) => !background.some((item) => item.kind === "subagent" && item.wakes)),
+              ),
+            })
+            if (outcome === "admitted") yield* execution.wake(input.sessionID)
+            return outcome
+          }),
+        ),
+      continueAfterFailure: (input) =>
+        Effect.uninterruptible(
+          Effect.gen(function* () {
+            yield* result.get(input.sessionID)
+            const attempt = input.recovery ? yield* execution.recoveryAdmission(input.sessionID, input.boundaryID, input.recovery) : undefined
+            const outcome = yield* inbox.admitAfter({ ...input,
+              outcomes: attempt ? ["failed", "interrupted"] : input.outcomes,
+              authority: attempt?.check,
+              commit: attempt ? () => attempt.commit().pipe(Effect.andThen(store.claim(input.sessionID))) : undefined,
+              admitted: Effect.gen(function* () {
+                if (!(yield* result.get(input.sessionID).pipe(Effect.orDie)).revert) yield* execution.wake(input.sessionID)
+                if (attempt) yield* attempt.signal
+              }),
+            })
+            return outcome
+          }),
+        ),
       interrupt: (sessionID, options) => sessions.forSession(sessionID).interrupt(options),
+      recover: execution.recover,
+      closeRecovery: execution.closeRecovery,
       revert: {
         stage: (input) => sessions.forSession(input.sessionID).revert.stage(input),
         clear: (sessionID) => sessions.forSession(sessionID).revert.clear(),

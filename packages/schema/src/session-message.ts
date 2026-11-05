@@ -17,6 +17,7 @@ import { Skill as SkillSchema } from "./skill.js"
 import { Money } from "./money.js"
 import { Snapshot } from "./snapshot.js"
 import { TokenUsage } from "./token-usage.js"
+import { SessionID } from "./session-id.js"
 
 export const ID = Schema.String.check(Schema.isStartingWith("msg_")).pipe(
   Schema.brand("Session.Message.ID"),
@@ -109,11 +110,37 @@ export const System = Schema.Struct({
 }).annotate({ identifier: "Session.Message.System" })
 
 export interface Skill extends Schema.Schema.Type<typeof Skill> {}
+export type SkillActivationSource = typeof SkillActivationSource.Type
+export const SkillActivationSource = Schema.Union([
+  Schema.Struct({ kind: Schema.tag("session"), messageID: ID }),
+  Schema.Struct({ kind: Schema.tag("prompt"), messageID: ID, selectionIndex: Schema.Number }),
+  Schema.Struct({ kind: Schema.tag("tool"), messageID: ID, callID: Schema.String }),
+]).pipe(Schema.toTaggedUnion("kind"), Schema.annotate({ identifier: "Session.Message.SkillActivationSource" }))
+
+export interface SkillActivation extends Schema.Schema.Type<typeof SkillActivation> {}
+export const SkillActivation = Schema.Struct({
+  activationID: SkillSchema.ActivationID,
+  sessionID: SessionID,
+  agent: Agent.ID,
+  source: SkillActivationSource,
+  skill: SkillSchema.Info,
+  arguments: Schema.String.pipe(optional),
+  revision: Schema.String,
+  content: Schema.String,
+  metadata: Schema.Record(Schema.String, Schema.Json),
+}).annotate({ identifier: "Session.Message.SkillActivation" })
+
 export const Skill = Schema.Struct({
   ...Base,
   type: Schema.tag("skill"),
+  activationID: SkillSchema.ActivationID.pipe(optional),
+  agent: Agent.ID.pipe(optional),
+  source: SkillActivationSource.pipe(optional),
   skill: SkillSchema.ID,
   name: SkillSchema.Name,
+  definition: SkillSchema.Info.pipe(optional),
+  arguments: Schema.String.pipe(optional),
+  revision: Schema.String.pipe(optional),
   text: Schema.String,
 }).annotate({ identifier: "Session.Message.Skill" })
 

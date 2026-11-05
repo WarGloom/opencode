@@ -7,6 +7,8 @@ import type { Scope } from "effect"
 import { HttpApiEndpoint, HttpApiSchema } from "effect/http-api"
 import { define } from "../effect/plugin.js"
 import type { ToolFailures, ToolHooks } from "../effect/tool.js"
+import type { SessionHooks } from "../effect/session.js"
+import type { SessionIdle } from "./session.js"
 import { AssertInput } from "../permission.js"
 import type { Plugin } from "./plugin.js"
 import type { Info } from "./tool.js"
@@ -15,6 +17,7 @@ import type { RpcDomain, RpcHandlers } from "./rpc.js"
 type HostRegistration = { readonly dispose: Effect.Effect<void> }
 type Registration = { readonly dispose: () => Promise<void> }
 type PromiseContext = Parameters<Plugin["setup"]>[0]
+type PromiseSessionHooks = Omit<SessionHooks, "experimental.idle"> & { readonly "experimental.idle": SessionIdle }
 type HostRpc = Parameters<Parameters<typeof define>[0]["effect"]>[0]["rpc"]
 type StreamAdapter = <A, E>(
   stream: Stream.Stream<A, E>,
@@ -251,6 +254,22 @@ export function fromPromise(plugin: Plugin) {
           }))
 
         const run = <A, E>(effect: Effect.Effect<A, E>) => Effect.runPromiseWith(runtime)(effect)
+        const sessionHook: { readonly [Name in keyof SessionHooks]: (event: SessionHooks[Name]) => PromiseSessionHooks[Name] } = {
+          prompt: (event) => event,
+          context: (event) => event,
+          compaction: (event) => event,
+          generate: (event) => event,
+          title: (event) => event,
+          "model.request": (event) => event,
+          "http.request": (event) => event,
+          "http.response": (event) => event,
+          "experimental.ws.handshake": (event) => event,
+          "experimental.ws.send": (event) => event,
+          "experimental.ws.receive": (event) => event,
+          retry: (event) => event,
+          "experimental.compaction.continue": (event) => event,
+          "experimental.idle": (event) => ({ ...event, admit: (input) => run(event.admit(input)) }),
+        }
 
         const promiseExecutor =
           (execute: Tool.Info["execute"]): Info["execute"] =>
@@ -309,6 +328,7 @@ export function fromPromise(plugin: Plugin) {
               ),
           },
           command: {
+            hook: (name, callback) => register(host.command.hook(name, (event) => Effect.promise(() => Promise.resolve(callback(event))))),
             list: adaptApiMethod(CommandEndpoints["command.list"], host.command.list),
             transform: (callback) =>
               register(
@@ -341,6 +361,31 @@ export function fromPromise(plugin: Plugin) {
               ),
           },
           experimental: {
+            skill: {
+              activate: (input) => run(host.experimental.skill.activate(input)),
+              activations: (input) => run(host.experimental.skill.activations(input)),
+              activation: (input) => run(host.experimental.skill.activation(input)),
+            },
+            formatter: { file: (input) => run(host.experimental.formatter.file(input)) },
+            variant: { resolve: (input) => run(host.experimental.variant.resolve(input)) },
+            model: { configuredInputs: () => run(host.experimental.model.configuredInputs()) },
+            session: {
+              continueAfterIdle: (input) => run(host.experimental.session.continueAfterIdle(input)),
+              recover: (input, callback, options) => Effect.runPromiseWith(runtime)(host.experimental.session.recover(input, (boundary) => Effect.tryPromise(() => callback(boundary))), options),
+              environment: (input) => run(host.experimental.session.environment(input)),
+              continueAfterFailure: (input) => run(host.experimental.session.continueAfterFailure(input)),
+              interrupt: (input) => run(host.experimental.session.interrupt(input)),
+            },
+            subagent: {
+              prepare: (input, options) => Effect.runPromiseWith(runtime)(host.experimental.subagent.prepare(input), options),
+              acceptSkills: (input, options) => Effect.runPromiseWith(runtime)(host.experimental.subagent.acceptSkills(input), options),
+              start: (input, options) => Effect.runPromiseWith(runtime)(host.experimental.subagent.start(input), options),
+              get: (input) => run(host.experimental.subagent.get(input)),
+              wait: (input) => run(host.experimental.subagent.wait(input)),
+              cancel: (input) => run(host.experimental.subagent.cancel(input)),
+              reconcile: (input) => run(host.experimental.subagent.reconcile(input)),
+              ready: (input) => run(host.experimental.subagent.ready(input)),
+            },
             terminal: {
               read: adaptApiMethod(ExperimentalEndpoints["persistentPty.read"], host.experimental.terminal.read),
             },
@@ -501,6 +546,7 @@ export function fromPromise(plugin: Plugin) {
           },
           rpc: yield* rpcFromEffect(host.rpc, streams),
           skill: {
+            hook: (name, callback) => register(host.skill.hook(name, (event) => Effect.promise(() => Promise.resolve(callback(event))))),
             list: adaptApiMethod(SkillEndpoints["skill.list"], host.skill.list),
             transform: transform(host.skill),
             reload: () => run(host.skill.reload()),
@@ -629,7 +675,7 @@ export function fromPromise(plugin: Plugin) {
           session: {
             hook: (name, callback, options) =>
               register(
-                host.session.hook(name, (event) => Effect.promise(() => Promise.resolve(callback(event))), options),
+                host.session.hook(name, (event) => Effect.promise(() => Promise.resolve(callback(sessionHook[name](event)))), options),
               ),
             list: adaptApiMethod(SessionEndpoints["session.list"], host.session.list),
             create: adaptApiMethod(SessionEndpoints["session.create"], host.session.create),

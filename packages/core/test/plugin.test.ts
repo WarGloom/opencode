@@ -5,6 +5,7 @@ import path from "path"
 import { Clock, Deferred, Effect, Fiber, Logger, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import { Command } from "@opencode/core/command"
+import { Agent } from "@opencode/schema/agent"
 import { Bus } from "@opencode/core/bus"
 import { Credential } from "@opencode/core/credential"
 import { Integration } from "@opencode/core/integration"
@@ -588,7 +589,13 @@ it.effect("reloading a plugin replaces its command implementation", () =>
       ])
     const request = {
       name: "greet",
-      invocation: { sessionID: SessionSchema.ID.make("ses_plugin"), prompt: { text: "" }, delivery: "steer" as const },
+      invocation: {
+        invocationID: Command.InvocationID.create(),
+        agent: Agent.ID.make("build"),
+        sessionID: SessionSchema.ID.make("ses_plugin"),
+        prompt: { text: "" },
+        delivery: "steer" as const,
+      },
     }
 
     yield* load("1", "before")
