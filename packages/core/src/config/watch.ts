@@ -6,19 +6,7 @@ import type { Watcher } from "../filesystem/watcher.js"
 import type { ConfigDiscovery } from "./discovery.js"
 
 export function plan(sources: ConfigDiscovery.Sources) {
-  const directories = [
-    ...(sources.system?.present ? [sources.system.path] : []),
-    ...(sources.global ? [sources.global] : []),
-    ...sources.project.filter((root) => root.present).map((root) => root.path),
-  ]
-  const files = [
-    ...(sources.system ? [sources.system.path] : []),
-    ...sources.direct,
-    ...sources.project.map((root) => root.path),
-    ...sources.claude,
-    ...sources.agents,
-    ...(sources.explicit ? [sources.explicit] : []),
-  ]
+  const { directories, files } = roots(sources)
   // Keep a parent watch for each root so deletion/recreation is observable.
   const parents = Map.groupBy(
     files.filter((file) => !directories.some((directory) => file !== directory && FSUtil.contains(directory, file))),
@@ -38,4 +26,28 @@ export function plan(sources: ConfigDiscovery.Sources) {
       })),
     ].map((target) => [JSON.stringify(target), target satisfies Watcher.WatchInput]),
   )
+}
+
+/** Whether an update names a watched root or file of the plan, whose presence decides which documents Config loads. */
+export function reloads(sources: ConfigDiscovery.Sources, file: string) {
+  const { directories, files } = roots(sources)
+  return files.some((item) => item === file) || directories.some((directory) => directory === file)
+}
+
+function roots(sources: ConfigDiscovery.Sources) {
+  return {
+    directories: [
+      ...(sources.system?.present ? [sources.system.path] : []),
+      ...(sources.global ? [sources.global] : []),
+      ...sources.project.filter((root) => root.present).map((root) => root.path),
+    ],
+    files: [
+      ...(sources.system ? [sources.system.path] : []),
+      ...sources.direct,
+      ...sources.project.map((root) => root.path),
+      ...sources.claude,
+      ...sources.agents,
+      ...(sources.explicit ? [sources.explicit] : []),
+    ],
+  }
 }
