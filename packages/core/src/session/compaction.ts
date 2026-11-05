@@ -30,7 +30,7 @@ import { Token } from "../util/token.js"
 import type { SessionContext } from "./context.js"
 import { SessionEvent } from "./event.js"
 import { SessionHistory } from "./history.js"
-import type { SessionMessage } from "./message.js"
+import { SessionMessage } from "./message.js"
 import { SessionModelRequest } from "./model-request.js"
 import { SessionRunnerModel } from "./runner/model.js"
 import { SessionRunnerRetry } from "./runner/retry.js"
@@ -56,9 +56,19 @@ export type Editor = {
 /** A prompt's size: `measured` is what the provider reported at the latest response, `estimated` is the text since. */
 export type Estimate = { readonly measured: number; readonly estimated: number }
 
+export type Applied = {
+  readonly compactionID: SessionMessage.ID
+  readonly reason: "auto" | "overflow"
+}
+
 export type Trigger =
   /** `overflow`: the provider just rejected this context as too long. `estimate` is `estimatePrompt(context)`. */
-  | { readonly reason: "auto" | "overflow"; readonly context: SessionContext.Loaded; readonly estimate?: Estimate }
+  | {
+      readonly reason: "auto" | "overflow"
+      readonly context: SessionContext.Loaded
+      readonly estimate?: Estimate
+      readonly onApplied?: (applied: Applied) => Effect.Effect<void>
+    }
   /** `inputID` is the `/compact` inbox item, whose message shows the outcome. */
   | { readonly reason: "manual"; readonly context: SessionContext.Loaded; readonly inputID: SessionMessage.ID }
 
@@ -86,7 +96,7 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/Se
  * A summary fills `text`, and references the messages it keeps verbatim with `metadata.keepID`; history
  * rebuilds their text from that. A native compaction fills `native.messages` with its replacement window.
  */
-type Result = {
+type CompactionResult = {
   readonly text: string
   readonly native?: SessionMessage.Native
   readonly metadata?: Record<string, unknown>
@@ -119,7 +129,7 @@ type Precomputed = {
   /** Background summaries that failed since the last compaction, this one included once it has. */
   readonly failures: number
   readonly usage: SessionUsage.Recorded[]
-  readonly fiber: Fiber.Fiber<Result, Failure>
+  readonly fiber: Fiber.Fiber<CompactionResult, Failure>
 }
 
 const NOTHING_TO_COMPACT: Failure = { error: { type: "compaction.unavailable", message: "Nothing to compact yet" } }
@@ -322,20 +332,32 @@ export const layer = Layer.effect(
       const selected = model.context === context ? trigger : { ...trigger, context: model.context }
       // The runner opened the manual compaction's message when it delivered the `/compact` item. An automatic one
       // opens here, before any wait, so a background summary still being written shows as a running compaction.
-      if (trigger.reason !== "manual")
-        yield* bus.publish(SessionEvent.Compaction.Started, { sessionID: context.session.id, reason: "auto" })
+      const compactionID =
+        trigger.reason === "manual"
+          ? trigger.inputID
+          : SessionMessage.ID.fromEvent(
+              (
+                yield* bus.publish(SessionEvent.Compaction.Started, {
+                  sessionID: context.session.id,
+                  reason: "auto",
+                })
+              ).id,
+            )
       const swapped = held ? yield* usePrecomputed(selected, held, budget, settings) : undefined
       const compaction = swapped
         ? Effect.succeed(swapped)
         : native
           ? compactNatively(selected, budget, settings.keep)
           : summarize(selected, budget, settings.keep)
-      return yield* compaction.pipe(
+      const outcome = yield* compaction.pipe(
         Effect.matchEffect({
           onSuccess: (result) => publish(selected, result),
           onFailure: (failure) => publish(selected, failure),
         }),
       )
+      if (outcome.status === "completed" && selected.reason !== "manual" && selected.onApplied)
+        yield* selected.onApplied({ compactionID, reason: selected.reason })
+      return outcome
     })
 
     /**
@@ -416,7 +438,7 @@ export const layer = Layer.effect(
       held: Precomputed,
       budget: number,
       settings: Settings,
-    ): Effect.fn.Return<Result | undefined> {
+    ): Effect.fn.Return<CompactionResult | undefined> {
       const context = trigger.context
       const index = heldIndex(held, context)
       const usable =
@@ -433,7 +455,9 @@ export const layer = Layer.effect(
       const exit = yield* Fiber.await(held.fiber).pipe(Effect.onInterrupt(() => Fiber.interrupt(held.fiber)))
       if (Exit.isFailure(exit)) return undefined
       // Background calls were billed as they finished; the compaction's message still shows what it cost.
-      held.usage.forEach((usage) => addSpent(context.session.id, usage))
+      held.usage.forEach((usage) => {
+        addSpent(context.session.id, usage)
+      })
       return { ...exit.value, metadata: { keepID: held.keepID, ...exit.value.metadata } }
     })
 
@@ -473,7 +497,7 @@ export const layer = Layer.effect(
       budget: number,
       keep: number,
       background?: Background,
-    ): Effect.fn.Return<Result, Failure> {
+    ): Effect.fn.Return<CompactionResult, Failure> {
       const context = trigger.context
       const messages = background?.messages ?? context.messages
       const split = splitConversation(messages, keep)
@@ -566,7 +590,7 @@ export const layer = Layer.effect(
       trigger: Trigger,
       budget: number,
       keep: number,
-    ): Effect.fn.Return<Result, Failure> {
+  ): Effect.fn.Return<CompactionResult, Failure> {
       const context = trigger.context
       if (!context.messages.some(SessionRecentText.messageToText)) return yield* Effect.fail(NOTHING_TO_COMPACT)
       const unsupported = (message: string) =>
@@ -575,7 +599,7 @@ export const layer = Layer.effect(
 
       const toResult = (window: ReadonlyArray<Message>, usage: Usage | undefined) =>
         spend(context.session.id, usage && SessionUsage.record(usage, context.model.cost)).pipe(
-          Effect.as<Result>({
+          Effect.as<CompactionResult>({
             text: "",
             // Plain JSON, not the schema encoder: provider metadata can hold undefined entries, which it rejects.
             native: { messages: JSON.parse(JSON.stringify(window)) },
@@ -619,7 +643,7 @@ export const layer = Layer.effect(
       trigger: Trigger,
       prepared: Prepared,
       target: number,
-      send: (request: LLMRequest, size?: Estimate) => Effect.Effect<Result, AIError | Failure>,
+      send: (request: LLMRequest, size?: Estimate) => Effect.Effect<CompactionResult, AIError | Failure>,
       shrink: {
         readonly fit: number
         readonly history: LLMRequest
@@ -630,7 +654,7 @@ export const layer = Layer.effect(
         history: prepared.request,
       },
       background?: Background,
-    ): Effect.fn.Return<Result, Failure> {
+    ): Effect.fn.Return<CompactionResult, Failure> {
       const context = trigger.context
       if (prepared.event.result) return yield* fromHook(context, prepared.event.result, background)
 
@@ -876,7 +900,7 @@ export const layer = Layer.effect(
         cost: SessionUsage.calculateCost(context.model.cost, supplied.tokens),
       }
       return spend(context.session.id, usage, background?.usage).pipe(
-        Effect.as<Result>({
+        Effect.as<CompactionResult>({
           text: supplied.summary,
           native: supplied.native,
           metadata: supplied.metadata,
@@ -907,7 +931,7 @@ export const layer = Layer.effect(
 
     const publish = Effect.fnUntraced(function* (
       trigger: Trigger,
-      outcome: Result | Failure,
+      outcome: CompactionResult | Failure,
     ): Effect.fn.Return<Outcome> {
       const context = trigger.context
       const sessionID = context.session.id
@@ -940,19 +964,33 @@ export const layer = Layer.effect(
       return { status: "completed" }
     })
 
+    const run = (trigger: Trigger) => {
+      let applied = false
+      const selected: Trigger =
+        trigger.reason === "manual"
+          ? trigger
+          : {
+              ...trigger,
+              onApplied: (receipt) =>
+                Effect.sync(() => {
+                  applied = true
+                }).pipe(Effect.andThen(trigger.onApplied?.(receipt) ?? Effect.void)),
+            }
+      return compact(selected).pipe(
+        Effect.onInterrupt(() =>
+          trigger.reason === "manual" || applied
+            ? Effect.void
+            : publish(trigger, { error: { type: "compaction.interrupted", message: "Compaction was interrupted" } }),
+        ),
+        Effect.ensuring(Effect.sync(() => spent.delete(trigger.context.session.id))),
+      )
+    }
+
     return Service.of({
       transform: state.transform,
       reload: state.reload,
       // A manual compaction settles through its `/compact` inbox item, which the runner owns.
-      compact: (trigger) =>
-        compact(trigger).pipe(
-          Effect.onInterrupt(() =>
-            trigger.reason === "manual"
-              ? Effect.void
-              : publish(trigger, { error: { type: "compaction.interrupted", message: "Compaction was interrupted" } }),
-          ),
-          Effect.ensuring(Effect.sync(() => spent.delete(trigger.context.session.id))),
-        ),
+      compact: run,
       precompute,
     })
   }),

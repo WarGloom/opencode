@@ -101,6 +101,7 @@ const executionNode = makeGlobalNode({
         })
       })
       return SessionExecution.Service.of({
+        ...SessionExecution.noop,
         active: Effect.succeed(new Set()),
         isActive: () => Effect.succeed(false),
         resume: complete,

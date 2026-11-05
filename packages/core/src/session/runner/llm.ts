@@ -52,6 +52,7 @@ const layer = Layer.effect(
     const modelTransport = yield* SessionModelTransport.Service
     const db = (yield* Database.Service).db
     const compaction = yield* SessionCompaction.Service
+    const inbox = yield* SessionInbox.Service
     const plugins = yield* Plugin.Service
     const hooks = yield* PluginHooks.Service
     const jobs = yield* Job.Service
@@ -179,9 +180,14 @@ const layer = Layer.effect(
                 // Control-only drains such as a manual compaction never ran the model, so they skip the hook.
                 if (pending || !stepped) return DrainResult.Complete()
                 // The Session would go idle; a plugin may admit input to keep this execution working.
+                const boundary = yield* inbox.idleBoundary(sessionID)
+                if (!boundary) continue
                 yield* restore(
                   SessionBackground.outstanding(jobs, store, sessionID).pipe(
-                    Effect.flatMap((background) => hooks.trigger("session", "experimental.idle", { sessionID, background })),
+                    Effect.flatMap((background) => {
+                      const event = { sessionID, background, admit: boundary.admit }
+                      return hooks.trigger("session", "experimental.idle", event)
+                    }),
                   ),
                 )
                 if (!(yield* SessionInbox.has(db, sessionID, "input"))) return DrainResult.Complete()
@@ -215,7 +221,9 @@ const layer = Layer.effect(
       while (true) {
         const next = yield* advanceToStep()
         if (next._tag !== "Ready") return next
-        continuing = yield* runStep(next.context, step)
+        const result = yield* runStep(next.context, step)
+        if (result === "compaction-vetoed") return DrainResult.Complete()
+        continuing = result
         stepped = true
         step++
         force = false
@@ -241,14 +249,26 @@ const layer = Layer.effect(
       let recoverOverflow = true
       let recoverContinuation = true
       let retryAttempt: number | undefined
+      let compactionVetoed = false
       while (true) {
         // Reuse boundary preparation once; retries refresh context without delivering more input.
         const loaded = initial ?? (yield* prepareContext(sessionID).pipe(Effect.flatMap(context.load)))
         initial = undefined
         const estimate = SessionCompaction.estimatePrompt(loaded)
-        const compacted = yield* compaction.compact({ reason: "auto", context: loaded, estimate })
+        let autoCompactionEnabled = true
+        const compacted = yield* compaction.compact({
+          reason: "auto",
+          context: loaded,
+          estimate,
+          onApplied: (applied) =>
+            continueAfterCompaction(loaded, applied).pipe(
+              Effect.tap((enabled) => Effect.sync(() => (autoCompactionEnabled = enabled))),
+              Effect.asVoid,
+            ),
+        })
         if (compacted.status === "failed") return yield* new StepFailedError({ error: compacted.error })
         if (compacted.status === "completed") {
+          if (!autoCompactionEnabled) return "compaction-vetoed" as const
           assistantMessageID = SessionMessage.ID.create()
           continue
         }
@@ -312,8 +332,19 @@ const layer = Layer.effect(
           recoverOverflow: Effect.suspend(() =>
             recoverOverflow
               ? compaction
-                  .compact({ reason: "overflow", context: loaded, estimate })
-                  .pipe(Effect.map((result) => result.status === "completed"))
+                  .compact({
+                    reason: "overflow",
+                    context: loaded,
+                    estimate,
+                    onApplied: (applied) =>
+                      continueAfterCompaction(loaded, applied).pipe(
+                        Effect.tap((enabled) => Effect.sync(() => (compactionVetoed = !enabled))),
+                        Effect.asVoid,
+                      ),
+                  })
+                  .pipe(
+                    Effect.map((result) => result.status === "completed"),
+                  )
               : Effect.succeed(false),
           ),
         })
@@ -376,16 +407,35 @@ const layer = Layer.effect(
             yield* bus.publish(SessionEvent.Synthetic, { sessionID, text: CONTINUE_AFTER_OUTPUT_LIMIT })
             assistantMessageID = SessionMessage.ID.create()
           }),
-          Compacted: Effect.fnUntraced(function* () {
-            recoverOverflow = false
-            assistantMessageID = SessionMessage.ID.create()
-          }),
-          RecoverFull: Effect.fnUntraced(function* () {
-            recoverContinuation = false
-          }),
+          Compacted: () =>
+            Effect.sync(() => {
+              recoverOverflow = false
+              assistantMessageID = SessionMessage.ID.create()
+              if (compactionVetoed) return "compaction-vetoed" as const
+            }),
+          RecoverFull: () =>
+            Effect.sync(() => {
+              recoverContinuation = false
+            }),
         })
         if (completed !== undefined) return completed
       }
+    })
+
+    const continueAfterCompaction = Effect.fn("SessionRunner.continueAfterCompaction")(function* (
+      loaded: SessionContext.Loaded,
+      applied: SessionCompaction.Applied,
+    ) {
+      const event = {
+        sessionID: loaded.session.id,
+        compactionID: applied.compactionID,
+        reason: applied.reason,
+        agent: loaded.agent.id,
+        model: loaded.model.ref,
+        enabled: true,
+      }
+      yield* hooks.trigger("session", "experimental.compaction.continue", event)
+      return event.enabled
     })
 
     const settleStaleCompactions = Effect.fn("SessionRunner.settleStaleCompactions")(function* (
@@ -460,6 +510,7 @@ export const node = makeLocationNode({
     SessionModelTransport.node,
     SessionStore.node,
     SessionCompaction.node,
+    SessionInbox.node,
     Plugin.node,
     PluginHooks.node,
     Job.node,

@@ -29,6 +29,7 @@ const COMPLETED_LIMIT = 25
 
 export type Info = {
   id: string
+  generation: string
   type: string
   title?: string
   status: Status
@@ -84,6 +85,9 @@ type BlockStart =
 
 export type StartInput = {
   id: string
+  generation?: string
+  durable?: boolean
+  accept?: (info: Info) => Effect.Effect<void>
   type: string
   title?: string
   metadata?: Record<string, unknown>
@@ -94,6 +98,7 @@ export type StartInput = {
 
 export type WaitInput = {
   id: string
+  generation?: string
   timeout?: number
 }
 
@@ -121,7 +126,7 @@ export interface Interface {
   readonly block: (input: BlockInput) => Effect.Effect<BlockResult | undefined>
   readonly background: (id: string) => Effect.Effect<Info | undefined>
   readonly backgroundAll: (input: BackgroundAllInput) => Effect.Effect<Info[]>
-  readonly cancel: (id: string) => Effect.Effect<Info | undefined>
+  readonly cancel: (id: string, generation?: string) => Effect.Effect<Info | undefined>
   readonly cancelSession: (sessionID: SessionSchema.ID) => Effect.Effect<Info[]>
   readonly pendingBackground: Effect.Effect<readonly Background[]>
   readonly runningBackground: Effect.Effect<readonly Recovery[]>
@@ -298,12 +303,15 @@ export const make = Effect.gen(function* () {
             const job = {
               info: {
                 id: input.id,
+                generation: input.generation ?? crypto.randomUUID(),
                 type: input.type,
                 title: input.title,
                 status: "running" as const,
                 started_at,
                 metadata: input.metadata,
-                ...(input.notificationID ? { notificationID: input.notificationID } : {}),
+                ...(input.notificationID || input.durable
+                  ? { notificationID: input.notificationID ?? SessionMessage.ID.create() }
+                  : {}),
               },
               done,
               backgrounded,
@@ -313,6 +321,8 @@ export const make = Effect.gen(function* () {
               consumed: false,
               recovery: input.recovery,
             }
+            if (input.durable) yield* persistBackground(job)
+            if (input.accept !== undefined) yield* input.accept(snapshot(job))
             return [{ info: snapshot(job), scope }, new Map(jobs).set(input.id, job)]
           }),
         )
@@ -331,6 +341,7 @@ export const make = Effect.gen(function* () {
   const wait: Interface["wait"] = Effect.fn("Job.wait")(function* (input) {
     const job = (yield* SynchronizedRef.get(state.jobs)).get(input.id)
     if (!job) return { timedOut: false }
+    if (input.generation !== undefined && job.info.generation !== input.generation) return { timedOut: false }
     return yield* Effect.gen(function* () {
       if (job.info.status !== "running") return { info: snapshot(job), timedOut: false }
       if (input.timeout === undefined) return { info: yield* Deferred.await(job.done), timedOut: false }
@@ -440,13 +451,14 @@ export const make = Effect.gen(function* () {
     return result.map((item) => item.info)
   })
 
-  const cancelInternal = Effect.fnUntraced(function* (id: string, persist = true) {
+  const cancelInternal = Effect.fnUntraced(function* (id: string, persist = true, generation?: string) {
     const completed_at = yield* Clock.currentTimeMillis
     const result = yield* SynchronizedRef.modifyEffect(
       state.jobs,
       Effect.fnUntraced(function* (jobs): Effect.fn.Return<readonly [FinishResult, Map<string, Active>]> {
         const job = jobs.get(id)
         if (!job) return [{}, jobs]
+        if (generation !== undefined && job.info.generation !== generation) return [{}, jobs]
         if (job.info.status !== "running") return [{ info: snapshot(job), generation: job.scope }, jobs]
         const next = {
           ...job,
@@ -470,7 +482,7 @@ export const make = Effect.gen(function* () {
     return result.info
   })
 
-  const cancel: Interface["cancel"] = Effect.fn("Job.cancel")((id) => cancelInternal(id, true))
+  const cancel: Interface["cancel"] = Effect.fn("Job.cancel")((id, generation) => cancelInternal(id, true, generation))
 
   const cancelSession: Interface["cancelSession"] = Effect.fn("Job.cancelSession")(function* (sessionID) {
     const ids = [...(yield* SynchronizedRef.get(state.jobs)).values()]
@@ -511,14 +523,19 @@ export const make = Effect.gen(function* () {
     )
   }).pipe(Effect.withSpan("Job.pendingBackground"))
 
-  const runningBackground: Interface["runningBackground"] = SynchronizedRef.get(state.jobs).pipe(
-    Effect.map((jobs) =>
-      [...jobs.values()].flatMap((job) =>
-        job.isBackgrounded && job.info.status === "running" && job.recovery ? [job.recovery] : [],
-      ),
-    ),
-    Effect.withSpan("Job.runningBackground"),
-  )
+  const runningBackground: Interface["runningBackground"] = Effect.gen(function* () {
+    const jobs = yield* SynchronizedRef.get(state.jobs)
+    const running = [...jobs.values()].flatMap((job) =>
+      job.isBackgrounded && job.info.status === "running" && job.recovery ? [job.recovery] : [],
+    )
+    const suspended = (yield* pendingBackground).flatMap((job) => {
+      const recovery = job.recovery
+      if (job.status !== "running" || recovery.kind !== "subagent" || recovery.pluginID === undefined) return []
+      if (running.some((active) => active.kind === "subagent" && active.childSessionID === recovery.childSessionID && active.generation === recovery.generation)) return []
+      return [recovery]
+    })
+    return [...running, ...suspended]
+  }).pipe(Effect.withSpan("Job.runningBackground"))
 
   const completeBackground: Interface["completeBackground"] = Effect.fn("Job.completeBackground")((notificationID) =>
     SynchronizedRef.updateEffect(state.jobs, (jobs) =>

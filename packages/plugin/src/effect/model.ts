@@ -26,3 +26,22 @@ export interface ModelDomain extends ModelApi<unknown> {
   readonly transform: Transform<ModelEditor>
   readonly reload: () => Effect.Effect<void>
 }
+
+export interface ConfiguredInputs {
+  readonly providerID: string
+  readonly modelID: string
+  readonly input: readonly string[]
+}
+
+export interface ExperimentalModelDomain {
+  readonly configuredInputs: () => Effect.Effect<readonly ConfiguredInputs[]>
+}
+
+export type VariantSupport =
+  | { readonly type: "effort"; readonly values?: readonly string[] }
+  | { readonly type: "toggle" }
+  | { readonly type: "budget_tokens"; readonly min?: number; readonly max?: number }
+
+export interface ExperimentalVariantDomain {
+  readonly resolve: (input: { readonly model: Model.Info; readonly supports?: readonly VariantSupport[] }) => Effect.Effect<Model.Info["variants"]>
+}

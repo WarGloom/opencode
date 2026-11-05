@@ -8,8 +8,10 @@ import type { SessionInbox } from "@opencode/schema/session-inbox"
 import type { SessionError } from "@opencode/schema/session-error"
 import type { SessionMessage } from "@opencode/schema/session-message"
 import type { TokenUsage } from "@opencode/schema/token-usage"
-import type { JsonSchema, Types } from "effect"
-import type { ModelHooks } from "./registration.js"
+import type { Effect, JsonSchema, Scope, Types } from "effect"
+import type { ModelHookOptions, Registration } from "./registration.js"
+
+export type SessionHookOptions<Name> = Name extends "prompt" | "experimental.idle" ? never : ModelHookOptions
 
 export interface SessionPrompt {
   readonly sessionID: Session.ID
@@ -166,6 +168,7 @@ export type SessionIdleBackground =
     }
   | {
       readonly kind: "subagent"
+      readonly wakes?: boolean
       readonly sessionID: Session.ID
       readonly childSessionID: Session.ID
       readonly agent: string
@@ -193,6 +196,16 @@ export type SessionIdleBackground =
 export interface SessionIdle {
   readonly sessionID: Session.ID
   readonly background: ReadonlyArray<SessionIdleBackground>
+  readonly admit: (input: { readonly id: SessionMessage.ID; readonly text: string; readonly description?: string }) => Effect.Effect<"admitted" | "duplicate" | "stale">
+}
+
+export interface SessionCompactionContinue {
+  readonly sessionID: Session.ID
+  readonly compactionID: SessionMessage.ID
+  readonly reason: "auto" | "overflow"
+  readonly agent: Agent.ID
+  readonly model: Model.Ref
+  enabled: boolean
 }
 
 export interface SessionHooks {
@@ -210,6 +223,7 @@ export interface SessionHooks {
   readonly "experimental.ws.receive": SessionWebSocketReceive
   readonly retry: SessionRetry
   readonly "experimental.idle": SessionIdle
+  readonly "experimental.compaction.continue": SessionCompactionContinue
 }
 
 export type SessionDomain = Pick<
@@ -231,5 +245,54 @@ export type SessionDomain = Pick<
   | "context"
 > &
   Pick<ExperimentalSessionApi<unknown>, "wait" | "instructions"> & {
-    readonly hook: ModelHooks<SessionHooks>
+    readonly hook: <Name extends keyof SessionHooks>(name: Name, callback: (event: SessionHooks[Name]) => Effect.Effect<void>, options?: SessionHookOptions<Name>) => Effect.Effect<Registration, never, Scope.Scope>
   }
+
+/** Experimental: may change without compatibility guarantees. */
+export type ContinueAfterIdleOutcome = "admitted" | "duplicate" | "stale"
+
+export interface ContinueAfterIdleInput {
+  readonly sessionID: Session.ID
+  readonly boundaryID: SessionMessage.ID
+  readonly id: SessionMessage.ID
+  readonly text: string
+  readonly description?: string
+}
+
+export type ContinueAfterFailureOutcome = "admitted" | "duplicate" | "stale"
+
+/** Experimental: may change without compatibility guarantees. */
+export interface ContinueAfterFailureInput {
+  readonly sessionID: Session.ID
+  /**
+   * The idle entry the caller observed as the Session's newest durable history entry: a failed idle, or an
+   * interrupted idle inside this plugin's own `experimental.session.recover` callback.
+   */
+  readonly boundaryID: SessionMessage.ID
+  /** Stable synthetic input ID; replay with the same ID returns `duplicate`. */
+  readonly id: SessionMessage.ID
+  readonly text: string
+  readonly description?: string
+  /** Applied in the same atomic admission; never applied when the continuation is rejected. */
+  readonly model?: Model.Ref
+}
+
+/** Experimental: may change without compatibility guarantees. */
+export interface PluginInterruptResult {
+  readonly interrupted: boolean
+  /** The interrupted idle this call produced. Ordinary interruption does not authorize a continuation. */
+  readonly boundaryID?: SessionMessage.ID
+}
+
+/** Native continuation after a failed idle boundary. Experimental. */
+export interface ExperimentalSessionDomain {
+  /** Admits at the newest succeeded idle with no pending input, waking child or staged revert. Experimental. */
+  readonly continueAfterIdle: (input: ContinueAfterIdleInput) => Effect.Effect<ContinueAfterIdleOutcome, unknown>
+  readonly recover: (input: { readonly sessionID: Session.ID }, callback: (input: { readonly boundaryID: SessionMessage.ID }) => Effect.Effect<boolean, unknown>) => Effect.Effect<boolean, unknown>
+  /** Session execution snapshot for trusted plugin processes; absent means inherit the host environment. Experimental. */
+  readonly environment: (input: { readonly sessionID: Session.ID }) => Effect.Effect<Readonly<Record<string, string>> | undefined, unknown>
+  /** Admits the model change and steered continuation only while `boundaryID` is still the newest entry, then wakes once. */
+  readonly continueAfterFailure: (input: ContinueAfterFailureInput) => Effect.Effect<ContinueAfterFailureOutcome, unknown>
+  /** Interrupts without retaining recovery ownership. Use `recover` for a recoverable stop. */
+  readonly interrupt: (input: { readonly sessionID: Session.ID }) => Effect.Effect<PluginInterruptResult, unknown>
+}

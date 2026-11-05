@@ -9,7 +9,7 @@ import { Integration } from "@opencode/core/integration"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Global } from "@opencode/util/global"
 import { eq, like } from "drizzle-orm"
-import { Cause, Deferred, Effect, Exit, Fiber, Scope } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Ref, Scope } from "effect"
 import { SessionMessage } from "@opencode/core/session/message"
 import { SessionSchema } from "@opencode/core/session/schema"
 import { testEffect } from "./lib/effect"
@@ -17,6 +17,38 @@ import { testEffect } from "./lib/effect"
 const it = testEffect(AppNodeBuilder.build(LayerNode.group([Job.node, Database.node, Global.node])))
 
 describe("Job", () => {
+  it.live("persists recoverable ownership before durable work starts", () =>
+    Effect.gen(function* () {
+      const jobs = yield* Job.Service
+      const parent = SessionSchema.ID.create()
+      const child = SessionSchema.ID.create()
+      const job = yield* jobs.start({
+        id: child,
+        type: "subagent",
+        durable: true,
+        generation: "durable-generation",
+        recovery: { kind: "subagent", parentSessionID: parent, childSessionID: child, agent: "worker", description: "test" },
+        run: jobs.pendingBackground.pipe(Effect.map((rows) => rows.some((row) => row.id === child) ? "owned" : "orphan")),
+      })
+      expect((yield* jobs.wait({ id: child, generation: job.generation })).info?.output).toBe("owned")
+    }),
+  )
+
+  it.live("does not let an obsolete generation wait for or cancel its successor", () =>
+    Effect.gen(function* () {
+      const jobs = yield* Job.Service
+      const first = yield* jobs.start({ id: "generation-child", type: "test", generation: "first", run: Effect.succeed("first") })
+      yield* jobs.wait({ id: first.id, generation: first.generation })
+      const release = yield* Deferred.make<string>()
+      const next = yield* jobs.start({ id: first.id, type: "test", generation: "next", run: Deferred.await(release) })
+      expect(yield* jobs.cancel(first.id, first.generation)).toBeUndefined()
+      expect(yield* jobs.wait({ id: first.id, generation: first.generation })).toEqual({ timedOut: false })
+      expect((yield* jobs.get(next.id))?.status).toBe("running")
+      yield* Deferred.succeed(release, "successor")
+      expect((yield* jobs.wait({ id: next.id, generation: next.generation })).info?.output).toBe("successor")
+    }),
+  )
+
   it.live("tracks process-local work through explicit observation", () =>
     Effect.gen(function* () {
       const jobs = yield* Job.Service
@@ -101,11 +133,23 @@ describe("Job", () => {
     Effect.gen(function* () {
       const jobs = yield* Job.Service
       const output = yield* Deferred.make<string>()
-      const job = yield* jobs.start({ id: "job_reused", type: "test", run: Deferred.await(output) })
+      const lifecycle = yield* Ref.make<string[]>([])
+      const job = yield* jobs.start({
+        id: "job_reused",
+        type: "test",
+        accept: () => Ref.update(lifecycle, (items) => [...items, "accepted"]),
+        run: Ref.update(lifecycle, (items) => [...items, "running"]).pipe(Effect.andThen(Deferred.await(output))),
+      })
 
       expect(
-        yield* jobs.start({ id: job.id, type: "duplicate", run: Effect.die("Duplicate work must not run") }),
+        yield* jobs.start({
+          id: job.id,
+          type: "duplicate",
+          accept: () => Effect.die("Duplicate acceptance must not run"),
+          run: Effect.die("Duplicate work must not run"),
+        }),
       ).toEqual(job)
+      expect(yield* Ref.get(lifecycle)).toEqual(["accepted", "running"])
 
       yield* Deferred.succeed(output, "original output")
       expect((yield* jobs.wait({ id: job.id })).info).toMatchObject({

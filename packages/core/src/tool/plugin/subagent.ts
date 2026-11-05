@@ -13,6 +13,7 @@ import { Session } from "../../session.js"
 import { SessionSchema } from "../../session/schema.js"
 import { SubagentCompletion } from "../../session/subagent-completion.js"
 import { SubagentJob } from "../../session/subagent-job.js"
+import { SessionMessage } from "../../session/message.js"
 
 export const name = "subagent"
 
@@ -200,16 +201,15 @@ export const Plugin = {
               const background = input.background === true
               yield* context.progress({ sessionID: child.id, status: "running" })
 
-              // Standard prompt admission outside the job: Job.start joining a running child skips
-              // its run effect, and the default wake starts an idle child or steers a running one.
               yield* sessions
                 .prompt({
+                  id: SessionMessage.ID.make(`msg_subagent_${context.messageID}_${context.id}`),
                   sessionID: child.id,
                   text:
                     existing === undefined
                       ? ["You are a subagent spawned by another session.", input.prompt].join("\n")
                       : input.prompt,
-                  ...(background && existing === undefined ? { resume: false } : {}),
+                  resume: false,
                 })
                 .pipe(
                   Effect.mapError(
@@ -242,6 +242,7 @@ export const Plugin = {
                 yield* subagents.notify(recovery, result.info.started_at)
                 return backgroundResult(child.id)
               }
+              if (result?.info.notificationID) yield* jobs.completeBackground(result.info.notificationID)
               // Failure surfaces keep the sessionID visible so the model can continue the child.
               if (result?.info.status === "error")
                 return yield* new ToolFailure({

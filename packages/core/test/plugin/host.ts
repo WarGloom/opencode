@@ -60,6 +60,7 @@ export function host(overrides: Overrides = {}): Plugin.Context {
       reload: () => Effect.die("unused model.reload"),
     },
     command: overrides.command ?? {
+      hook: () => Effect.die("unused command.hook"),
       list: () => Effect.die("unused command.list"),
       transform: () => Effect.die("unused command.transform"),
       reload: () => Effect.die("unused command.reload"),
@@ -69,6 +70,31 @@ export function host(overrides: Overrides = {}): Plugin.Context {
     },
     event: { subscribe: events(overrides.event?.subscribe ?? (() => Stream.empty)) },
     experimental: overrides.experimental ?? {
+      skill: {
+        activate: () => Effect.die("unused experimental.skill.activate"),
+        activations: () => Effect.die("unused experimental.skill.activations"),
+        activation: () => Effect.die("unused experimental.skill.activation"),
+      },
+      formatter: { file: () => Effect.die("unused experimental.formatter.file") },
+      variant: { resolve: () => Effect.die("unused experimental.variant.resolve") },
+      model: { configuredInputs: () => Effect.die("unused experimental.model.configuredInputs") },
+      session: {
+        continueAfterIdle: () => Effect.die("unused experimental.session.continueAfterIdle"),
+        recover: () => Effect.die("unused experimental.session.recover"),
+        environment: () => Effect.die("unused experimental.session.environment"),
+        continueAfterFailure: () => Effect.die("unused experimental.session.continueAfterFailure"),
+        interrupt: () => Effect.die("unused experimental.session.interrupt"),
+      },
+      subagent: {
+        prepare: () => Effect.die("unused subagent.prepare"),
+        acceptSkills: () => Effect.die("unused subagent.acceptSkills"),
+        start: () => Effect.die("unused subagent.start"),
+        get: () => Effect.die("unused subagent.get"),
+        wait: () => Effect.die("unused subagent.wait"),
+        cancel: () => Effect.die("unused subagent.cancel"),
+        reconcile: () => Effect.die("unused subagent.reconcile"),
+        ready: () => Effect.die("unused subagent.ready"),
+      },
       terminal: {
         read: () => Effect.die("unused experimental.terminal.read"),
       },
@@ -132,6 +158,7 @@ export function host(overrides: Overrides = {}): Plugin.Context {
       reload: () => Effect.die("unused reference.reload"),
     },
     skill: overrides.skill ?? {
+      hook: () => Effect.die("unused skill.hook"),
       list: () => Effect.die("unused skill.list"),
       transform: () => Effect.die("unused skill.transform"),
       reload: () => Effect.die("unused skill.reload"),

@@ -28,6 +28,10 @@ export const deliver = Effect.fnUntraced(function* (
 ) {
   if (input.status === "running") return
   const recovery = input.recovery
+  if (recovery.completion === "none") {
+    if (input.notificationID) yield* jobs.completeBackground(input.notificationID)
+    return
+  }
   const text =
     input.status === "completed"
       ? (input.output ?? NO_TEXT)

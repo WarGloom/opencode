@@ -21,12 +21,14 @@ import { AnthropicMessages, OpenAIResponses } from "@opencode/ai/protocols"
 import { TestLLM, compileRequest } from "@opencode/ai/testing"
 import { RequestExecutor } from "@opencode/ai/route"
 import type { SessionHooks } from "@opencode/plugin/effect/session"
+import type { CommandHooks } from "@opencode/plugin/effect/command"
 import { Database } from "@opencode/core/database/database"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { LayerNodePlatform } from "@opencode/core/effect/app-node-platform"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Bus } from "@opencode/core/bus"
+import { Command } from "@opencode/core/command"
 import { Event } from "@opencode/schema/event"
 import { App } from "@opencode/core/app"
 import { Permission } from "@opencode/core/permission"
@@ -35,6 +37,7 @@ import { Project } from "@opencode/core/project"
 import { ProjectTable } from "@opencode/core/project/sql"
 import { Form } from "@opencode/core/form"
 import { Job } from "@opencode/core/job"
+import { Instance } from "@opencode/core/instance/service"
 import { AbsolutePath } from "@opencode/core/schema"
 import { Session } from "@opencode/core/session"
 import { Snapshot } from "@opencode/core/snapshot"
@@ -281,9 +284,11 @@ const permissionFail = {
 }
 const permission = permissionLayer()
 const transformTools = (registry: Tool.Interface, tools: Readonly<Record<string, ToolInfo>>, options?: Tool.Options) =>
-  registry.transform((editor) =>
-    Object.entries(tools).forEach(([name, tool]) => editor.add({ ...tool, name, options: options ?? tool.options })),
-  )
+  registry.transform((editor) => {
+    Object.entries(tools).forEach(([name, tool]) => {
+      editor.add({ ...tool, name, options: options ?? tool.options })
+    })
+  })
 const layer = Layer.unwrap(
   Effect.map(RunnerState, (state) => {
     const modelTransport = Layer.succeed(
@@ -463,6 +468,7 @@ const layer = Layer.unwrap(
           drain: (sessionID, force) => drain(sessionID, force),
         })
         return SessionExecution.Service.of({
+          ...SessionExecution.noop,
           active: coordinator.active,
           isActive: coordinator.isActive,
           resume: coordinator.run,
@@ -499,6 +505,7 @@ const layer = Layer.unwrap(
         Model.node,
         Tool.node,
         PluginHooks.node,
+        Command.node,
         Job.node,
         echoNode,
         SessionRunnerModel.node,
@@ -513,6 +520,7 @@ const layer = Layer.unwrap(
         LayerNodePlatform.llmClient,
         SessionRunnerLLM.node,
         SessionExecution.node,
+        Instance.node,
         Session.node,
       ]),
       [
@@ -585,6 +593,7 @@ const setup = Effect.gen(function* () {
   yield* insertSession(sessionID)
   const state = yield* RunnerState
   const session = yield* Session.Service
+  const instances = yield* Instance.Service
   const llm = yield* TestLLM.Test
   const requests = yield* LLMRequests
   const admit = (text: string) => session.prompt({ sessionID, text, resume: false })
@@ -594,6 +603,8 @@ const setup = Effect.gen(function* () {
     bus,
     sessionInbox,
     session,
+    instances,
+    sessionInfo: yield* session.get(sessionID),
     llm,
     requests,
     admit,
@@ -1178,6 +1189,44 @@ describe("SessionRunnerLLM", () => {
     expect(s.executions).toEqual(["renamed"])
   })
 
+  scenario("guards direct commands once with stable identity, mutable prompt, and explicit dispositions", function* (s) {
+    yield* Effect.gen(function* () {
+      const commands = yield* Command.Service
+      const hooks = yield* PluginHooks.Service
+      const calls: Command.Invocation[] = []
+      const events: CommandHooks["experimental.command.before"][] = []
+      const dispositions = ["continue", "handled", "cancelled"] as const
+      yield* commands.transform((editor) =>
+        editor.add({ name: "guarded", execute: (invocation) => Effect.sync(() => calls.push(invocation)) }),
+      )
+      yield* hooks.register("command", "experimental.command.before", (event) =>
+        Effect.sync(() => {
+          event.prompt.text = `guarded:${event.prompt.text}`
+          if (event.prompt.files?.[0]) event.prompt.files[0].name = "guarded.txt"
+          event.disposition = dispositions[events.length]!
+          events.push(structuredClone(event))
+        }),
+      )
+      const files = [{ uri: "file:///tmp/original.txt", name: "original.txt" }]
+
+      yield* s.session.command({ sessionID, command: "guarded", text: "first", files })
+      yield* s.session.command({ sessionID, command: "guarded", text: "second" })
+      yield* s.session.command({ sessionID, command: "guarded", text: "third" })
+
+      expect(events.map((event) => event.disposition)).toEqual([...dispositions])
+      expect(new Set(events.map((event) => event.invocationID)).size).toBe(3)
+      expect(calls).toMatchObject([
+        {
+          invocationID: events[0]?.invocationID,
+          sessionID,
+          delivery: "steer",
+          prompt: { text: "guarded:first", files: [{ name: "guarded.txt" }] },
+        },
+      ])
+      expect(files[0]?.name).toBe("original.txt")
+    }).pipe(s.instances.provide(s.sessionInfo))
+  })
+
   for (const resume of [false, true]) {
     scenario(
       `continues instead of going idle when a session idle hook admits input (resume: ${resume})`,
@@ -1219,6 +1268,157 @@ describe("SessionRunnerLLM", () => {
     )
   }
 
+  scenario("admits one synthetic item through an idle boundary", function* (s) {
+    const boundary = yield* s.sessionInbox.idleBoundary(sessionID)
+    if (!boundary) throw new Error("Expected an idle boundary")
+    const id = SessionMessage.ID.create()
+
+    const admitted = yield* boundary.admit({ id, text: "Keep going", description: "Continuing" })
+    const duplicate = yield* boundary.admit({ id, text: "Ignored retry" })
+
+    expect(admitted).toBe("admitted")
+    expect(duplicate).toBe("duplicate")
+    expect(yield* s.inbox).toMatchObject([
+      { id, type: "synthetic", payload: { text: "Keep going", description: "Continuing" } },
+    ])
+  })
+
+  scenario("rejects idle admission after user input is admitted without resume", function* (s) {
+    const boundary = yield* s.sessionInbox.idleBoundary(sessionID)
+    if (!boundary) throw new Error("Expected an idle boundary")
+    const user = yield* s.admit("New user input")
+
+    const outcome = yield* boundary.admit({ id: SessionMessage.ID.create(), text: "Stale continuation" })
+
+    expect(outcome).toBe("stale")
+    expect(yield* s.inbox).toMatchObject([{ id: user.id, type: "user" }])
+  })
+
+  scenario("rejects idle admission after a child generation is accepted", function* (s) {
+    const boundary = yield* s.sessionInbox.idleBoundary(sessionID)
+    if (!boundary) throw new Error("Expected an idle boundary")
+    yield* s.bus.publish(SessionEvent.ChildAccepted, {
+      sessionID,
+      childSessionID: Session.ID.make("ses_idle_boundary_child"),
+      generation: "1",
+    })
+
+    const outcome = yield* boundary.admit({ id: SessionMessage.ID.create(), text: "Stale continuation" })
+
+    expect(outcome).toBe("stale")
+    expect(yield* s.inbox).toEqual([])
+  })
+
+  scenario("rejects idle admission until an authorized child preparation is resolved", function* (s) {
+    const admissionID = "adm_idle_prepared"
+    const childSessionID = Session.ID.make("ses_idle_prepared_child")
+    yield* s.sessionInbox.prepareChild({ sessionID, admissionID, childSessionID })
+    yield* s.sessionInbox.prepareChild({ sessionID, admissionID, childSessionID })
+    const conflict = yield* s.sessionInbox
+      .prepareChild({ sessionID, admissionID, childSessionID: Session.ID.make("ses_idle_other_child") })
+      .pipe(Effect.flip)
+
+    const blocked = yield* s.sessionInbox.idleBoundary(sessionID)
+    if (!blocked) throw new Error("Expected an idle boundary")
+    const outcome = yield* blocked.admit({ id: SessionMessage.ID.create(), text: "Stale continuation" })
+
+    expect(conflict).toBeInstanceOf(SessionInbox.ChildPreparationConflictError)
+    expect(outcome).toBe("stale")
+    expect(yield* s.inbox).toEqual([])
+
+    yield* s.sessionInbox.resolveChild({ sessionID, admissionID, outcome: "started" })
+    yield* s.sessionInbox.resolveChild({ sessionID, admissionID, outcome: "cancelled" })
+    yield* s.sessionInbox.resolveChild({ sessionID, admissionID: "adm_unknown", outcome: "cancelled" })
+    yield* s.sessionInbox.prepareChild({ sessionID, admissionID, childSessionID })
+    const released = yield* s.sessionInbox.idleBoundary(sessionID)
+    if (!released) throw new Error("Expected an idle boundary")
+    const id = SessionMessage.ID.create()
+
+    expect(yield* released.admit({ id, text: "Keep going" })).toBe("admitted")
+    expect(yield* s.inbox).toMatchObject([{ id, type: "synthetic" }])
+  })
+
+  scenario("rejects idle admission when a child is prepared after the boundary was captured", function* (s) {
+    const admissionID = "adm_idle_late_prepared"
+    const boundary = yield* s.sessionInbox.idleBoundary(sessionID)
+    if (!boundary) throw new Error("Expected an idle boundary")
+    yield* s.sessionInbox.prepareChild({
+      sessionID,
+      admissionID,
+      childSessionID: Session.ID.make("ses_idle_late_child"),
+    })
+    yield* s.sessionInbox.resolveChild({ sessionID, admissionID, outcome: "cancelled" })
+
+    const outcome = yield* boundary.admit({ id: SessionMessage.ID.create(), text: "Stale continuation" })
+
+    expect(outcome).toBe("stale")
+    expect(yield* s.inbox).toEqual([])
+  })
+
+  // The idle entry an ended execution projects is the boundary callers observe and pass back.
+  const endedExecution = Effect.fnUntraced(function* (s: Scenario, outcome: "failed" | "interrupted") {
+    yield* s.runPrompt("Start")
+    if (outcome === "failed")
+      yield* s.bus.publish(SessionEvent.Execution.Failed, { sessionID, error: { type: "unknown", message: "failed" } })
+    if (outcome === "interrupted") yield* s.bus.publish(SessionEvent.Execution.Interrupted, { sessionID, reason: "user" })
+    const [boundary] = yield* s.session.messages({ sessionID, order: "desc", limit: 1 })
+    if (boundary?.type !== "idle" || boundary.outcome !== outcome) throw new Error(`Expected a ${outcome} idle`)
+    return boundary.id
+  })
+  const continuationModel = Model.Ref.make({ id: ID.make("continuation"), providerID: Provider.ID.make("test") })
+
+  scenario("admits one failure continuation with its model while the failed idle is newest", function* (s) {
+    yield* s.llm.push(TestLLM.text("Done", "text-before-failure"))
+    const boundaryID = yield* endedExecution(s, "failed")
+    const id = SessionMessage.ID.create()
+    const input = { sessionID, boundaryID, id, text: "Retry with another model", model: continuationModel }
+
+    expect(yield* s.sessionInbox.admitAfter(input)).toBe("admitted")
+    expect(yield* s.sessionInbox.admitAfter(input)).toBe("duplicate")
+    expect(yield* s.inbox).toMatchObject([{ id, type: "synthetic", payload: { text: "Retry with another model" } }])
+    expect((yield* s.session.get(sessionID)).model).toMatchObject({ id: "continuation", providerID: "test" })
+  })
+
+  scenario("admits an interrupted idle only when the caller accepts interrupted outcomes", function* (s) {
+    yield* s.llm.push(TestLLM.text("Done", "text-before-interrupt"))
+    const boundaryID = yield* endedExecution(s, "interrupted")
+    const model = (yield* s.session.get(sessionID)).model
+    const rejected = { sessionID, boundaryID, id: SessionMessage.ID.create(), text: "Stale", model: continuationModel }
+
+    expect(yield* s.sessionInbox.admitAfter(rejected)).toBe("stale")
+    expect(yield* s.inbox).toEqual([])
+    expect((yield* s.session.get(sessionID)).model).toEqual(model)
+    expect(
+      yield* s.sessionInbox.admitAfter({
+        sessionID,
+        boundaryID,
+        id: SessionMessage.ID.create(),
+        text: "Recover",
+        outcomes: ["interrupted"],
+      }),
+    ).toBe("admitted")
+  })
+
+  for (const moved of ["pending user input", "a later step"] as const)
+    scenario(`writes no continuation or model change after ${moved} moves the failure boundary`, function* (s) {
+      yield* s.llm.push(TestLLM.text("Done", "text-before-moved-failure"))
+      const boundaryID = yield* endedExecution(s, "failed")
+      const model = (yield* s.session.get(sessionID)).model
+      if (moved === "pending user input") yield* s.admit("New user input")
+      if (moved === "a later step") {
+        yield* s.llm.push(TestLLM.text("Recovered", "text-recovered-boundary"))
+        yield* s.runPrompt("Try again")
+      }
+      const inbox = yield* s.inbox
+      const id = SessionMessage.ID.create()
+
+      expect(
+        yield* s.sessionInbox.admitAfter({ sessionID, boundaryID, id, text: "Stale", model: continuationModel }),
+      ).toBe("stale")
+      expect(yield* s.inbox).toEqual(inbox)
+      expect((yield* s.session.get(sessionID)).model).toEqual(model)
+    })
+
   scenario("runs the session idle hook only once the session would go idle", function* (s) {
     const hooks = yield* PluginHooks.Service
     const idles: number[] = []
@@ -1236,7 +1436,9 @@ describe("SessionRunnerLLM", () => {
     const jobs = yield* Job.Service
     const hooks = yield* PluginHooks.Service
     const childID = Session.ID.make("ses_runner_child")
+    const memberID = Session.ID.make("ses_runner_member")
     yield* insertSession(childID, sessionID)
+    yield* insertSession(memberID, sessionID)
     yield* insertSession(otherSessionID)
     const background = (recovery: Job.Recovery, id: string) =>
       jobs.start({ id, type: recovery.kind, recovery, run: Effect.never }).pipe(Effect.andThen(jobs.background(id)))
@@ -1250,6 +1452,18 @@ describe("SessionRunnerLLM", () => {
         description: "Find callers",
       },
       childID,
+    )
+    // A completion:none generation (a long-lived team member) is visible work that never wakes the parent.
+    yield* background(
+      {
+        kind: "subagent",
+        parentSessionID: sessionID,
+        childSessionID: memberID,
+        agent: "member",
+        description: "Team member",
+        completion: "none",
+      },
+      memberID,
     )
     yield* background({ kind: "shell", sessionID: childID, shellID: "shell-child", command: "bun test" }, "shell-child")
     yield* background(
@@ -1272,7 +1486,22 @@ describe("SessionRunnerLLM", () => {
     expect(events).toHaveLength(1)
     expect(events[0]?.background).toEqual([
       { kind: "shell", sessionID, shellID: "shell-own", command: "bun dev" },
-      { kind: "subagent", sessionID, childSessionID: childID, agent: "explore", description: "Find callers" },
+      {
+        kind: "subagent",
+        sessionID,
+        childSessionID: childID,
+        agent: "explore",
+        description: "Find callers",
+        wakes: true,
+      },
+      {
+        kind: "subagent",
+        sessionID,
+        childSessionID: memberID,
+        agent: "member",
+        description: "Team member",
+        wakes: false,
+      },
       { kind: "shell", sessionID: childID, shellID: "shell-child", command: "bun test" },
     ])
   })
@@ -3350,6 +3579,38 @@ describe("SessionRunnerLLM", () => {
     expect(userTexts(s.requests[1])[0]).toContain("Request 3:")
   })
 
+  scenario("stops successfully when the continuation hook vetoes an applied overflow compaction", function* (s) {
+    const filler = "context ".repeat(1_000)
+    yield* s.llm.push(...Array.from({ length: 4 }, (_, index) => TestLLM.text(`Answer ${index}`, `veto-${index}`)))
+    yield* Effect.forEach(
+      Array.from({ length: 4 }, (_, index) => index),
+      (index) => s.runPrompt(`Request ${index}: ${filler}`),
+    )
+    const hooks = yield* PluginHooks.Service
+    const continuations: SessionHooks["experimental.compaction.continue"][] = []
+    const idles: Session.ID[] = []
+    yield* hooks.register("session", "experimental.compaction.continue", (event) =>
+      Effect.sync(() => {
+        continuations.push({ ...event })
+        event.enabled = false
+      }),
+    )
+    yield* hooks.register("session", "experimental.idle", (event) => Effect.sync(() => idles.push(event.sessionID)))
+    s.currentModel = recoveryModel
+    s.requests.length = 0
+    yield* s.llm.push(
+      TestLLM.failAfter(providerRejected({ message: "prompt too long", classification: "context-overflow" })),
+      TestLLM.text("## Objective\n- Recovered", "veto-summary"),
+      TestLLM.text("Must not run", "veto-final"),
+    )
+
+    yield* s.runPrompt("Continue")
+
+    expect(s.requests).toHaveLength(2)
+    expect(continuations).toMatchObject([{ sessionID, reason: "overflow", enabled: true }])
+    expect(idles).toEqual([])
+  })
+
   scenario("serializes history without tools or media after a summary input overflow", function* (s) {
     const image = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
     yield* s.session.prompt({
@@ -3597,6 +3858,48 @@ describe("SessionRunnerLLM", () => {
       metadata: { recent: `[User]: ${"Newest exact request ".repeat(180)}` },
     })
   })
+
+  for (const enabled of [true, false]) {
+    scenario(`automatically compacted execution ${enabled ? "continues" : "stops"} through the continuation hook`, function* (s) {
+      yield* s.llm.push(TestLLM.textWithUsage("Earlier answer", `text-compaction-hook-${enabled}`, 3_950))
+      yield* s.runPrompt("Earlier question ".repeat(180))
+
+      const hooks = yield* PluginHooks.Service
+      const continuations: SessionHooks["experimental.compaction.continue"][] = []
+      const idles: Session.ID[] = []
+      yield* hooks.register("session", "experimental.compaction.continue", (event) =>
+        Effect.sync(() => {
+          continuations.push({ ...event })
+          event.enabled = enabled
+        }),
+      )
+      yield* hooks.register("session", "experimental.idle", (event) => Effect.sync(() => idles.push(event.sessionID)))
+
+      s.currentModel = compactModel
+      s.requests.length = 0
+      yield* s.llm.push(
+        TestLLM.text("## Objective\n- Preserve the task", `text-compaction-summary-${enabled}`),
+        TestLLM.textWithUsage("Continued", `text-compaction-final-${enabled}`, 3_950),
+      )
+      yield* s.runPrompt("Recent exact request ".repeat(180))
+
+      expect(s.requests).toHaveLength(enabled ? 2 : 1)
+      expect(continuations).toHaveLength(1)
+      expect(continuations[0]).toMatchObject({
+        sessionID,
+        reason: "auto",
+        agent: Agent.ID.make("build"),
+        model: Model.Ref.make({
+          id: ID.make(compactModel.id),
+          providerID: Provider.ID.make(compactModel.provider),
+        }),
+      })
+      expect((yield* s.messages).find((message) => message.type === "compaction")?.id).toBe(
+        continuations[0]?.compactionID,
+      )
+      expect(idles).toEqual(enabled ? [sessionID] : [])
+    })
+  }
 
   scenario("automatically persists native windows, retains earlier users, and waits for fresh usage", function* (s) {
     s.currentModel = LanguageModel.make({ id: "native", provider: "openai", route: OpenAIResponses.route })

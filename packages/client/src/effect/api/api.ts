@@ -463,6 +463,12 @@ export interface SessionApi<E = never> {
   /** @deprecated Use `client.experimental.session.skill`. Removed in the next minor. */
   readonly skill: ExperimentalSessionSkillOperation<E>
 
+  /** @deprecated Use `client.experimental.session.skillActivations`. Removed in the next minor. */
+  readonly skillActivations: ExperimentalSessionSkillActivationsOperation<E>
+
+  /** @deprecated Use `client.experimental.session.skillActivation`. Removed in the next minor. */
+  readonly skillActivation: ExperimentalSessionSkillActivationOperation<E>
+
   /** @deprecated Use `client.experimental.session.wait`. Removed in the next minor. */
   readonly wait: ExperimentalSessionWaitOperation<E>
 
@@ -574,12 +580,25 @@ export type ExperimentalSessionExportOperation<E = never> = (
 export type ExperimentalSessionSkillInput = {
   readonly sessionID: Session.ID
   readonly id: Skill.ID
+  readonly arguments?: string | undefined
   readonly resume?: boolean | undefined
 }
-export type ExperimentalSessionSkillOutput = void
+export type ExperimentalSessionSkillOutput = SessionMessage.SkillActivation
 export type ExperimentalSessionSkillOperation<E = never> = (
   input: ExperimentalSessionSkillInput,
 ) => Effect.Effect<ExperimentalSessionSkillOutput, E>
+
+export type ExperimentalSessionSkillActivationsInput = { readonly sessionID: Session.ID }
+export type ExperimentalSessionSkillActivationsOutput = ReadonlyArray<SessionMessage.SkillActivation>
+export type ExperimentalSessionSkillActivationsOperation<E = never> = (
+  input: ExperimentalSessionSkillActivationsInput,
+) => Effect.Effect<ExperimentalSessionSkillActivationsOutput, E>
+
+export type ExperimentalSessionSkillActivationInput = { readonly sessionID: Session.ID; readonly skillID: Skill.ID }
+export type ExperimentalSessionSkillActivationOutput = SessionMessage.SkillActivation
+export type ExperimentalSessionSkillActivationOperation<E = never> = (
+  input: ExperimentalSessionSkillActivationInput,
+) => Effect.Effect<ExperimentalSessionSkillActivationOutput, E>
 
 export type ExperimentalSessionWaitInput = { readonly sessionID: Session.ID }
 export type ExperimentalSessionWaitOutput = void
@@ -933,9 +952,14 @@ export type ExperimentalSessionLogOutput =
             | undefined
           readonly data: {
             readonly sessionID: Session.ID
-            readonly id: Skill.ID
-            readonly name: Skill.Name
-            readonly text: string
+            readonly activationID: Skill.ActivationID
+            readonly agent: Agent.ID
+            readonly source: SessionMessage.SkillActivationSource
+            readonly skill: Skill.Info
+            readonly arguments?: string | undefined
+            readonly revision: string
+            readonly content: string
+            readonly metadata: { readonly [x: string]: Schema.Json }
           }
         }
       | {
@@ -1391,6 +1415,51 @@ export type ExperimentalSessionLogOutput =
           readonly id: Event.ID
           readonly created: number
           readonly metadata?: { readonly [x: string]: unknown } | undefined
+          readonly type: "session.child.accepted"
+          readonly durable: { readonly aggregateID: string; readonly seq: Event.Seq; readonly version: Event.Version }
+          readonly location?:
+            | { readonly directory: AbsolutePath; readonly workspaceID?: Workspace.ID | undefined }
+            | undefined
+          readonly data: {
+            readonly sessionID: Session.ID
+            readonly childSessionID: Session.ID
+            readonly generation: string
+          }
+        }
+      | {
+          readonly id: Event.ID
+          readonly created: number
+          readonly metadata?: { readonly [x: string]: unknown } | undefined
+          readonly type: "session.child.prepared"
+          readonly durable: { readonly aggregateID: string; readonly seq: Event.Seq; readonly version: Event.Version }
+          readonly location?:
+            | { readonly directory: AbsolutePath; readonly workspaceID?: Workspace.ID | undefined }
+            | undefined
+          readonly data: {
+            readonly sessionID: Session.ID
+            readonly admissionID: string
+            readonly childSessionID: Session.ID
+          }
+        }
+      | {
+          readonly id: Event.ID
+          readonly created: number
+          readonly metadata?: { readonly [x: string]: unknown } | undefined
+          readonly type: "session.child.resolved"
+          readonly durable: { readonly aggregateID: string; readonly seq: Event.Seq; readonly version: Event.Version }
+          readonly location?:
+            | { readonly directory: AbsolutePath; readonly workspaceID?: Workspace.ID | undefined }
+            | undefined
+          readonly data: {
+            readonly sessionID: Session.ID
+            readonly admissionID: string
+            readonly outcome: "started" | "cancelled"
+          }
+        }
+      | {
+          readonly id: Event.ID
+          readonly created: number
+          readonly metadata?: { readonly [x: string]: unknown } | undefined
           readonly type: "session.usage.recorded"
           readonly durable: { readonly aggregateID: string; readonly seq: Event.Seq; readonly version: Event.Version }
           readonly location?:
@@ -1434,6 +1503,8 @@ export interface ExperimentalSessionApi<E = never> {
   readonly import: ExperimentalSessionImportOperation<E>
   readonly export: ExperimentalSessionExportOperation<E>
   readonly skill: ExperimentalSessionSkillOperation<E>
+  readonly skillActivations: ExperimentalSessionSkillActivationsOperation<E>
+  readonly skillActivation: ExperimentalSessionSkillActivationOperation<E>
   readonly wait: ExperimentalSessionWaitOperation<E>
   readonly instructions: {
     readonly entry: {
@@ -2839,6 +2910,24 @@ export type SessionSkillOutput = ExperimentalSessionSkillOutput
 
 /** @deprecated Use `ExperimentalSessionSkillOperation`. Removed in the next minor. */
 export type SessionSkillOperation<E = never> = ExperimentalSessionSkillOperation<E>
+
+/** @deprecated Use `ExperimentalSessionSkillActivationsInput`. Removed in the next minor. */
+export type SessionSkillActivationsInput = ExperimentalSessionSkillActivationsInput
+
+/** @deprecated Use `ExperimentalSessionSkillActivationsOutput`. Removed in the next minor. */
+export type SessionSkillActivationsOutput = ExperimentalSessionSkillActivationsOutput
+
+/** @deprecated Use `ExperimentalSessionSkillActivationsOperation`. Removed in the next minor. */
+export type SessionSkillActivationsOperation<E = never> = ExperimentalSessionSkillActivationsOperation<E>
+
+/** @deprecated Use `ExperimentalSessionSkillActivationInput`. Removed in the next minor. */
+export type SessionSkillActivationInput = ExperimentalSessionSkillActivationInput
+
+/** @deprecated Use `ExperimentalSessionSkillActivationOutput`. Removed in the next minor. */
+export type SessionSkillActivationOutput = ExperimentalSessionSkillActivationOutput
+
+/** @deprecated Use `ExperimentalSessionSkillActivationOperation`. Removed in the next minor. */
+export type SessionSkillActivationOperation<E = never> = ExperimentalSessionSkillActivationOperation<E>
 
 /** @deprecated Use `ExperimentalSessionWaitInput`. Removed in the next minor. */
 export type SessionWaitInput = ExperimentalSessionWaitInput
