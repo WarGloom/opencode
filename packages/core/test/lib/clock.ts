@@ -21,13 +21,14 @@ const tick = Effect.gen(function* () {
  * work such as a plugin import, which needs many more steps on a loaded CI
  * runner than locally.
  */
-export const advance = Effect.fnUntraced(function* (condition: () => boolean) {
+export const advance = Effect.fnUntraced(function* (condition: (() => boolean) | Effect.Effect<boolean>) {
+  const check = typeof condition === "function" ? Effect.sync(condition) : condition
   const deadline = performance.now() + 15_000
   while (performance.now() < deadline) {
-    if (condition()) return
+    if (yield* check) return
     yield* tick
   }
-  if (condition()) return
+  if (yield* check) return
   return yield* Effect.die(new Error("condition never became true within 15s"))
 })
 
