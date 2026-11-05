@@ -60,9 +60,9 @@ export const make: Effect.Effect<Interface, never, SubagentAdmissionStore.Servic
       return yield* new SubagentAdmissionStore.Conflict({ admissionID: "admissionID" in target ? target.admissionID : target.run.generation, reason: "Unknown admission or generation" })
     return entry
   })
-  const activate = Effect.fn(function* (entry: SubagentAdmissionStore.Entry) {
+  const activate = Effect.fn(function* (entry: SubagentAdmissionStore.Entry, phase: "start" | "resume" = "start") {
     if (entry.start === undefined || entry.generation === undefined) return SubagentAdmission.receipt(entry)
-    yield* authorization.check(entry)
+    yield* authorization.check(entry, phase)
     const start = entry.start
     yield* sessions.prompt({
       sessionID: entry.childSessionID,
@@ -158,7 +158,10 @@ export const make: Effect.Effect<Interface, never, SubagentAdmissionStore.Servic
       if (active?.generation === input.run.generation) return SubagentAdmission.receipt(entry)
       if (active !== undefined)
         return yield* new SubagentAdmissionStore.Conflict({ admissionID: entry.admissionID, reason: "Recovered generation was superseded" })
-      return yield* activate(entry)
+      const resumed = entry.status === "running" && background?.recovery.kind === "subagent" &&
+        background.recovery.childSessionID === entry.childSessionID &&
+        background.recovery.parentSessionID === entry.parentSessionID && background.recovery.agent === entry.agent
+      return yield* activate(entry, resumed ? "resume" : "start")
     }))
   })
   // Runs under the store lock. Revoking an anchor keeps its historical outcome and ends every later team generation it authorized.
