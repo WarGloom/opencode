@@ -33,10 +33,12 @@ import { Credential } from "@opencode/core/credential"
 import { WellKnown } from "@opencode/core/wellknown"
 import { Watcher } from "@opencode/core/filesystem/watcher"
 import { AppProcess } from "@opencode/util/process"
-import { Deferred, Effect, Layer, Schema } from "effect"
+import { FSUtil } from "@opencode/util/fs-util"
+import { Deferred, Effect, Layer, Schema, Stream } from "effect"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { AbsolutePath } from "@opencode/core/schema"
 import { waitUntil } from "../lib/eventually"
+import { advance, drain } from "../lib/clock"
 import { testEffect } from "../lib/effect"
 import { PluginTestLayer } from "../plugin/fixture"
 import { emptyCredentialNode, emptyWellknownNode } from "../fixture/config-nodes"
@@ -250,6 +252,239 @@ describe("config plugin reloads", () => {
             yield* waitUntil(references.list().pipe(Effect.map((items) => items.some((item) => item.name === "docs"))))
             expect((yield* references.list())[0]?.path).toBe(AbsolutePath.make(path.join(root, "docs")))
           }).pipe(Effect.provide(liveConfig(tmp.path, native)))
+        }),
+      ),
+    ),
+  )
+
+  it.effect("reloads only for config documents under a watched config root", () =>
+    Effect.acquireDisposable(Effect.promise(() => tmpdir())).pipe(
+      Effect.flatMap((tmp) =>
+        Effect.gen(function* () {
+          const root = path.join(tmp.path, ".opencode")
+          const json = path.join(root, "opencode.json")
+          const jsonc = path.join(root, "opencode.jsonc")
+          yield* Effect.promise(async () => {
+            await fs.mkdir(root)
+            await fs.writeFile(json, JSON.stringify({ shell: "initial" }))
+          })
+          const publisher = yield* Deferred.make<(update: Watcher.Update) => void>()
+          const native = Watcher.Native.of({
+            subscribe: (input) =>
+              Effect.gen(function* () {
+                if (input.type === "directory" && input.target === root) yield* Deferred.succeed(publisher, input.publish)
+                return { unsubscribe: () => Promise.resolve() }
+              }),
+          })
+          const real = yield* FSUtil.Service
+          const globalDirectory = path.join(tmp.path, "global")
+          const counts = { discoveries: 0 }
+          // Every Config load starts by rediscovering, and discovery first resolves the global config directory.
+          const counting = FSUtil.node.replace(
+            Layer.succeed(FSUtil.Service, {
+              ...real,
+              resolve: (target) =>
+                Effect.sync(() => {
+                  if (target === globalDirectory) counts.discoveries++
+                }).pipe(Effect.andThen(real.resolve(target))),
+            }),
+          )
+          return yield* Effect.gen(function* () {
+            const config = yield* Config.Service
+            const raw: string[] = []
+            yield* config.changes().pipe(
+              Stream.runForEach((update) => Effect.sync(() => void raw.push(update.path))),
+              Effect.forkScoped({ startImmediately: true }),
+            )
+            const publish = yield* Deferred.await(publisher)
+            const shell = (value: string) =>
+              config.entries().pipe(Effect.map((entries) => Config.latest(entries, "shell") === value))
+            // The startup readiness reload sees this write, so observing it means startup reloads have finished.
+            yield* Effect.promise(() => fs.writeFile(json, JSON.stringify({ shell: "settled" })))
+            yield* advance(shell("settled"))
+            const settled = counts.discoveries
+
+            const lock = path.join(root, "oc-codex-multi-auth-accounts.json.lock")
+            publish({ path: lock, type: "update" })
+            yield* drain
+            expect(raw).toContain(lock)
+            expect(counts.discoveries).toBe(settled)
+
+            yield* Effect.promise(() => fs.writeFile(json, JSON.stringify({ shell: "edited" })))
+            publish({ path: json, type: "update" })
+            yield* advance(shell("edited"))
+            expect(counts.discoveries).toBe(settled + 1)
+
+            yield* Effect.promise(() => fs.writeFile(jsonc, JSON.stringify({ shell: "created" })))
+            publish({ path: jsonc, type: "create" })
+            yield* advance(shell("created"))
+
+            yield* Effect.promise(() => fs.rm(jsonc))
+            publish({ path: jsonc, type: "delete" })
+            yield* advance(shell("edited"))
+          }).pipe(Effect.scoped, Effect.provide(liveConfig(tmp.path, native, undefined, [counting])))
+        }),
+      ),
+    ),
+  )
+
+  for (const input of [
+    {
+      name: "a {file:...} dependency",
+      input: "secret.txt",
+      setup: (root: string) =>
+        Promise.all([
+          fs.writeFile(path.join(root, "opencode.json"), JSON.stringify({ shell: "{file:./secret.txt}" })),
+          fs.writeFile(path.join(root, "secret.txt"), "initial"),
+        ]),
+      write: (file: string, shell: string) => fs.writeFile(file, shell),
+    },
+    {
+      name: "the target of a symlinked config document",
+      input: "real.json",
+      setup: async (root: string) => {
+        await fs.writeFile(path.join(root, "real.json"), JSON.stringify({ shell: "initial" }))
+        await fs.symlink("real.json", path.join(root, "opencode.json"))
+      },
+      write: (file: string, shell: string) => fs.writeFile(file, JSON.stringify({ shell })),
+    },
+  ]) {
+    it.effect(`reloads when ${input.name} under a watched config root changes`, () =>
+      Effect.acquireDisposable(Effect.promise(() => tmpdir())).pipe(
+        Effect.flatMap((tmp) =>
+          Effect.gen(function* () {
+            const root = path.join(tmp.path, ".opencode")
+            const file = path.join(root, input.input)
+            yield* Effect.promise(async () => {
+              await fs.mkdir(root)
+              await input.setup(root)
+            })
+            const publisher = yield* Deferred.make<(update: Watcher.Update) => void>()
+            const native = Watcher.Native.of({
+              subscribe: (target) =>
+                Effect.gen(function* () {
+                  if (target.type === "directory" && target.target === root)
+                    yield* Deferred.succeed(publisher, target.publish)
+                  return { unsubscribe: () => Promise.resolve() }
+                }),
+            })
+            return yield* Effect.gen(function* () {
+              const config = yield* Config.Service
+              const publish = yield* Deferred.await(publisher)
+              const shell = (value: string) =>
+                config.entries().pipe(Effect.map((entries) => Config.latest(entries, "shell") === value))
+              expect(Config.latest(yield* config.entries(), "shell")).toBe("initial")
+              // The startup readiness reload sees this write, so observing it means startup reloads have finished.
+              yield* Effect.promise(() => input.write(file, "settled"))
+              yield* advance(shell("settled"))
+
+              yield* Effect.promise(() => input.write(file, "edited"))
+              publish({ path: file, type: "update" })
+              yield* advance(shell("edited"))
+            }).pipe(Effect.provide(liveConfig(tmp.path, native)))
+          }),
+        ),
+      ),
+    )
+  }
+
+  for (const input of [
+    { name: "a path below a regular file", reference: "./plain.txt/x" },
+    { name: "a symlink loop", reference: "./loop" },
+  ]) {
+    it.effect(`loads an empty value for an unreadable {file:...} reference to ${input.name}`, () =>
+      Effect.acquireDisposable(Effect.promise(() => tmpdir())).pipe(
+        Effect.flatMap((tmp) =>
+          Effect.gen(function* () {
+            const root = path.join(tmp.path, ".opencode")
+            yield* Effect.promise(async () => {
+              await fs.mkdir(root)
+              await fs.writeFile(path.join(root, "plain.txt"), "plain")
+              await fs.symlink("loop", path.join(root, "loop"))
+              await fs.writeFile(
+                path.join(root, "opencode.json"),
+                JSON.stringify({ shell: `{file:${input.reference}}` }),
+              )
+            })
+            const native = Watcher.Native.of({ subscribe: () => Effect.succeed({ unsubscribe: () => Promise.resolve() }) })
+            return yield* Effect.gen(function* () {
+              const config = yield* Config.Service
+              expect(Config.latest(yield* config.entries(), "shell")).toBe("")
+            }).pipe(Effect.provide(liveConfig(tmp.path, native)))
+          }),
+        ),
+      ),
+    )
+  }
+
+  it.effect("reloads for a dependency that changes while the load that first reads it is running", () =>
+    Effect.acquireDisposable(Effect.promise(() => tmpdir())).pipe(
+      Effect.flatMap((tmp) =>
+        Effect.gen(function* () {
+          const root = path.join(tmp.path, ".opencode")
+          const json = path.join(root, "opencode.json")
+          const secret = path.join(root, "secret.txt")
+          yield* Effect.promise(async () => {
+            await fs.mkdir(root)
+            await fs.writeFile(json, JSON.stringify({ shell: "initial" }))
+          })
+          const publisher = yield* Deferred.make<(update: Watcher.Update) => void>()
+          const native = Watcher.Native.of({
+            subscribe: (target) =>
+              Effect.gen(function* () {
+                if (target.type === "directory" && target.target === root) yield* Deferred.succeed(publisher, target.publish)
+                return { unsubscribe: () => Promise.resolve() }
+              }),
+          })
+          const real = yield* FSUtil.Service
+          const release = yield* Deferred.make<void>()
+          const gate = { armed: false, reached: false, watching: false, checked: false }
+          // The event check resolves the dependency's parent; nothing else resolves it while the load is paused.
+          const observe = (target: string) =>
+            Effect.sync(() => {
+              if (gate.watching && target === root) gate.checked = true
+            })
+          const pausing = FSUtil.node.replace(
+            Layer.succeed(FSUtil.Service, {
+              ...real,
+              // Pause the load right after its real read of the new dependency.
+              readFileString: (file, encoding) =>
+                real.readFileString(file, encoding).pipe(
+                  Effect.tap(() => {
+                    if (file !== secret || !gate.armed) return Effect.void
+                    gate.armed = false
+                    gate.reached = true
+                    return Deferred.await(release)
+                  }),
+                ),
+              realPath: (target) => real.realPath(target).pipe(Effect.tap(() => observe(target))),
+              resolve: (target) => real.resolve(target).pipe(Effect.tap(() => observe(target))),
+            }),
+          )
+          return yield* Effect.gen(function* () {
+            const config = yield* Config.Service
+            const publish = yield* Deferred.await(publisher)
+            const shell = (value: string) =>
+              config.entries().pipe(Effect.map((entries) => Config.latest(entries, "shell") === value))
+            // The startup readiness reload sees this write, so observing it means startup reloads have finished.
+            yield* Effect.promise(() => fs.writeFile(json, JSON.stringify({ shell: "settled" })))
+            yield* advance(shell("settled"))
+
+            gate.armed = true
+            yield* Effect.promise(async () => {
+              await fs.writeFile(secret, "first")
+              await fs.writeFile(json, JSON.stringify({ shell: "{file:./secret.txt}" }))
+            })
+            publish({ path: json, type: "update" })
+            yield* advance(() => gate.reached)
+
+            yield* Effect.promise(() => fs.writeFile(secret, "edited"))
+            gate.watching = true
+            publish({ path: secret, type: "update" })
+            yield* advance(() => gate.checked)
+            yield* Deferred.succeed(release, undefined)
+            yield* advance(shell("edited"))
+          }).pipe(Effect.provide(liveConfig(tmp.path, native, undefined, [pausing])))
         }),
       ),
     ),
@@ -571,7 +806,12 @@ describe("config plugin reloads", () => {
   )
 })
 
-function liveConfig(directory: string, native?: Watcher.NativeInterface, options: Config.Options = { global: false }) {
+function liveConfig(
+  directory: string,
+  native?: Watcher.NativeInterface,
+  options: Config.Options = { global: false },
+  replacements: LayerNode.Replacements = [],
+) {
   return AppNodeBuilder.build(LayerNode.group([Config.node, Bus.node, Reference.node, Global.node, Location.node]), [
     Config.node.replace(Config.configured(options)),
     Location.node.replace(
@@ -585,6 +825,7 @@ function liveConfig(directory: string, native?: Watcher.NativeInterface, options
     ...(native
       ? [Watcher.node.replace(Watcher.layer().pipe(Layer.provide(Layer.succeed(Watcher.Native, native))))]
       : []),
+    ...replacements,
   ])
 }
 
