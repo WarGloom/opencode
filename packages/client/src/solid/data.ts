@@ -1307,6 +1307,14 @@ export function createData(config: CreateDataInput) {
       case "permission.replied":
         removePermission(event.data.sessionID, event.data.requestID)
         return
+      case "form.created":
+        if (event.data.form.sessionID === "global") break
+        if (store.session.form[event.data.form.sessionID]?.some((form) => form.id === event.data.form.id)) return
+        setStore("session", "form", event.data.form.sessionID, [
+          ...(store.session.form[event.data.form.sessionID] ?? []),
+          event.data.form,
+        ])
+        return
       case "form.replied":
       case "form.cancelled":
         removeForm(event.data.sessionID, event.data.id, event.location)

@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import { getEventListeners } from "node:events"
 import { createRoot } from "solid-js"
 import { createData, type CreateDataInput } from "../src/solid"
-import { OpenCode, type ModelInfo, type OpenCodeEvent, type Project, type SessionInfo } from "../src/promise"
+import { OpenCode, type FormInfo, type ModelInfo, type OpenCodeEvent, type Project, type SessionInfo } from "../src/promise"
 
 const session = (viewed: number): SessionInfo => ({
   id: "ses_refresh",
@@ -13,6 +13,90 @@ const session = (viewed: number): SessionInfo => ({
   time: { created: 0, updated: 0, idle: 2, viewed },
   location: { directory: "/project" },
 })
+
+test.each(["form.replied", "form.cancelled"] as const)(
+  "retains locationless session forms once and settles only the matching form on %s",
+  async (type) => {
+    const setup = formFixture()
+    const form: FormInfo = {
+      id: "frm_first",
+      sessionID: "ses_refresh",
+      title: "Questions",
+      metadata: { kind: "question", tool: { messageID: "msg_question", id: "call_question" } },
+      fields: [{ key: "q0", type: "string", options: [{ value: "proceed", label: "Proceed" }] }],
+    }
+    try {
+      await setup.data.session.form.sync(form.sessionID)
+      expect(setup.data.session.form.list(form.sessionID)).toEqual([])
+
+      const created: OpenCodeEvent = { type: "form.created", data: { form } }
+      setup.emit(created)
+      setup.emit(created)
+      setup.emit({ type: "form.created", data: { form: { ...form, id: "frm_second" } } })
+      setup.emit({ type: "form.created", data: { form: { ...form, sessionID: "ses_other" } } })
+      expect(setup.data.session.form.list(form.sessionID)?.map((item) => item.id)).toEqual([form.id, "frm_second"])
+      expect(setup.data.session.form.list("ses_other")?.map((item) => item.id)).toEqual([form.id])
+
+      const settled = { sessionID: form.sessionID, id: form.id }
+      switch (type) {
+        case "form.replied":
+          setup.emit({ type, data: { ...settled, answer: { q0: "proceed" } } })
+          break
+        case "form.cancelled":
+          setup.emit({ type, data: settled })
+          break
+        default:
+          throw new TypeError(type satisfies never)
+      }
+      expect(setup.data.session.form.list(form.sessionID)?.map((item) => item.id)).toEqual(["frm_second"])
+      expect(setup.data.session.form.list("ses_other")?.map((item) => item.id)).toEqual([form.id])
+    } finally {
+      setup.dispose()
+    }
+  },
+)
+
+test("keeps global forms scoped to their event location", () => {
+  const setup = formFixture()
+  const form: FormInfo = { id: "frm_global", sessionID: "global", title: "Global request", fields: [] }
+  const project = { directory: "/project" }
+  const other = { directory: "/other" }
+  try {
+    setup.emit({ type: "form.created", data: { form: { ...form, id: "frm_unscoped" } } })
+    setup.emit({ type: "form.created", location: project, data: { form } })
+    setup.emit({ type: "form.created", location: project, data: { form } })
+    setup.emit({ type: "form.created", location: other, data: { form: { ...form, id: "frm_other" } } })
+    expect(setup.data.session.form.list("global", project)?.map((item) => item.id)).toEqual([form.id])
+    expect(setup.data.session.form.list("global", other)?.map((item) => item.id)).toEqual(["frm_other"])
+    setup.emit({ type: "form.cancelled", location: project, data: { sessionID: "global", id: form.id } })
+    expect(setup.data.session.form.list("global", project)).toEqual([])
+    expect(setup.data.session.form.list("global", other)?.map((item) => item.id)).toEqual(["frm_other"])
+  } finally {
+    setup.dispose()
+  }
+})
+
+function formFixture() {
+  const listeners = new Set<Parameters<CreateDataInput["event"]["listen"]>[0]>()
+  const api = OpenCode.make({ baseUrl: "http://opencode.local", fetch: async () => Response.json({ data: [] }) })
+  return createRoot((dispose) => ({
+    data: createData({
+      api: () => api,
+      directory: "/project",
+      event: {
+        on: () => () => {},
+        listen(handler) {
+          listeners.add(handler)
+          return () => listeners.delete(handler)
+        },
+      },
+    }),
+    emit: (details: OpenCodeEvent) => {
+      for (const listener of listeners) listener({ name: details.type, details })
+    },
+    dispose,
+  }))
+}
 
 test("uses the configured initial window and retains normal cursor page sizes", async () => {
   const requests: { limit: string | null; cursor: string | null }[] = []
