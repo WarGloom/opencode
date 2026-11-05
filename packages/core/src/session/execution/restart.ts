@@ -20,6 +20,7 @@ import { ImageNotice } from "../../image/notice.js"
 import { ShellResult } from "../../shell/result.js"
 import { SubagentCompletion } from "../subagent-completion.js"
 import { SubagentJob } from "../subagent-job.js"
+import { SubagentAdmissionStore } from "../subagent-admission-store.js"
 
 const CONTINUE_AFTER_SERVER_RESTART =
   "The server restarted while you were working. Continue from where you left off without repeating completed work."
@@ -81,6 +82,7 @@ export const layer = (options?: Options) =>
       const execution = yield* SessionExecution.Service
       const bus = yield* Bus.Service
       const jobs = yield* Job.Service
+      const admissions = yield* SubagentAdmissionStore.Service
       const sessions = yield* Session.Service
       const instances = yield* Instance.Service
       const db = (yield* Database.Service).db
@@ -366,6 +368,9 @@ export const layer = (options?: Options) =>
 
       return Service.of({
         resumeSuspendedSessions: Effect.gen(function* () {
+          const owned = new Set((yield* admissions.list())
+            .filter((entry) => entry.status === "accepted" || entry.status === "running")
+            .map((entry) => entry.childSessionID))
           const active = yield* execution.active
           const pending = yield* jobs.pendingBackground
           const children = new Set(
@@ -412,6 +417,8 @@ export const layer = (options?: Options) =>
                 Effect.uninterruptible,
               ),
           }
+          // A plugin drives and recovers the children it admitted, so the host gives up their claims.
+          yield* Effect.forEach(owned, (sessionID) => store.release(sessionID), { discard: true })
           const recoverable = Effect.fnUntraced(function* (background: Job.Background) {
             return (yield* jobs.get(background.id))?.status !== "running"
           })
@@ -444,6 +451,7 @@ export const layer = (options?: Options) =>
             Effect.fnUntraced(function* (background) {
               const recovery = background.recovery
               if (recovery.kind !== "subagent" || !(yield* recoverable(background))) return
+              if (recovery.pluginID !== undefined) return
               if (yield* recoverSubagent(background, recovery, notices)) resumable.push({ background, recovery })
             }),
             { discard: true },
@@ -453,7 +461,9 @@ export const layer = (options?: Options) =>
           // claimed execution before starting any of them, leaving running jobs to SubagentJob.
           const resumed = yield* execution.active
           const direct = yield* Effect.filter(
-            (yield* store.listSuspended()).filter((sessionID) => !resumed.has(sessionID) && !children.has(sessionID)),
+            (yield* store.listSuspended()).filter(
+              (sessionID) => !resumed.has(sessionID) && !children.has(sessionID) && !owned.has(sessionID),
+            ),
             prepareResume,
           )
           yield* Effect.forEach(
@@ -493,5 +503,6 @@ export const node = makeGlobalNode({
     Instance.node,
     Database.node,
     Shell.daemonNode,
+    SubagentAdmissionStore.node,
   ],
 })

@@ -1,7 +1,6 @@
 import { describe, expect } from "bun:test"
 import { and, eq } from "drizzle-orm"
 import { Cause, Context, DateTime, Deferred, Effect, Exit, Fiber, Layer, Scope } from "effect"
-import { Agent } from "@opencode/schema/agent"
 import { Event } from "@opencode/schema/event"
 import { Model } from "@opencode/schema/model"
 import { Money } from "@opencode/schema/money"
@@ -15,9 +14,11 @@ import { Bus } from "../src/bus.js"
 import { Database } from "../src/database/database.js"
 import { EventTable } from "../src/event/sql.js"
 import { Image } from "../src/image.js"
+import { Agent } from "../src/agent.js"
 import { Instance } from "../src/instance/service.js"
 import { Location } from "../src/location.js"
 import { Plugin } from "../src/plugin.js"
+import { Permission } from "../src/permission.js"
 import { PluginHooks } from "../src/plugin/hooks.js"
 import { ProjectTable } from "../src/project/sql.js"
 import { AbsolutePath, RelativePath } from "../src/schema.js"
@@ -97,6 +98,7 @@ const setup = Effect.fnUntraced(function* (options?: {
   const resumes: SessionSchema.ID[] = []
   const wakes: Array<{ sessionID: SessionSchema.ID; pending: SessionMessage.ID[]; enqueued: number }> = []
   const execution = SessionExecution.Service.of({
+    ...SessionExecution.noop,
     active: Effect.succeed(new Set<SessionSchema.ID>()),
     isActive: () => Effect.succeed(false),
     resume: (id) =>
@@ -125,6 +127,8 @@ const setup = Effect.fnUntraced(function* (options?: {
   const services = Layer.mergeAll(
     Layer.succeed(PluginHooks.Service, hooks),
     Layer.mock(Image.Service, {}),
+    Layer.mock(Agent.Service, { select: (id) => Effect.succeed({ id: id ?? Agent.defaultID, info: undefined }) }),
+    Layer.mock(Permission.Service, { assert: () => Effect.void }),
     options?.shell ?? Layer.mock(Shell.Service, { handoffPrepared: () => false }),
   )
   const servicesFor = (ref: Location.Ref) => {
@@ -135,6 +139,7 @@ const setup = Effect.fnUntraced(function* (options?: {
       options?.skills?.(ref) ??
         Layer.mock(Skill.Service, {
           get: (id) => Effect.succeed(id === skillInfo.id ? skillInfo : undefined),
+          files: () => Effect.succeed(undefined),
         }),
       options?.snapshot?.(ref) ?? Layer.mock(Snapshot.Service, {}),
       Layer.mock(Plugin.Service, {
@@ -358,7 +363,10 @@ describe("Session-owned handles", () => {
     Effect.gen(function* () {
       const fixture = yield* setup({
         skills: (ref) =>
-          Layer.mock(Skill.Service, { get: () => Effect.succeed({ ...skillInfo, content: ref.directory }) }),
+          Layer.mock(Skill.Service, {
+            get: () => Effect.succeed({ ...skillInfo, content: ref.directory }),
+            files: () => Effect.succeed(undefined),
+          }),
       })
       const handle = fixture.sessions.forSession(sessionID)
       const { skill } = handle
@@ -389,8 +397,12 @@ describe("Session-owned handles", () => {
       )
 
       expect(fixture.locations).toEqual([source, destination, destination])
-      expect(yield* handle.message(initial)).toMatchObject({ type: "skill", text: source.directory })
-      expect(yield* handle.message(moved)).toMatchObject({ type: "skill", text: destination.directory })
+      // The accepted snapshot keeps the placement-specific definition it was expanded from.
+      expect(yield* handle.message(initial)).toMatchObject({ type: "skill", definition: { content: source.directory } })
+      expect(yield* handle.message(moved)).toMatchObject({
+        type: "skill",
+        definition: { content: destination.directory },
+      })
       expect(
         events.filter((event) => event.type === SessionEvent.Skill.Activated.type).map((event) => event.location),
       ).toEqual([undefined, undefined, source])
@@ -627,6 +639,7 @@ describe("Session-owned handles", () => {
       })
       const fixture = yield* setup({
         execution: SessionExecution.Service.of({
+          ...SessionExecution.noop,
           active: coordinator.active,
           isActive: coordinator.isActive,
           resume: (id) =>
@@ -750,15 +763,18 @@ describe("SessionPrompt preparation", () => {
         session: yield* fixture.sessions.forSession(sessionID).get(),
         messageID: SessionMessage.ID.create(),
         input,
+        instances: fixture.instances,
       }
       const items = yield* Effect.forEach([0, 1], () => SessionPrompt.prepare(request)).pipe(
         fixture.instances.provide(request.session),
-        Effect.satisfiesServicesType<FSUtil.Service | Database.Service>(),
+        Effect.satisfiesServicesType<FSUtil.Service | Database.Service | SessionStore.Service>(),
+        Effect.provideService(SessionStore.Service, fixture.store),
       )
 
       expect(items[0]).toEqual(items[1])
-      expect(items[0]).toMatchObject({ type: "user", payload: { text: "Original" }, delivery: "steer" })
-      expect(items[0]?.payload.files?.[0]?.mime).toBe("text/plain")
+      expect(items[0]?.activations).toEqual([])
+      expect(items[0]?.item).toMatchObject({ type: "user", payload: { text: "Original" }, delivery: "steer" })
+      expect(items[0]?.item.payload.files?.[0]?.mime).toBe("text/plain")
       expect(input.text).toBe("Original")
       expect(yield* fixture.sessions.forSession(sessionID).inbox()).toEqual([])
       expect(fixture.wakes).toEqual([])

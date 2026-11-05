@@ -3654,6 +3654,7 @@ describe("MCP pool", () => {
             host({
               command: {
                 list: () => Effect.die("unused command.list"),
+                hook: () => Effect.die("unused command.hook"),
                 transform: command.transform,
                 reload: command.reload,
               },

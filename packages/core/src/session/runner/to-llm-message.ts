@@ -274,6 +274,9 @@ function toLLMMessage(message: SessionMessage.Info, model: Model.Ref, providerMe
     case "synthetic":
       return [Message.make({ id: message.id, role: "user", content: message.text })]
     case "skill":
+      // Prompt and tool activations are replay snapshots; their content reaches the model through the prompt's
+      // skill attachment or the tool result.
+      if (message.source?.kind === "prompt" || message.source?.kind === "tool") return []
       return [Message.make({ id: message.id, role: "user", content: message.text })]
     case "system":
       return [Message.system(message.text)]

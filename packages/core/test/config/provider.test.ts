@@ -4,6 +4,7 @@ import { Document, Info, type Entry } from "@opencode/schema/config"
 import { Effect, Schema } from "effect"
 import { Config } from "@opencode/core/config"
 import { ConfigProviderPlugin } from "@opencode/core/config/plugin/provider"
+import { ConfigIntegration } from "@opencode/core/config/integration"
 import { ConfigNormalize } from "@opencode/core/config/normalize"
 import { Integration } from "@opencode/core/integration"
 import { Model } from "@opencode/core/model"
@@ -35,6 +36,63 @@ function required<T>(value: T | undefined): T {
 const decode = Schema.decodeUnknownSync(Info)
 
 describe("ConfigProviderPlugin.Plugin", () => {
+  it.effect("projects only live explicit configured input overrides", () =>
+    Effect.gen(function* () {
+      const models = yield* Model.Service
+      const providers = yield* Provider.Service
+      yield* providers.transform((editor) => {
+        for (const providerID of ["custom", "integration"]) {
+          editor.update(Provider.ID.make(providerID), (provider) => {
+            provider.package = "@opencode/ai/providers/openai/chat"
+          })
+        }
+        editor.models.update(Provider.ID.make("custom"), Model.ID.make("catalog"), () => {})
+        editor.models.update(Provider.ID.make("integration"), Model.ID.make("remote"), () => {})
+      })
+      const entries: Entry[] = [
+        new ConfigIntegration.Document({
+          type: "document",
+          integrationID: Integration.ID.make("opencode"),
+          connection: { type: "env", name: "OPENCODE_API_KEY" },
+          info: decode({
+            providers: {
+              integration: {
+                models: { remote: { modelID: "api-remote", capabilities: { input: ["text", "image"] } } },
+              },
+            },
+          }),
+        }),
+        new Document({
+          type: "document",
+          info: decode({
+            providers: {
+              custom: {
+                models: {
+                  alias: { modelID: "api-alias", capabilities: { input: ["image"] } },
+                  clear: { capabilities: { input: ["text", "image"] } },
+                  disabled: { capabilities: { input: ["image"] }, disabled: true },
+                  removed: { capabilities: { input: ["image"] } },
+                },
+              },
+            },
+          }),
+        }),
+        new Document({
+          type: "document",
+          info: decode({ providers: { custom: { models: { clear: { capabilities: { input: [] } } } } } }),
+        }),
+      ]
+      yield* addPlugin(entries)
+      yield* models.transform((editor) => editor.remove(Provider.ID.make("custom"), Model.ID.make("removed")))
+
+      expect(ConfigProviderPlugin.configuredInputs(entries, yield* models.all())).toEqual([
+        { providerID: "integration", modelID: "remote", input: ["text", "image"] },
+        { providerID: "custom", modelID: "alias", input: ["image"] },
+        { providerID: "custom", modelID: "clear", input: [] },
+      ])
+    }),
+  )
+
   it.effect("inherits the provider compaction setting with model overrides and rejects unsupported routes", () =>
     Effect.gen(function* () {
       const models = yield* Model.Service

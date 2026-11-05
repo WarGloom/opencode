@@ -3,6 +3,8 @@ import { DateTime, Duration, Effect, Option, Queue, Schema, Stream } from "effec
 import { TestClock } from "effect/testing"
 import type { Plugin } from "@opencode/plugin/effect"
 import type { CommandDefinition } from "@opencode/plugin/effect/command"
+import { Agent } from "@opencode/schema/agent"
+import { Command } from "@opencode/schema/command"
 import { Event } from "@opencode/schema/event"
 import { Goal } from "@opencode/schema/goal"
 import { GoalPlugin } from "@opencode/core/plugin/goal"
@@ -86,6 +88,7 @@ const run = Effect.fnUntraced(function* (seed?: Goal.State) {
       // SAFETY: the plugin only filters the stream by event type.
       event: { subscribe: () => Stream.fromQueue(events) as never },
       command: {
+        hook: () => Effect.die("unused command.hook"),
         list: () => Effect.die("unused command.list"),
         transform: (callback) =>
           Effect.sync(() => callback({ add: (definition) => void commands.push(definition) })) as never,
@@ -102,7 +105,7 @@ const run = Effect.fnUntraced(function* (seed?: Goal.State) {
     get: () => handlers.get?.({ sessionID }) ?? Effect.die("the goal RPC was not registered"),
     command: (text: string) =>
       Effect.forEach(commands, (definition) =>
-        definition.execute({ sessionID, prompt: { text }, delivery: "steer" }).pipe(Effect.orDie),
+        definition.execute({ invocationID: Command.InvocationID.create(), agent: Agent.ID.make("build"), sessionID, prompt: { text }, delivery: "steer" }).pipe(Effect.orDie),
       ),
     emit: (type: Execution["type"]) =>
       Queue.offer(events, execution(type)).pipe(Effect.andThen(Effect.yieldNow), Effect.andThen(Effect.yieldNow)),

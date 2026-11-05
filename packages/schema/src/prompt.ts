@@ -87,6 +87,7 @@ export interface SkillAttachment extends Schema.Schema.Type<typeof SkillAttachme
 export const SkillAttachment = Schema.Struct({
   id: Skill.ID,
   name: Skill.Name,
+  arguments: Schema.String.pipe(optional),
   text: Schema.String.pipe(optional),
   mention: PromptMention.pipe(optional),
 }).annotate({ identifier: "Prompt.SkillAttachment" })

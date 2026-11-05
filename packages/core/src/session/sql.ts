@@ -151,6 +151,24 @@ export const SessionInboxTable = sqliteTable(
   ],
 )
 
+/** Parent-owned child admissions. A `prepared` row blocks idle admission for its parent until resolved. */
+export const SessionChildPreparationTable = sqliteTable(
+  "session_child_preparation",
+  {
+    admission_id: text().primaryKey(),
+    session_id: text()
+      .$type<SessionSchema.ID>()
+      .notNull()
+      .references(() => SessionTable.id, { onDelete: "cascade" }),
+    child_session_id: text().$type<SessionSchema.ID>().notNull(),
+    status: text().$type<"prepared" | "started" | "cancelled">().notNull(),
+    time_created: integer()
+      .notNull()
+      .$default(() => Date.now()),
+  },
+  (table) => [index("session_child_preparation_session_status_idx").on(table.session_id, table.status)],
+)
+
 export const InstructionEntryTable = sqliteTable(
   "instruction_entry",
   {

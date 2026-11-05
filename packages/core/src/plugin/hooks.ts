@@ -6,15 +6,19 @@ import type { ShellHooks } from "@opencode/plugin/effect/shell"
 import type { ToolFailures, ToolHooks } from "@opencode/plugin/effect/tool"
 import type { ModelHookOptions } from "@opencode/plugin/effect/registration"
 import type { PermissionHooks } from "@opencode/plugin/effect/permission"
+import type { SkillHooks } from "@opencode/plugin/effect/skill"
+import type { CommandHooks } from "@opencode/plugin/effect/command"
 import { Context, Effect, Layer, Scope } from "effect"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { State } from "../state.js"
 
 export interface Domains {
   readonly aisdk: AISDKHooks
+  readonly command: CommandHooks
   readonly session: SessionHooks
   readonly permission: PermissionHooks
   readonly shell: ShellHooks
+  readonly skill: SkillHooks
   readonly tool: ToolHooks
 }
 
@@ -23,9 +27,11 @@ type NoFailures<Spec> = { readonly [Name in keyof Spec]: never }
 // Failure channel for each hook event. Only tool execute.before may fail: a Tool.Error rejects the call before it runs.
 interface Failures extends Record<keyof Domains, unknown> {
   readonly aisdk: NoFailures<AISDKHooks>
+  readonly command: NoFailures<CommandHooks>
   readonly session: NoFailures<SessionHooks>
   readonly permission: NoFailures<PermissionHooks>
   readonly shell: NoFailures<ShellHooks>
+  readonly skill: NoFailures<SkillHooks>
   readonly tool: ToolFailures
 }
 
@@ -86,10 +92,17 @@ const layer = Layer.effect(
     )
 
     const trigger: Interface["trigger"] = Effect.fnUntraced(function* (domain, name, event) {
+      // The first skill activation denial is terminal; its reason may be empty, so latch the decision itself.
+      let denial: { readonly reason: string } | undefined
       for (const entry of callbacks.get(key(domain, name)) ?? []) {
         if (entry.options?.providerID !== undefined && entry.options.providerID !== eventProviderID(event)) continue
         const result: Effect.Effect<void, Failures[typeof domain][typeof name]> = entry.callback(event)
         yield* result
+        if (domain === "skill" && name === "experimental.activate") {
+          const activation = event as SkillHooks["experimental.activate"]
+          if (denial === undefined && !activation.decision.allow) denial = { reason: activation.decision.reason }
+          if (denial !== undefined) activation.decision = { allow: false, reason: denial.reason }
+        }
       }
       return event
     })

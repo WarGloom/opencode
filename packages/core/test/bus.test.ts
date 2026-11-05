@@ -299,6 +299,41 @@ describe("Bus", () => {
     }),
   )
 
+  it.effect("publishes when the aggregate remains at the expected sequence", () =>
+    Effect.gen(function* () {
+      const bus = yield* Bus.Service
+      const aggregateID = Event.ID.create()
+      yield* bus.publish(SyncMessage, { id: aggregateID, text: "first" })
+
+      const event = yield* bus.publish(
+        SyncMessage,
+        { id: aggregateID, text: "second" },
+        { expectedSequence: 0 },
+      )
+
+      expect(event.durable?.seq).toBe(Event.Seq.make(1))
+    }),
+  )
+
+  it.effect("rejects a stale expected sequence before projection", () =>
+    Effect.gen(function* () {
+      const bus = yield* Bus.Service
+      const aggregateID = Event.ID.create()
+      const projected = yield* Ref.make(0)
+      yield* bus.project(SyncMessage, () => Ref.update(projected, (value) => value + 1))
+      yield* bus.publish(SyncMessage, { id: aggregateID, text: "first" })
+      yield* bus.publish(SyncMessage, { id: aggregateID, text: "intervening" })
+
+      const defect = yield* bus
+        .publish(SyncMessage, { id: aggregateID, text: "stale" }, { expectedSequence: 0 })
+        .pipe(Effect.catchDefect(Effect.succeed))
+
+      expect(defect).toBeInstanceOf(Bus.StaleAggregateError)
+      expect(yield* Ref.get(projected)).toBe(2)
+      expect(yield* Bus.latestSequence((yield* Database.Service).db, aggregateID)).toBe(1)
+    }),
+  )
+
   it.effect("rejects local commit hooks on live-only events", () =>
     Effect.gen(function* () {
       const bus = yield* Bus.Service

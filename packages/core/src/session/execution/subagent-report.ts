@@ -51,6 +51,7 @@ export const make = (deps: Deps) => {
   const clear = (sessionID: SessionSchema.ID) => {
     periods.delete(sessionID)
   }
+  const periodStartSeq = (sessionID: SessionSchema.ID) => Effect.sync(() => periods.get(sessionID)?.startedSeq)
 
   const resolveBody = Effect.fnUntraced(function* (
     sessionID: SessionSchema.ID,
@@ -133,7 +134,17 @@ export const make = (deps: Deps) => {
   ) {
     const period = periods.get(sessionID)
     periods.delete(sessionID)
-    const jobState = yield* deps.jobs.prepareSubagentReport(sessionID, period?.boundGeneration)
+    const jobState = yield* deps.jobs.prepareSubagentReport(
+      sessionID,
+      period?.boundGeneration,
+      period === undefined && outcome.type === "interrupted" && outcome.reason === "user",
+    )
+    if (jobState.mode === "foreground") {
+      return {
+        commit: () => deps.store.release(sessionID),
+        deliver: Effect.void,
+      }
+    }
     const initial = yield* deps.store.get(sessionID)
     if (!initial?.parentID && jobState.mode === "none") {
       return {
@@ -198,5 +209,5 @@ export const make = (deps: Deps) => {
     return { commit, deliver }
   })
 
-  return { started, clear, prepare }
+  return { started, clear, periodStartSeq, prepare }
 }

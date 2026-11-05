@@ -30,13 +30,14 @@ import { ID } from "@opencode/core/model"
 import { Provider } from "@opencode/core/provider"
 import { daemonShells } from "./fixture/shell-daemon"
 import { SubagentCompletion } from "@opencode/core/session/subagent-completion"
+import { SubagentAdmissionStore } from "@opencode/core/session/subagent-admission-store"
 import { Cause, Context, Deferred, Effect, Exit, Fiber, Layer, LayerMap, Logger, Scope } from "effect"
 import { eq } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
 
 const it = testEffect(
   AppNodeBuilder.build(
-    LayerNode.group([Database.node, Bus.node, SessionStore.node, SessionInbox.node, Job.node, KV.node, Session.node]),
+    LayerNode.group([Database.node, Bus.node, SessionStore.node, SessionInbox.node, Job.node, KV.node, Session.node, SubagentAdmissionStore.node]),
   ),
 )
 
@@ -2121,6 +2122,7 @@ function buildExecution(
     const database = yield* Database.Service
     const bus = yield* Bus.Service
     const store = yield* SessionStore.Service
+    const admissions = yield* SubagentAdmissionStore.Service
     const jobs = overrideJobs ?? (yield* Job.Service)
     const sessions = yield* Session.Service
     const inbox = yield* SessionInbox.Service
@@ -2174,6 +2176,7 @@ function buildExecution(
           ),
         ),
         Layer.provide(Layer.succeed(SessionInbox.Service, inbox)),
+        Layer.provide(Layer.succeed(SubagentAdmissionStore.Service, admissions)),
         // Do not reuse the outer harness's selector with its already-captured Location map.
         Layer.provide(
           AppNodeBuilder.build(Instance.node, [LocationServiceMap.node.replace(locations)]).pipe(Layer.fresh),

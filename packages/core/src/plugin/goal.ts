@@ -148,7 +148,7 @@ export const Plugin = define({
       // The Session's own running subagent or image job wakes it with its notice, and the hook runs again then. A
       // grandchild reports to its own parent, so it would never wake this Session.
       if (
-        background.some((work) => (work.kind === "subagent" || work.kind === "image") && work.sessionID === sessionID)
+          background.some((work) => (work.kind === "image" || (work.kind === "subagent" && work.wakes !== false)) && work.sessionID === sessionID)
       )
         return
       if (goal.rounds >= goal.maxRounds)

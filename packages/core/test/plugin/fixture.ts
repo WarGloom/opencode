@@ -30,6 +30,11 @@ import { Plugin } from "@opencode/core/plugin"
 import { PluginHooks } from "@opencode/core/plugin/hooks"
 import { Provider } from "@opencode/core/provider"
 import { Session } from "@opencode/core/session"
+import { SessionEnvironment } from "@opencode/core/session/environment"
+import { SubagentAdmission } from "@opencode/core/session/subagent-admission"
+import { SubagentAdmissionRun } from "@opencode/core/session/subagent-admission-run"
+import { SubagentAdmissionStore } from "@opencode/core/session/subagent-admission-store"
+import { SessionExecution } from "@opencode/core/session/execution"
 import { SharedCache } from "@opencode/core/shared-cache"
 import { InstructionEntry } from "@opencode/core/session/instruction-entry"
 import { PersistentPty } from "@opencode/core/persistent-pty"
@@ -88,7 +93,12 @@ const permissionLayer = Layer.succeed(
   }),
 )
 
-export const makePluginTestLayer = (permission = permissionLayer, generate = generateLayer) =>
+export const makePluginTestLayer = (
+  permission = permissionLayer,
+  generate = generateLayer,
+  mcp = emptyMcpLayer,
+  execution?: Layer.Layer<SessionExecution.Service>,
+) =>
   AppNodeBuilder.build(
     LayerNode.group([
       App.node,
@@ -109,6 +119,10 @@ export const makePluginTestLayer = (permission = permissionLayer, generate = gen
       Generate.node,
       LayerNodePlatform.httpClient,
       Plugin.node,
+      SubagentAdmission.node,
+      SubagentAdmissionRun.node,
+      SubagentAdmissionStore.node,
+      SessionExecution.node,
       Agent.node,
       Artifact.node,
       AISDK.node,
@@ -121,6 +135,7 @@ export const makePluginTestLayer = (permission = permissionLayer, generate = gen
       KV.node,
       Mcp.node,
       Session.node,
+      SessionEnvironment.node,
       SharedCache.node,
       InstructionEntry.node,
       PersistentPty.node,
@@ -142,10 +157,11 @@ export const makePluginTestLayer = (permission = permissionLayer, generate = gen
       Location.node.replace(tempLocationLayer),
       Npm.node.replace(npmLayer),
       Config.node.replace(configLayer),
-      Mcp.node.replace(emptyMcpLayer),
+      Mcp.node.replace(mcp),
       Generate.node.replace(generate),
       Permission.node.replace(permission),
       offlineModels,
+      ...(execution === undefined ? [] : [SessionExecution.node.replace(execution)]),
     ],
   ).pipe(Layer.provideMerge(configLayer))
 

@@ -12,6 +12,10 @@ import { Artifact } from "../artifact.js"
 import { AISDK } from "../aisdk.js"
 import { Command } from "../command.js"
 import { Credential } from "../credential.js"
+import { Config } from "../config.js"
+import { ConfigProviderPlugin } from "../config/plugin/provider.js"
+import { Formatter } from "../formatter.js"
+import { Variant } from "../variant.js"
 import { Bus } from "../bus.js"
 import { Integration } from "../integration.js"
 import { IntegrationConnection } from "../integration/connection.js"
@@ -22,6 +26,9 @@ import { Model } from "../model.js"
 import { Mcp } from "../mcp/index.js"
 import { Session } from "../session.js"
 import { InstructionEntry } from "../session/instruction-entry.js"
+import { SessionEnvironment } from "../session/environment.js"
+import { SubagentAdmission } from "../session/subagent-admission.js"
+import { SubagentAdmissionRun } from "../session/subagent-admission-run.js"
 import { PersistentPty } from "../persistent-pty.js"
 import { Provider } from "../provider.js"
 import { Reference } from "../reference.js"
@@ -57,6 +64,7 @@ export const make = Effect.fn("PluginHost.make")(function* (plugin: Pick<Interfa
   const aisdk = yield* AISDK.Service
   const providers = yield* Provider.Service
   const models = yield* Model.Service
+  const config = yield* Config.Service
   const commands = yield* Command.Service
   const bus = yield* Bus.Service
   const integration = yield* Integration.Service
@@ -74,6 +82,12 @@ export const make = Effect.fn("PluginHost.make")(function* (plugin: Pick<Interfa
   const permission = yield* Permission.Service
   const hooks = yield* PluginHooks.Service
   const sessions = yield* Session.Service
+  const recoveryOwner = { pluginID, lifetime: crypto.randomUUID() }
+  let recoveryActive = true
+  yield* Effect.addFinalizer(() => Effect.sync(() => { recoveryActive = false }).pipe(Effect.andThen(sessions.closeRecovery(recoveryOwner))))
+  const environments = yield* SessionEnvironment.Service
+  const subagentAdmission = yield* SubagentAdmission.Service
+  const subagentRuns = yield* SubagentAdmissionRun.Service
   const instructionEntries = yield* InstructionEntry.Service
   const persistentPty = yield* PersistentPty.Service
   const locations = yield* LocationServiceMap.Service
@@ -258,6 +272,7 @@ export const make = Effect.fn("PluginHost.make")(function* (plugin: Pick<Interfa
         ),
     },
     command: {
+      hook: (name, callback) => hooks.register("command", name, callback),
       list: () => response(commands.list()),
       reload: commands.reload,
       transform: commands.transform,
@@ -284,6 +299,84 @@ export const make = Effect.fn("PluginHost.make")(function* (plugin: Pick<Interfa
       }) as Plugin.Context["event"]["subscribe"],
     },
     experimental: {
+      skill: {
+        activate: (input) => sessions.skill({
+          sessionID: input.sessionID,
+          activationID: input.activationID,
+          messageID: input.messageID,
+          skill: input.skill,
+          arguments: input.arguments,
+          resume: input.resume,
+        }),
+        activations: (input) => sessions.skillActivations(input),
+        activation: (input) => sessions.skillActivation(input),
+      },
+      formatter: {
+        file: (input) => Effect.gen(function* () {
+          const session = yield* sessions.get(input.sessionID)
+          return yield* Effect.gen(function* () {
+            const permission = yield* Permission.Service
+            yield* permission.assertNotDenied({ sessionID: session.id, action: "edit", resources: [input.filepath] })
+            const formatter = yield* Formatter.Service
+            return yield* formatter.file(input.filepath)
+          }).pipe(Effect.provide(locations.get(session.location)))
+        }),
+      },
+      variant: { resolve: (input) => Effect.sync(() => Variant.resolve(input.model, input.supports)) },
+      model: {
+        configuredInputs: () => Effect.gen(function* () {
+          return ConfigProviderPlugin.configuredInputs(yield* config.entries(), yield* models.all())
+        }),
+      },
+      session: {
+        continueAfterIdle: (input) => sessions.continueAfterIdle(input),
+        environment: (input) => Effect.gen(function* () {
+          yield* sessions.get(input.sessionID)
+          const variables = yield* environments.get(input.sessionID)
+          return variables === undefined ? undefined : { ...variables }
+        }),
+        continueAfterFailure: (input) => Effect.gen(function* () {
+          if (!recoveryActive) return "stale" as const
+          return yield* sessions.continueAfterFailure({
+            sessionID: input.sessionID,
+            boundaryID: input.boundaryID,
+            id: input.id,
+            text: input.text,
+            description: input.description,
+            model: input.model,
+            recovery: recoveryOwner,
+          })
+        }),
+        recover: (input, callback) => Effect.suspend(() => recoveryActive ? sessions.recover({ sessionID: input.sessionID, owner: recoveryOwner },
+          (boundaryID) => callback({ boundaryID })) : Effect.succeed(false)),
+        interrupt: (input) => Effect.gen(function* () {
+          // Only the first idle after this watermark belongs to the captured interruption.
+          const [watermark] = yield* sessions.messages({ sessionID: input.sessionID, order: "desc", limit: 1 })
+          const interrupted = yield* sessions.interrupt(input.sessionID)
+          if (!interrupted) return { interrupted }
+          // Interruption acknowledges before settlement; the interrupted idle exists once the Session is idle.
+          yield* sessions.wait(input.sessionID)
+          const [settled] = yield* sessions.messages({
+            sessionID: input.sessionID,
+            order: "asc",
+            type: "idle",
+            limit: 1,
+            ...(watermark === undefined ? {} : { cursor: { id: watermark.id, direction: "next" as const } }),
+          })
+          if (settled?.type !== "idle" || settled.outcome !== "interrupted") return { interrupted }
+          return { interrupted, boundaryID: settled.id }
+        }),
+      },
+      subagent: {
+        prepare: (input) => subagentAdmission.prepare(pluginID, input),
+        acceptSkills: (input) => subagentRuns.acceptSkills(pluginID, input),
+        start: (input) => subagentRuns.start(pluginID, input),
+        get: (input) => subagentRuns.get(pluginID, input),
+        wait: (input) => subagentRuns.wait(pluginID, input),
+        cancel: (input) => subagentRuns.cancel(pluginID, input),
+        reconcile: (input) => subagentRuns.reconcile(pluginID, input),
+        ready: (input) => subagentRuns.ready(pluginID, input),
+      },
       terminal: {
         read: (input) => persistentPty.read(input.sessionID, input.lines),
       },
@@ -482,6 +575,7 @@ export const make = Effect.fn("PluginHost.make")(function* (plugin: Pick<Interfa
         }),
     },
     skill: {
+      hook: (name, callback) => hooks.register("skill", name, callback),
       list: () => response(skill.list()),
       reload: skill.reload,
       transform: (callback) =>
@@ -587,7 +681,17 @@ export const make = Effect.fn("PluginHost.make")(function* (plugin: Pick<Interfa
       remove: (input) => sessions.remove(input.sessionID),
       switchAgent: sessions.switchAgent,
       switchModel: sessions.switchModel,
-      prompt: sessions.prompt,
+      prompt: (input) => sessions.prompt({
+        sessionID: input.sessionID,
+        id: input.id,
+        text: input.text,
+        files: input.files,
+        agents: input.agents,
+        skills: input.skills,
+        metadata: input.metadata,
+        delivery: input.delivery,
+        resume: input.resume,
+      }),
       generate: sessions.generate,
       command: (input) => sessions.command({ ...input, command: input.name }),
       compact: sessions.compact,
@@ -637,6 +741,7 @@ export const requirements = LayerNode.group([
   AISDK.node,
   Provider.node,
   Model.node,
+  Config.node,
   Command.node,
   Bus.node,
   Integration.node,
@@ -655,6 +760,9 @@ export const requirements = LayerNode.group([
   Permission.node,
   PluginHooks.node,
   Session.node,
+  SessionEnvironment.node,
+  SubagentAdmission.node,
+  SubagentAdmissionRun.node,
   InstructionEntry.node,
   PersistentPty.node,
   LocationServiceMap.node,

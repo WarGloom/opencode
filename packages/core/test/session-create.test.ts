@@ -120,7 +120,6 @@ const logEvents = (session: Session.Interface, sessionID: Session.ID, follow?: b
 const assertCreateInputTypes = (session: Session.Interface) => {
   // @ts-expect-error location or parentID is required.
   session.create({})
-  // @ts-expect-error child sessions inherit their parent's location.
   session.create({ parentID: Session.ID.create(), location })
 }
 void assertCreateInputTypes
@@ -130,6 +129,19 @@ function withTmp<A, E, R>(f: (directory: string) => Effect.Effect<A, E, R>) {
 }
 
 describe("Session.create", () => {
+  it.effect("retains parent identity with explicit child placement and inherits omitted placement", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const parent = yield* sessions.create({ location })
+      const placed = yield* sessions.create({ parentID: parent.id, location: Location.Ref.make({ directory: AbsolutePath.make("/child-worktree") }) })
+      const inherited = yield* sessions.create({ parentID: parent.id })
+      expect(placed.parentID).toBe(parent.id)
+      expect(placed.location.directory).toBe(AbsolutePath.make("/child-worktree"))
+      expect(inherited.location).toEqual(parent.location)
+      expect(yield* sessions.context(placed.id)).toEqual([])
+    }),
+  )
+
   liveIt.live("preserves the project canonical directory when creating a session in another clone", () =>
     withTmp((directory) =>
       Effect.gen(function* () {

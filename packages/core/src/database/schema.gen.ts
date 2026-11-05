@@ -209,6 +209,16 @@ const schema: Omit<DatabaseMigration.Migration, "id"> = {
         );
       `)
       yield* tx.run(`
+        CREATE TABLE \`session_child_preparation\` (
+          \`admission_id\` text PRIMARY KEY,
+          \`session_id\` text NOT NULL,
+          \`child_session_id\` text NOT NULL,
+          \`status\` text NOT NULL,
+          \`time_created\` integer NOT NULL,
+          CONSTRAINT \`fk_session_child_preparation_session_id_session_v2_id_fk\` FOREIGN KEY (\`session_id\`) REFERENCES \`session_v2\`(\`id\`) ON DELETE CASCADE
+        );
+      `)
+      yield* tx.run(`
         CREATE TABLE \`session_inbox\` (
           \`id\` text PRIMARY KEY,
           \`session_id\` text NOT NULL,
@@ -322,6 +332,9 @@ const schema: Omit<DatabaseMigration.Migration, "id"> = {
       )
       yield* tx.run(`CREATE INDEX \`blob_ref_hash_idx\` ON \`blob_ref\` (\`hash\`);`)
       yield* tx.run(`CREATE INDEX \`blob_ref_session_seq_idx\` ON \`blob_ref\` (\`session_id\`,\`seq\`);`)
+      yield* tx.run(
+        `CREATE INDEX \`session_child_preparation_session_status_idx\` ON \`session_child_preparation\` (\`session_id\`,\`status\`);`,
+      )
       yield* tx.run(
         `CREATE INDEX \`session_inbox_session_delivery_seq_idx\` ON \`session_inbox\` (\`session_id\`,\`delivery\`,\`enqueued_seq\`);`,
       )

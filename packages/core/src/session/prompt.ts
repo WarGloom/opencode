@@ -5,6 +5,7 @@ import { PromptInput } from "@opencode/schema/prompt-input"
 import { SessionInbox } from "@opencode/schema/session-inbox"
 import type { Session } from "@opencode/schema/session"
 import type { SessionMessage } from "@opencode/schema/session-message"
+import { ActivationID } from "@opencode/schema/skill"
 import { FSUtil } from "@opencode/util/fs-util"
 import { Effect, Option, Schema } from "effect"
 import path from "path"
@@ -18,6 +19,8 @@ import { Skill } from "../skill.js"
 import { SessionBlob } from "./blob.js"
 import { AttachmentError, SkillNotFoundError } from "./error.js"
 import { SessionStored } from "./stored.js"
+import { SessionSkill } from "./skill.js"
+import { Instance } from "../instance/service.js"
 
 // Image types the resizer can decode; others such as HEIC and AVIF go to the provider unchanged.
 const RESIZABLE_IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp"])
@@ -29,14 +32,20 @@ export type Input = {
   skills?: PromptInput.Prompt["skills"]
   metadata?: Record<string, unknown>
   delivery?: SessionInbox.Delivery
+  acceptedSkillActivations?: readonly ActivationID[]
 }
+
+export class AcceptedSkillConflictError extends Schema.TaggedError<AcceptedSkillConflictError>()(
+  "SessionPrompt.AcceptedSkillConflict",
+  { sessionID: Schema.String, messageID: Schema.String },
+) {}
 
 export const prepare = Effect.fn("SessionPrompt.prepare")(function* (request: {
   session: Session.Info
   messageID: SessionMessage.ID
   input: Input
+  instances: Instance.Interface
 }) {
-  const fs = yield* FSUtil.Service
   yield* Plugin.awaitActivation
   const hooks = yield* PluginHooks.Service
   const event = yield* hooks.trigger("session", "prompt", {
@@ -56,38 +65,85 @@ export const prepare = Effect.fn("SessionPrompt.prepare")(function* (request: {
     ? yield* Effect.forEach(input.files, materializeAttachment, { concurrency: 8 })
     : undefined
   const requested = input.skills
+  const accepted = request.input.acceptedSkillActivations
+  if (accepted !== undefined && accepted.length !== (requested?.length ?? 0))
+    return yield* new AcceptedSkillConflictError({ sessionID: request.session.id, messageID: request.messageID })
   const selected = yield* Effect.gen(function* () {
     if (!requested?.length) return undefined
+    // Skill content reaches the model once per prompt, through the first attachment of each skill.
+    const prepared = new Set<Skill.ID>()
+    if (accepted)
+      return yield* Effect.forEach(requested, (attachment, index) =>
+        Effect.gen(function* () {
+          const activation = yield* SessionSkill.accepted(request.session.id, accepted[index]!)
+          if (
+            !activation ||
+            activation.skill.id !== attachment.id ||
+            activation.arguments !== attachment.arguments ||
+            activation.source.kind !== "prompt" ||
+            activation.source.messageID !== request.messageID ||
+            activation.source.selectionIndex !== index
+          )
+            return yield* new AcceptedSkillConflictError({
+              sessionID: request.session.id,
+              messageID: request.messageID,
+            })
+          const include = !prepared.has(activation.skill.id)
+          prepared.add(activation.skill.id)
+          return {
+            id: activation.skill.id,
+            name: activation.skill.name,
+            arguments: activation.arguments,
+            text: include ? activation.content : undefined,
+            mention: attachment.mention,
+            activation: undefined,
+          }
+        }),
+      )
     const skillService = yield* Skill.Service
-    const prepared = new Map<Skill.ID, Skill.Name>()
-    return yield* Effect.forEach(requested, (attachment) =>
+    return yield* Effect.forEach(requested, (attachment, index) =>
       Effect.gen(function* () {
-        const name = prepared.get(attachment.id)
-        if (name !== undefined) return { id: attachment.id, name, mention: attachment.mention }
         const skill = yield* skillService.get(attachment.id)
         if (!skill) return yield* new SkillNotFoundError({ skill: attachment.id })
-        prepared.set(skill.id, skill.name)
-        const files = yield* skillService.files(skill.id)
+        const activation = yield* SessionSkill.prepare({
+          session: request.session,
+          activationID: ActivationID.make(
+            `ska_${new Bun.CryptoHasher("sha256").update(`${request.messageID}:${index}`).digest("hex").slice(0, 24)}`,
+          ),
+          source: { kind: "prompt", messageID: request.messageID, selectionIndex: index },
+          skill: attachment.id,
+          arguments: attachment.arguments,
+        }).pipe(Effect.provideService(Instance.Service, request.instances))
+        const include = !prepared.has(activation.skill.id)
+        prepared.add(activation.skill.id)
         return {
-          id: skill.id,
-          name: skill.name,
-          text: (yield* Skill.prepare(fs, skill, files).pipe(Effect.orDie)).output,
+          id: activation.skill.id,
+          name: activation.skill.name,
+          arguments: activation.arguments,
+          text: include ? activation.content : undefined,
           mention: attachment.mention,
+          activation,
         }
       }),
     )
   })
   return {
-    type: "user",
-    payload: SessionInbox.UserPayload.make({
-      text: input.text,
-      agents: input.agents,
-      files,
-      skills: selected?.length ? selected : undefined,
-      metadata: event.metadata,
-    }),
-    delivery: event.delivery,
-  } satisfies SessionInbox.Item
+    item: {
+      type: "user",
+      payload: SessionInbox.UserPayload.make({
+        text: input.text,
+        agents: input.agents,
+        files,
+        skills: selected?.length
+          ? selected.map(({ activation: _, ...skill }) => skill)
+          : undefined,
+        metadata: event.metadata,
+      }),
+      delivery: event.delivery,
+    } satisfies SessionInbox.Item,
+    activations:
+      selected?.flatMap((skill): SessionSkill.Activation[] => (skill.activation ? [skill.activation] : [])) ?? [],
+  }
 })
 
 const materializeAttachment = Effect.fn("SessionPrompt.materializeAttachment")(function* (

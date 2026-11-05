@@ -9,7 +9,11 @@ export type Lookup = {
   readonly get: (
     sessionID: SessionSchema.ID,
   ) => Effect.Effect<
-    { readonly parentID?: SessionSchema.ID; readonly agent?: string; readonly title?: string } | undefined
+    {
+      readonly parentID?: SessionSchema.ID
+      readonly agent?: string
+      readonly title?: string
+    } | undefined
   >
 }
 
@@ -32,6 +36,7 @@ export type OutstandingItem =
       readonly childSessionID: SessionSchema.ID
       readonly agent: string
       readonly description: string
+      readonly wakes: boolean
     }
 
 export type ListFilter = {
@@ -76,6 +81,7 @@ export const outstanding = Effect.fnUntraced(function* (
       childSessionID: recovery.childSessionID,
       agent: recovery.agent,
       description: recovery.description,
+      wakes: recovery.completion !== "none",
     }
   })
   if (!active || active.size === 0) return items
@@ -94,6 +100,7 @@ export const outstanding = Effect.fnUntraced(function* (
       childSessionID: activeID,
       agent: info.agent ?? "subagent",
       description: info.title ?? "Subagent",
+      wakes: true,
     })
   }
   return items

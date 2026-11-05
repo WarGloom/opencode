@@ -13,7 +13,11 @@ const other = SessionSchema.ID.make("ses_other")
 
 const sessions = new Map<
   SessionSchema.ID,
-  { readonly parentID?: SessionSchema.ID; readonly agent?: string; readonly title?: string }
+  {
+    readonly parentID?: SessionSchema.ID
+    readonly agent?: string
+    readonly title?: string
+  }
 >([
   [root, { agent: "build", title: "Root" }],
   [child, { parentID: root, agent: "explore", title: "Child work" }],
@@ -33,8 +37,8 @@ describe("SessionBackground.outstanding", () => {
       const items = yield* SessionBackground.outstanding(noJobs, store, root, new Set([root, child, grandchild, other]))
 
       expect(items).toEqual([
-        { kind: "subagent", sessionID: root, childSessionID: child, agent: "explore", description: "Child work" },
-        { kind: "subagent", sessionID: child, childSessionID: grandchild, agent: "subagent", description: "Subagent" },
+        { kind: "subagent", sessionID: root, childSessionID: child, agent: "explore", description: "Child work", wakes: true },
+        { kind: "subagent", sessionID: child, childSessionID: grandchild, agent: "subagent", description: "Subagent", wakes: true },
       ])
     }),
   )
@@ -65,6 +69,7 @@ describe("SessionBackground.outstanding", () => {
           childSessionID: child,
           agent: "explore",
           description: "Already running",
+          wakes: true,
         },
       ])
       expect(yield* SessionBackground.outstanding(noJobs, store, root, new Set([root, other]))).toEqual([])
@@ -82,14 +87,30 @@ describe("SessionBackground.outstanding", () => {
       }
 
       expect(yield* SessionBackground.outstanding(jobs, store, root, new Set([child, grandchild]))).toEqual([
-        { kind: "subagent", sessionID: child, childSessionID: grandchild, agent: "subagent", description: "Subagent" },
+        { kind: "subagent", sessionID: child, childSessionID: grandchild, agent: "subagent", description: "Subagent", wakes: true },
       ])
+    }),
+  )
+  it.effect("marks a recovery with no completion notice as not waking the parent", () =>
+    Effect.gen(function* () {
+      const items = yield* SessionBackground.outstanding({
+        runningBackground: Effect.succeed([{
+          kind: "subagent" as const,
+          parentSessionID: root,
+          childSessionID: child,
+          agent: "explore",
+          description: "Child work",
+          completion: "none" as const,
+        }]),
+      }, store, root, new Set([child]))
+      expect(items).toEqual([{ kind: "subagent", sessionID: root, childSessionID: child, agent: "explore", description: "Child work", wakes: false }])
     }),
   )
 })
 
 const info = (id: SessionSchema.ID, status: Job.Status, notificationID?: SessionMessage.ID): Job.Info => ({
   id,
+  generation: "generation",
   type: "subagent",
   status,
   started_at: 0,
