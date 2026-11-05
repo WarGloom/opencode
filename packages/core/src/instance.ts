@@ -53,6 +53,8 @@ import { SessionInstructions } from "./session/instructions.js"
 import { McpTool } from "./tool/mcp.js"
 import { ReadToolFileSystem } from "./tool/read-filesystem.js"
 import { Tool } from "./tool.js"
+import { SubagentAdmission } from "./session/subagent-admission.js"
+import { SubagentAdmissionRun } from "./session/subagent-admission-run.js"
 import { ToolOutput } from "./tool-output.js"
 import { Vcs } from "./vcs.js"
 
@@ -77,6 +79,8 @@ const nodes = [
   AISDK.node,
   Plugin.node,
   PluginHooks.node,
+  SubagentAdmission.node,
+  SubagentAdmissionRun.node,
   InstancePlugins.node,
   PluginSupervisor.node,
   WorktreeStrategies.node,

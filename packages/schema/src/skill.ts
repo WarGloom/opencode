@@ -1,8 +1,8 @@
 export * as Skill from "./skill.js"
 
 import { Schema } from "effect"
-import { optional } from "./schema.js"
-import { AbsolutePath } from "./schema.js"
+import { AbsolutePath, optional, statics } from "./schema.js"
+import { ascending } from "./identifier.js"
 import { ephemeral, inventory } from "./event.js"
 
 export const ID = Schema.String.pipe(Schema.brand("Skill.ID"), Schema.annotate({ identifier: "Skill.ID" }))
@@ -10,6 +10,13 @@ export type ID = typeof ID.Type
 
 export const Name = Schema.String.pipe(Schema.brand("Skill.Name"), Schema.annotate({ identifier: "Skill.Name" }))
 export type Name = typeof Name.Type
+
+export const ActivationID = Schema.String.check(Schema.isStartingWith("ska_")).pipe(
+  Schema.brand("Skill.ActivationID"),
+  Schema.annotate({ identifier: "Skill.ActivationID" }),
+  statics((schema) => ({ create: () => schema.make("ska_" + ascending()) })),
+)
+export type ActivationID = typeof ActivationID.Type
 
 export interface DirectorySource extends Schema.Schema.Type<typeof DirectorySource> {}
 export const DirectorySource = Schema.Struct({

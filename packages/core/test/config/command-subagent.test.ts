@@ -10,6 +10,7 @@ import { LayerNodePlatform } from "@opencode/core/effect/app-node-platform"
 import { Watcher } from "@opencode/core/filesystem/watcher"
 import { LocationServiceMap } from "@opencode/core/location-service-map"
 import { Model } from "@opencode/core/model"
+import { PluginHooks } from "@opencode/core/plugin/hooks"
 import { Provider } from "@opencode/core/provider"
 import { AbsolutePath } from "@opencode/core/schema"
 import { Session } from "@opencode/core/session"
@@ -120,6 +121,58 @@ describe("command subagents", () => {
       expect((yield* sessions.context(parent.id)).filter((message) => message.type === "user")).toMatchObject([
         { text: "Review changes: ready" },
       ])
+    }),
+  )
+  // A guard that set `expanded` owns the text: no $ARGUMENTS substitution and no shell interpolation.
+  const expandedText = "Expanded review $ARGUMENTS: !`printf ready`"
+  const expand = (parent: Session.Info) =>
+    Effect.gen(function* () {
+      const locations = yield* LocationServiceMap.Service
+      yield* PluginHooks.Service.use((hooks) =>
+        hooks.register("command", "experimental.command.before", (event) =>
+          Effect.sync(() => {
+            event.prompt.text = expandedText
+            event.expanded = true
+          }),
+        ),
+      ).pipe(Effect.provide(locations.get(parent.location)))
+    })
+
+  it.live("renders an expanded command verbatim in the parent session", () =>
+    Effect.gen(function* () {
+      const parent = yield* project({ subagent: false, agent: "build" }, "json")
+      const sessions = yield* Session.Service
+      const llm = yield* TestLLM.Test
+      yield* expand(parent)
+
+      yield* sessions.command({ sessionID: parent.id, command: "review", text: "changes" })
+      yield* sessions.wait(parent.id)
+
+      expect((yield* sessions.context(parent.id)).filter((message) => message.type === "user")).toMatchObject([
+        { text: expandedText },
+      ])
+      const requests = yield* llm.requests()
+      expect(requests).toHaveLength(1)
+      expect(JSON.stringify(requests[0]?.messages).split("Expanded review")).toHaveLength(2)
+    }),
+  )
+
+  it.live("passes an expanded command verbatim to a subtask child", () =>
+    Effect.gen(function* () {
+      const parent = yield* project({ subtask: true, agent: "build" }, "json")
+      const sessions = yield* Session.Service
+      const llm = yield* TestLLM.Test
+      yield* expand(parent)
+
+      yield* sessions.command({ sessionID: parent.id, command: "review", text: "changes" })
+      yield* llm.wait(1)
+      const [child] = (yield* sessions.list({ parentID: parent.id })).data
+      if (!child) return yield* Effect.die("Expected a child session")
+      expect((yield* sessions.context(child.id)).filter((message) => message.type === "user")).toMatchObject([
+        { text: `You are a subagent spawned by another session.\n${expandedText}` },
+      ])
+      yield* llm.wait(2)
+      yield* sessions.wait(parent.id)
     }),
   )
 })

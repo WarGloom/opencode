@@ -97,6 +97,8 @@ export type SessionInboxSyntheticPayload = { text: string; description?: string;
 
 export type SessionInboxCompactionPayload = {}
 
+export type SkillActivationID = string
+
 export type ShellID = string
 
 export type SessionMessageNative = { [x: string]: JsonValue }
@@ -444,6 +446,11 @@ export type SessionMessageSystem = {
   description?: string
 }
 
+export type SessionMessageSkillActivationSource =
+  | { kind: "session"; messageID: SessionMessageID }
+  | { kind: "prompt"; messageID: SessionMessageID; selectionIndex: number | "Infinity" | "-Infinity" | "NaN" }
+  | { kind: "tool"; messageID: SessionMessageID; callID: string }
+
 export type SessionMessageCompactionRunning = {
   type: "compaction"
   id: SessionMessageID
@@ -453,6 +460,11 @@ export type SessionMessageCompactionRunning = {
   reason: "auto" | "manual"
   summary: string
 }
+
+export type SessionMessageSkillActivationSource1 =
+  | { kind: "session"; messageID: SessionMessageID }
+  | { kind: "prompt"; messageID: SessionMessageID; selectionIndex: number }
+  | { kind: "tool"; messageID: SessionMessageID; callID: string }
 
 export type UsageLimitsBudgetModel = { providerID: ProviderID; modelID: string; name: string; spent?: MoneyUSD }
 
@@ -478,16 +490,12 @@ export type PromptFileAttachment = {
 
 export type PromptAgentAttachment = { name: string; mention?: PromptMention }
 
-export type PromptSkillAttachment = { id: SkillID; name: SkillName; text?: string; mention?: PromptMention }
-
-export type SessionMessageSkill = {
-  id: SessionMessageID
-  metadata?: { [x: string]: JsonValue }
-  time: { created: number }
-  type: "skill"
-  skill: SkillID
+export type PromptSkillAttachment = {
+  id: SkillID
   name: SkillName
-  text: string
+  arguments?: string
+  text?: string
+  mention?: PromptMention
 }
 
 export type SkillInfo = {
@@ -1136,6 +1144,34 @@ export type SessionInboxUserPayload1 = {
   metadata?: { [x: string]: any }
 }
 
+export type SessionMessageSkill = {
+  id: SessionMessageID
+  metadata?: { [x: string]: JsonValue }
+  time: { created: number }
+  type: "skill"
+  activationID?: SkillActivationID
+  agent?: AgentID
+  source?: SessionMessageSkillActivationSource
+  skill: SkillID
+  name: SkillName
+  definition?: SkillInfo
+  arguments?: string
+  revision?: string
+  text: string
+}
+
+export type SessionMessageSkillActivation = {
+  activationID: SkillActivationID
+  sessionID: SessionID
+  agent: AgentID
+  source: SessionMessageSkillActivationSource
+  skill: SkillInfo
+  arguments?: string
+  revision: string
+  content: string
+  metadata: { [x: string]: JsonValue }
+}
+
 export type SessionMessageToolStateCompleted = {
   status: "completed"
   input: { [x: string]: JsonValue }
@@ -1369,7 +1405,17 @@ export type SessionSkillActivated = {
   type: "session.skill.activated"
   durable: { aggregateID: string; seq: EventSeq; version: 1 }
   location?: LocationRef
-  data: { sessionID: SessionID; id: SkillID; name: SkillName; text: string }
+  data: {
+    sessionID: SessionID
+    activationID: SkillActivationID
+    agent: AgentID
+    source: SessionMessageSkillActivationSource1
+    skill: SkillInfo
+    arguments?: string
+    revision: string
+    content: string
+    metadata: { [x: string]: JsonValue }
+  }
 }
 
 export type SessionShellStarted = {
@@ -1642,6 +1688,36 @@ export type SessionRevertCommitted = {
   durable: { aggregateID: string; seq: EventSeq; version: 1 }
   location?: LocationRef
   data: { sessionID: SessionID; to: SessionMessageID }
+}
+
+export type SessionChildAccepted = {
+  id: EventID
+  created: number
+  metadata?: { [x: string]: any }
+  type: "session.child.accepted"
+  durable: { aggregateID: string; seq: EventSeq; version: 1 }
+  location?: LocationRef
+  data: { sessionID: SessionID; childSessionID: SessionID; generation: string }
+}
+
+export type SessionChildPrepared = {
+  id: EventID
+  created: number
+  metadata?: { [x: string]: any }
+  type: "session.child.prepared"
+  durable: { aggregateID: string; seq: EventSeq; version: 1 }
+  location?: LocationRef
+  data: { sessionID: SessionID; admissionID: string; childSessionID: SessionID }
+}
+
+export type SessionChildResolved = {
+  id: EventID
+  created: number
+  metadata?: { [x: string]: any }
+  type: "session.child.resolved"
+  durable: { aggregateID: string; seq: EventSeq; version: 1 }
+  location?: LocationRef
+  data: { sessionID: SessionID; admissionID: string; outcome: "started" | "cancelled" }
 }
 
 export type SessionUsageRecorded = {
@@ -2838,6 +2914,9 @@ export type SessionEventDurable =
   | SessionRevertStaged
   | SessionRevertCleared
   | SessionRevertCommitted
+  | SessionChildAccepted
+  | SessionChildPrepared
+  | SessionChildResolved
   | SessionUsageRecorded
   | SessionMessageContentUpdated
 
@@ -3069,6 +3148,10 @@ export type FormAlreadySettledError = {
 export const isFormAlreadySettledError = (value: unknown): value is FormAlreadySettledError =>
   typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "FormAlreadySettledError"
 
+export type ForbiddenError = { readonly _tag: "ForbiddenError"; readonly message: string }
+export const isForbiddenError = (value: unknown): value is ForbiddenError =>
+  typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "ForbiddenError"
+
 export type SkillNotFoundError = {
   readonly _tag: "SkillNotFoundError"
   readonly skill: string
@@ -3160,10 +3243,6 @@ export type McpServerNotFoundError = {
 }
 export const isMcpServerNotFoundError = (value: unknown): value is McpServerNotFoundError =>
   typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "McpServerNotFoundError"
-
-export type ForbiddenError = { readonly _tag: "ForbiddenError"; readonly message: string }
-export const isForbiddenError = (value: unknown): value is ForbiddenError =>
-  typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "ForbiddenError"
 
 export type ProjectNotFoundError = {
   readonly _tag: "ProjectNotFoundError"
@@ -3406,6 +3485,7 @@ export type SessionPromptInput = {
   readonly skills?:
     | ReadonlyArray<{
         readonly id: string
+        readonly arguments?: string
         readonly mention?: { readonly start: number; readonly end: number; readonly text: string }
       }>
     | undefined
@@ -3438,6 +3518,7 @@ export type SessionCommandInput = {
   readonly skills?:
     | ReadonlyArray<{
         readonly id: string
+        readonly arguments?: string
         readonly mention?: { readonly start: number; readonly end: number; readonly text: string }
       }>
     | undefined
@@ -3860,10 +3941,19 @@ export type ExperimentalSessionExportOutput = { data: SessionTransferData }["dat
 export type ExperimentalSessionSkillInput = {
   readonly sessionID: string
   readonly id: string
+  readonly arguments?: string | undefined
   readonly resume?: boolean | undefined
 }
 
-export type ExperimentalSessionSkillOutput = void
+export type ExperimentalSessionSkillOutput = SessionMessageSkillActivation
+
+export type ExperimentalSessionSkillActivationsInput = { readonly sessionID: string }
+
+export type ExperimentalSessionSkillActivationsOutput = Array<SessionMessageSkillActivation>
+
+export type ExperimentalSessionSkillActivationInput = { readonly sessionID: string; readonly skillID: string }
+
+export type ExperimentalSessionSkillActivationOutput = SessionMessageSkillActivation
 
 export type ExperimentalSessionWaitInput = { readonly sessionID: string }
 
@@ -4879,6 +4969,18 @@ export type SessionSkillInput = ExperimentalSessionSkillInput
 
 /** @deprecated Use `ExperimentalSessionSkillOutput`. Removed in the next minor. */
 export type SessionSkillOutput = ExperimentalSessionSkillOutput
+
+/** @deprecated Use `ExperimentalSessionSkillActivationsInput`. Removed in the next minor. */
+export type SessionSkillActivationsInput = ExperimentalSessionSkillActivationsInput
+
+/** @deprecated Use `ExperimentalSessionSkillActivationsOutput`. Removed in the next minor. */
+export type SessionSkillActivationsOutput = ExperimentalSessionSkillActivationsOutput
+
+/** @deprecated Use `ExperimentalSessionSkillActivationInput`. Removed in the next minor. */
+export type SessionSkillActivationInput = ExperimentalSessionSkillActivationInput
+
+/** @deprecated Use `ExperimentalSessionSkillActivationOutput`. Removed in the next minor. */
+export type SessionSkillActivationOutput = ExperimentalSessionSkillActivationOutput
 
 /** @deprecated Use `ExperimentalSessionWaitInput`. Removed in the next minor. */
 export type SessionWaitInput = ExperimentalSessionWaitInput

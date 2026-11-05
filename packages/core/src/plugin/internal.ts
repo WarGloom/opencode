@@ -67,6 +67,7 @@ import { Schedule } from "../schedule.js"
 import { Session } from "../session.js"
 import { SessionCompaction } from "../session/compaction.js"
 import { SessionInstructions } from "../session/instructions.js"
+import { SessionEnvironment } from "../session/environment.js"
 import { SubagentJob } from "../session/subagent-job.js"
 import { SharedCache } from "../shared-cache.js"
 import { Shell } from "../shell.js"
@@ -161,6 +162,7 @@ const services = [
   Ripgrep.Service,
   Schedule.Service,
   Session.Service,
+  SessionEnvironment.Service,
   SessionCompaction.Service,
   SessionInstructions.Service,
   SubagentJob.Service,
@@ -181,6 +183,7 @@ const services = [
 export type Requirements = Context.Service.Identifier<(typeof services)[number]>
 
 export const requirements = LayerNode.group([
+  SessionEnvironment.node,
   Agent.node,
   App.node,
   ConsoleAccess.node,

@@ -339,6 +339,28 @@ Earlier work
     ])
   })
 
+  test("lowers only direct skill activations; prompt and tool snapshots arrive through their owners", () => {
+    const skill = (kind: "session" | "prompt" | "tool") =>
+      SessionMessage.Skill.make({
+        id: id(`skill-${kind}`),
+        type: "skill",
+        skill: Skill.ID.make("effect"),
+        name: Skill.Name.make("Effect"),
+        source:
+          kind === "session"
+            ? { kind, messageID: id(`skill-${kind}`) }
+            : kind === "prompt"
+              ? { kind, messageID: id("prompt"), selectionIndex: 0 }
+              : { kind, messageID: id("assistant"), callID: "call" },
+        text: `content from ${kind}`,
+        time: { created },
+      })
+
+    expect(toLLMMessages([skill("session"), skill("prompt"), skill("tool")], model)).toEqual([
+      Message.make({ id: id("skill-session"), role: "user", content: "content from session" }),
+    ])
+  })
+
   test("does not inject skill content for reference-only attachments", () => {
     const messages = toLLMMessages(
       [

@@ -4,13 +4,13 @@ import { DateTime, Effect, Fiber, Scope } from "effect"
 import type { Agent } from "@opencode/schema/agent"
 import type { Model } from "@opencode/schema/model"
 import type { Permission } from "@opencode/schema/permission"
+import { Skill } from "@opencode/schema/skill"
 import { Event } from "@opencode/schema/event"
 import { FSUtil } from "@opencode/util/fs-util"
 import { Bus } from "../bus.js"
 import { Database } from "../database/database.js"
 import { Instance } from "../instance/service.js"
 import { ShellResult } from "../shell/result.js"
-import type { Skill } from "../skill.js"
 import {
   BusyError,
   CompactionConflictError,
@@ -168,18 +168,20 @@ export const make = Effect.fn("Session.make")(function* () {
           // Preparation, the staged revert commit and admission share one acquisition of the session's location
           // services, so projections see its config whoever called prompt.
           return yield* Effect.gen(function* () {
-            const item = yield* restore(SessionPrompt.prepare({ session, messageID, input }))
+            const prepared = yield* restore(SessionPrompt.prepare({ session, messageID, input, instances }))
             // Commit a staged revert only after preparation succeeds, before admitting new work.
             if (session.revert) yield* SessionRevert.commit(bus, session)
             return yield* admission.admit({
               id: messageID,
               sessionID: session.id,
-              item,
+              item: prepared.item,
+              activations: prepared.activations,
             })
           }).pipe(
             instances.provide(session),
             Effect.provideService(Database.Service, database),
             Effect.provideService(FSUtil.Service, fs),
+            Effect.provideService(SessionStore.Service, store),
           )
         }).pipe(
           Effect.catchTag("SessionInbox.LifecycleConflict", () => new PromptConflictError({ sessionID, messageID })),
@@ -235,26 +237,53 @@ export const make = Effect.fn("Session.make")(function* () {
   })
   const skill = Effect.fn("Session.skill")(function* (
     sessionID: SessionSchema.ID,
-    input: { messageID?: SessionMessage.ID; skill: Skill.ID; resume?: boolean },
+    input: {
+      activationID?: Skill.ActivationID
+      messageID?: SessionMessage.ID
+      skill: Skill.ID
+      arguments?: string
+      resume?: boolean
+      source?: SessionMessage.SkillActivationSource
+      authorization?: {
+        session: SessionSchema.Info
+        agent: Agent.ID
+      }
+    },
   ) {
     const session = yield* get(sessionID)
-    const skill = yield* SessionSkill.get({ session, skill: input.skill }).pipe(
+    const messageID = input.messageID ?? SessionMessage.ID.create()
+    const activated = yield* SessionSkill.activate({
+      session,
+      // A caller-supplied message ID names the projected skill message, as it did before activation snapshots.
+      activationID: input.activationID ?? Skill.ActivationID.make(messageID.replace(/^msg_/, "ska_")),
+      source: input.source ?? { kind: "session", messageID },
+      skill: input.skill,
+      arguments: input.arguments,
+      authorization: input.authorization,
+    }).pipe(
       Effect.provideService(Instance.Service, instances),
-    )
-    yield* bus.publish(
-      SessionEvent.Skill.Activated,
-      {
-        sessionID,
-        id: skill.id,
-        name: skill.name,
-        text: skill.content,
-      },
-      { id: input.messageID ? Event.ID.make(input.messageID.replace(/^msg_/, "evt_")) : undefined },
+      Effect.provideService(Bus.Service, bus),
+      Effect.provideService(SessionStore.Service, store),
+      Effect.provideService(FSUtil.Service, fs),
     )
     if (input.resume !== false)
       yield* execution
         .resume(sessionID)
         .pipe(Effect.ignore, Effect.forkIn(scope, { startImmediately: true }), Effect.asVoid)
+    return activated
+  })
+  /** Accepts a delegated child prompt's skill batch before that prompt is admitted. Wakes nothing. */
+  const acceptSkills = Effect.fn("Session.acceptSkills")(function* (
+    sessionID: SessionSchema.ID,
+    input: Omit<SessionSkill.BatchInput, "session">,
+  ) {
+    const session = yield* get(sessionID)
+    return yield* SessionSkill.acceptBatch({ ...input, session }).pipe(
+      Effect.provideService(Instance.Service, instances),
+      Effect.provideService(Bus.Service, bus),
+      Effect.provideService(SessionStore.Service, store),
+      Effect.provideService(FSUtil.Service, fs),
+    )
   })
   const compact = Effect.fn("Session.compact")(function* (
     sessionID: SessionSchema.ID,
@@ -372,6 +401,7 @@ export const make = Effect.fn("Session.make")(function* () {
     synthetic,
     shell,
     skill,
+    acceptSkills,
     compact,
     wait,
     resume,
@@ -398,6 +428,7 @@ export const make = Effect.fn("Session.make")(function* () {
     const synthetic = operations.synthetic.bind(undefined, sessionID)
     const shell = operations.shell.bind(undefined, sessionID)
     const skill = operations.skill.bind(undefined, sessionID)
+    const acceptSkills = operations.acceptSkills.bind(undefined, sessionID)
     const compact = operations.compact.bind(undefined, sessionID)
     const wait = operations.wait.bind(undefined, sessionID)
     const resume = operations.resume.bind(undefined, sessionID)
@@ -427,6 +458,7 @@ export const make = Effect.fn("Session.make")(function* () {
       synthetic,
       shell,
       skill,
+      acceptSkills,
       compact,
       wait,
       resume,

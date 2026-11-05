@@ -26,6 +26,7 @@ it.live("serves turn diffs by user message with range validation", () =>
       Effect.gen(function* () {
         const bus = yield* Bus.Service
         return SessionExecution.Service.of({
+          ...SessionExecution.noop,
           active: Effect.succeed(new Set()),
           isActive: () => Effect.succeed(false),
           resume: () => Effect.void,

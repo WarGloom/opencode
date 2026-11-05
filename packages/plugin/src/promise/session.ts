@@ -9,7 +9,8 @@ import type { SessionError } from "@opencode/schema/session-error"
 import type { SessionMessage } from "@opencode/schema/session-message"
 import type { TokenUsage } from "@opencode/schema/token-usage"
 import type { JsonSchema, Types } from "effect"
-import type { ModelHooks } from "./registration.js"
+import type { Registration } from "./registration.js"
+import type { ContinueAfterIdleInput, ContinueAfterIdleOutcome, ContinueAfterFailureInput, ContinueAfterFailureOutcome, PluginInterruptResult, SessionHookOptions } from "../effect/session.js"
 
 export interface SessionPrompt {
   readonly sessionID: Session.ID
@@ -153,6 +154,7 @@ export type SessionIdleBackground =
     }
   | {
       readonly kind: "subagent"
+      readonly wakes?: boolean
       readonly sessionID: Session.ID
       readonly childSessionID: Session.ID
       readonly agent: string
@@ -180,6 +182,16 @@ export type SessionIdleBackground =
 export interface SessionIdle {
   readonly sessionID: Session.ID
   readonly background: ReadonlyArray<SessionIdleBackground>
+  readonly admit: (input: { readonly id: SessionMessage.ID; readonly text: string; readonly description?: string }) => Promise<"admitted" | "duplicate" | "stale">
+}
+
+export interface SessionCompactionContinue {
+  readonly sessionID: Session.ID
+  readonly compactionID: SessionMessage.ID
+  readonly reason: "auto" | "overflow"
+  readonly agent: Agent.ID
+  readonly model: Model.Ref
+  enabled: boolean
 }
 
 export interface SessionHooks {
@@ -196,6 +208,7 @@ export interface SessionHooks {
   readonly "experimental.ws.receive": SessionWebSocketReceive
   readonly retry: SessionRetry
   readonly "experimental.idle": SessionIdle
+  readonly "experimental.compaction.continue": SessionCompactionContinue
 }
 
 export type SessionDomain = Pick<
@@ -217,5 +230,20 @@ export type SessionDomain = Pick<
   | "context"
 > &
   Pick<ExperimentalSessionApi, "wait" | "instructions"> & {
-    readonly hook: ModelHooks<SessionHooks>
+    readonly hook: <Name extends keyof SessionHooks>(name: Name, callback: (event: SessionHooks[Name]) => void | Promise<void>, options?: SessionHookOptions<Name>) => Promise<Registration>
   }
+
+export type { ContinueAfterIdleInput, ContinueAfterIdleOutcome, ContinueAfterFailureInput, ContinueAfterFailureOutcome, PluginInterruptResult } from "../effect/session.js"
+
+/** Native continuation after a failed idle boundary. Experimental. */
+export interface ExperimentalSessionDomain {
+  /** Admits at the newest succeeded idle with no pending input, waking child or staged revert. Experimental. */
+  readonly continueAfterIdle: (input: ContinueAfterIdleInput) => Promise<ContinueAfterIdleOutcome>
+  readonly recover: (input: { readonly sessionID: Session.ID }, callback: (input: { readonly boundaryID: SessionMessage.ID }) => Promise<boolean>, options?: { readonly signal?: AbortSignal }) => Promise<boolean>
+  /** Session execution snapshot for trusted plugin processes; absent means inherit the host environment. Experimental. */
+  readonly environment: (input: { readonly sessionID: Session.ID }) => Promise<Readonly<Record<string, string>> | undefined>
+  /** Admits the model change and steered continuation only while `boundaryID` is still the newest entry, then wakes once. */
+  readonly continueAfterFailure: (input: ContinueAfterFailureInput) => Promise<ContinueAfterFailureOutcome>
+  /** Interrupts without retaining recovery ownership. Use `recover` for a recoverable stop. */
+  readonly interrupt: (input: { readonly sessionID: Session.ID }) => Promise<PluginInterruptResult>
+}

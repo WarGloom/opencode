@@ -65,11 +65,14 @@ export const Plugin = define({
                         providerID: command.model.providerID,
                         ...(command.model.variant === undefined ? {} : { variant: command.model.variant }),
                       }
-                const text = yield* evaluateTemplate(command.template, input.prompt.text, {
-                  location,
-                  processes,
-                  shell,
-                })
+                // A guard that already expanded the command owns the text: no arguments or shell interpolation.
+                const text = input.expanded
+                  ? input.prompt.text
+                  : yield* evaluateTemplate(command.template, input.prompt.text, {
+                      location,
+                      processes,
+                      shell,
+                    })
                 if (subagent ?? commandAgent?.mode === "subagent") {
                   const parent = yield* sessions.get(input.sessionID)
                   const selected = yield* agents.select(agent ?? parent.agent)
@@ -83,6 +86,7 @@ export const Plugin = define({
                     ...input.prompt,
                     sessionID: child.id,
                     text: ["You are a subagent spawned by another session.", text].join("\n"),
+                    metadata: input.metadata,
                     resume: false,
                   })
                   const recovery = {
@@ -105,6 +109,7 @@ export const Plugin = define({
                   ...input.prompt,
                   sessionID: input.sessionID,
                   text,
+                  metadata: input.metadata,
                   delivery: input.delivery,
                 })
               }).pipe(Effect.asVoid),

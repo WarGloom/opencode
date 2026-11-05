@@ -12,6 +12,7 @@ import { SessionStore } from "../store.js"
 import { ImageNotice } from "../../image/notice.js"
 import { ShellResult } from "../../shell/result.js"
 import { SubagentCompletion } from "../subagent-completion.js"
+import { SubagentAdmissionStore } from "../subagent-admission-store.js"
 
 const CONTINUE_AFTER_SERVER_RESTART =
   "The server restarted while you were working. Continue from where you left off without repeating completed work."
@@ -71,6 +72,7 @@ export const layer = (options?: Options) =>
       const execution = yield* SessionExecution.Service
       const bus = yield* Bus.Service
       const jobs = yield* Job.Service
+      const admissions = yield* SubagentAdmissionStore.Service
       const sessions = yield* Session.Service
       const scope = yield* Effect.scope
       const maxAttempts = options?.maxAttempts ?? DEFAULT_MAX_ATTEMPTS
@@ -220,6 +222,9 @@ export const layer = (options?: Options) =>
 
       return Service.of({
         resumeSuspendedSessions: Effect.gen(function* () {
+          const owned = new Set((yield* admissions.list())
+            .filter((entry) => entry.status === "accepted" || entry.status === "running")
+            .map((entry) => entry.childSessionID))
           const active = yield* execution.active
           const pending = yield* jobs.pendingBackground
           const children = pending.flatMap((background) =>
@@ -239,6 +244,7 @@ export const layer = (options?: Options) =>
               if ((yield* jobs.get(background.id))?.status === "running") return
               const recovery = background.recovery
               if (recovery.kind !== "subagent") return yield* recoverToolJob(background, recovery)
+              if (recovery.pluginID !== undefined) return
               yield* recoverSubagent(background, recovery, suspended)
             }),
             { discard: true },
@@ -247,7 +253,7 @@ export const layer = (options?: Options) =>
           // Background completion can wake a parent, so inspect local ownership only after recovery.
           const resumed = yield* execution.active
           yield* Effect.forEach(
-            (yield* store.listSuspended()).filter((sessionID) => !resumed.has(sessionID)),
+            (yield* store.listSuspended()).filter((sessionID) => !resumed.has(sessionID) && !owned.has(sessionID)),
             (sessionID) =>
               execution
                 .resume(sessionID)
@@ -264,5 +270,5 @@ export const layer = (options?: Options) =>
 export const node = makeGlobalNode({
   service: Service,
   layer: layer(),
-  deps: [SessionStore.node, SessionExecution.node, Bus.node, Job.node, Session.node],
+  deps: [SessionStore.node, SessionExecution.node, Bus.node, Job.node, Session.node, SubagentAdmissionStore.node],
 })

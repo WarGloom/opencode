@@ -1,8 +1,11 @@
 export * as SessionInbox from "./inbox.js"
 
-import { and, asc, eq, or } from "drizzle-orm"
+import { and, asc, desc, eq, or } from "drizzle-orm"
 import { Context, DateTime, Effect, Layer, Schema } from "effect"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
+import { Event } from "@opencode/schema/event"
+import { Model } from "@opencode/schema/model"
+import { Provider } from "@opencode/schema/provider"
 import {
   Compaction,
   CompactionPayload,
@@ -27,8 +30,9 @@ import { SessionBlob } from "./blob.js"
 import { SessionMessage } from "./message.js"
 import { SessionSchema } from "./schema.js"
 import { SessionStored } from "./stored.js"
-import { SessionInboxTable, SessionMessageTable } from "./sql.js"
+import { SessionChildPreparationTable, SessionInboxTable, SessionMessageTable, SessionTable } from "./sql.js"
 import { SessionHistory } from "./history.js"
+import type { Activation } from "./skill.js"
 
 type DatabaseService = Database.Interface["db"]
 
@@ -68,6 +72,14 @@ const decodeMove = Schema.decodeUnknownSync(MovePayload)
 const encodeMove = Schema.encodeSync(MovePayload)
 const inboxLocks = KeyedMutex.makeUnsafe<SessionSchema.ID>()
 type PendingRef = { readonly id: SessionMessage.ID; readonly sessionID: SessionSchema.ID }
+export type IdleAdmission = "admitted" | "duplicate" | "stale"
+export type IdleBoundary = {
+  readonly admit: (input: {
+    readonly id: SessionMessage.ID
+    readonly text: string
+    readonly description?: string
+  }) => Effect.Effect<IdleAdmission>
+}
 
 export const serialized = <A, E, R>(sessionID: SessionSchema.ID, effect: Effect.Effect<A, E, R>) =>
   inboxLocks.withLock(sessionID)(effect)
@@ -75,6 +87,11 @@ export const serialized = <A, E, R>(sessionID: SessionSchema.ID, effect: Effect.
 export class LifecycleConflict extends Schema.TaggedError<LifecycleConflict>()("SessionInbox.LifecycleConflict", {
   id: SessionMessage.ID,
 }) {}
+
+export class ChildPreparationConflictError extends Schema.TaggedError<ChildPreparationConflictError>()(
+  "SessionInbox.ChildPreparationConflict",
+  { admissionID: Schema.String },
+) {}
 
 function matches<Type extends Item["type"]>(
   stored: Info,
@@ -192,15 +209,44 @@ export const make = Effect.fn("SessionInbox.make")(function* () {
     readonly id: SessionMessage.ID
     readonly sessionID: SessionSchema.ID
     readonly item: Item & { readonly type: Type }
+    readonly expectedSequence?: number
+    readonly activations?: ReadonlyArray<Activation>
   }) {
     const existing = yield* reconcile({ ...request, type: request.item.type, delivery: request.item.delivery })
     if (existing !== undefined) return existing
-    const admitted = yield* bus
-      .publish(SessionEvent.InboxEnqueued, {
-        inboxID: request.id,
-        sessionID: request.sessionID,
-        item: request.item,
-      })
+    const [first, ...rest] = request.activations ?? []
+    const admitted = yield* (first
+      ? bus
+          .publishAll([
+            [
+              SessionEvent.Skill.Activated,
+              first,
+              { id: Event.ID.make(first.activationID.replace(/^ska_/, "evt_")) },
+            ] as const,
+            ...rest.map(
+              (activation) =>
+                [
+                  SessionEvent.Skill.Activated,
+                  activation,
+                  { id: Event.ID.make(activation.activationID.replace(/^ska_/, "evt_")) },
+                ] as const,
+            ),
+            [
+              SessionEvent.InboxEnqueued,
+              { inboxID: request.id, sessionID: request.sessionID, item: request.item },
+              { expectedSequence: request.expectedSequence },
+            ] as const,
+          ])
+          .pipe(Effect.map((events) => events[events.length - 1]))
+      : bus.publish(
+          SessionEvent.InboxEnqueued,
+          {
+            inboxID: request.id,
+            sessionID: request.sessionID,
+            item: request.item,
+          },
+          { expectedSequence: request.expectedSequence },
+        ))
       .pipe(
         Effect.map((event) =>
           Info.make({
@@ -221,6 +267,187 @@ export const make = Effect.fn("SessionInbox.make")(function* () {
     if (!matches(admitted, { ...request, type: request.item.type }))
       return yield* new LifecycleConflict({ id: request.id })
     return admitted
+  })
+
+  const idleBoundary = Effect.fn("SessionInbox.idleBoundary")(function* (sessionID: SessionSchema.ID) {
+    const captured = yield* db
+      .transaction(
+        () =>
+          Effect.gen(function* () {
+            if (yield* has(db, sessionID, "input")) return undefined
+            return {
+              expectedSequence: yield* Bus.latestSequence(db, sessionID),
+              prepared: yield* hasPreparedChild(db, sessionID),
+            }
+          }),
+        { behavior: "immediate" },
+      )
+      .pipe(Effect.orDie)
+    if (captured === undefined) return undefined
+    return {
+      admit: (input): Effect.Effect<IdleAdmission> =>
+        serialized(
+          sessionID,
+          Effect.gen(function* () {
+            const request = {
+              id: input.id,
+              sessionID,
+              type: "synthetic" as const,
+              delivery: "steer" as const,
+            }
+            if (yield* reconcile(request)) return "duplicate"
+            // An authorized child admission that has not started yet will wake this parent later.
+            if (captured.prepared) return "stale"
+            return yield* admit({
+              id: input.id,
+              sessionID,
+              expectedSequence: captured.expectedSequence,
+              item: {
+                type: "synthetic",
+                payload: SyntheticPayload.make({ text: input.text, description: input.description }),
+                delivery: "steer",
+              },
+            }).pipe(
+              Effect.orDie,
+              Effect.as<IdleAdmission>("admitted"),
+              Effect.catchDefect((defect) => {
+                if (!(defect instanceof Bus.StaleAggregateError)) return Effect.die(defect)
+                return reconcile(request).pipe(
+                  Effect.map((existing): IdleAdmission => (existing ? "duplicate" : "stale")),
+                )
+              }),
+            )
+          }),
+        ).pipe(Effect.orDie),
+    } satisfies IdleBoundary
+  })
+
+  /** Records an authorized child admission on its parent. Wakes nothing; replay with the same binding is a no-op. */
+  const prepareChild = Effect.fn("SessionInbox.prepareChild")(function* (input: {
+    readonly sessionID: SessionSchema.ID
+    readonly admissionID: string
+    readonly childSessionID: SessionSchema.ID
+  }) {
+    return yield* serialized(
+      input.sessionID,
+      Effect.gen(function* () {
+        const existing = yield* preparation(db, input.admissionID)
+        if (existing) {
+          if (existing.session_id === input.sessionID && existing.child_session_id === input.childSessionID) return
+          return yield* new ChildPreparationConflictError({ admissionID: input.admissionID })
+        }
+        yield* bus.publish(SessionEvent.ChildPrepared, input)
+      }),
+    )
+  })
+
+  /** Resolves a prepared child admission. Unknown or already resolved admissions are a no-op. */
+  const resolveChild = Effect.fn("SessionInbox.resolveChild")(function* (input: {
+    readonly sessionID: SessionSchema.ID
+    readonly admissionID: string
+    readonly outcome: "started" | "cancelled"
+  }) {
+    return yield* serialized(
+      input.sessionID,
+      Effect.gen(function* () {
+        const existing = yield* preparation(db, input.admissionID)
+        if (existing?.session_id !== input.sessionID || existing.status !== "prepared") return
+        yield* bus.publish(SessionEvent.ChildResolved, input)
+      }),
+    )
+  })
+
+  /**
+   * Admits a continuation only while `boundaryID` is still the Session's newest message, an idle entry whose outcome is
+   * one of `outcomes` (default failed only), and no input is pending. A changed model commits in the same conditional
+   * write, so a rejection leaves neither the model nor the continuation behind. Wakes nothing.
+   */
+  const admitAfter = Effect.fn("SessionInbox.admitAfter")(function* (input: {
+    readonly sessionID: SessionSchema.ID
+    readonly boundaryID: SessionMessage.ID
+    readonly id: SessionMessage.ID
+    readonly text: string
+    readonly description?: string
+    readonly model?: Model.Ref
+    readonly outcomes?: ReadonlyArray<"succeeded" | "failed" | "interrupted">
+    readonly authority?: Effect.Effect<boolean>
+    readonly commit?: () => Effect.Effect<void>
+    readonly admitted?: Effect.Effect<void>
+  }) {
+    const request = { id: input.id, sessionID: input.sessionID, type: "synthetic" as const, delivery: "steer" as const }
+    return yield* serialized(
+      input.sessionID,
+      Effect.gen(function* () {
+        if (yield* reconcile(request)) return "duplicate" as const
+        const captured = yield* db
+          .transaction(
+            () =>
+              Effect.gen(function* () {
+                if (input.authority && !(yield* input.authority)) return undefined
+                if (yield* has(db, input.sessionID, "input")) return undefined
+                if (!(yield* continuationBoundary(db, input.sessionID, input.boundaryID, input.outcomes ?? ["failed"])))
+                  return undefined
+                const session = yield* db
+                  .select({ model: SessionTable.model, revert: SessionTable.revert })
+                  .from(SessionTable)
+                  .where(eq(SessionTable.id, input.sessionID))
+                  .get()
+                  .pipe(Effect.orDie)
+                if (input.outcomes?.includes("succeeded")) {
+                  if (session?.revert || (yield* hasPreparedChild(db, input.sessionID))) return undefined
+                }
+                return {
+                  expectedSequence: yield* Bus.latestSequence(db, input.sessionID),
+                  // The same model shape Session.switchModel compares and records as `previous`.
+                  previous: session?.model
+                    ? Model.Ref.make({
+                        id: Model.ID.make(session.model.id),
+                        providerID: Provider.ID.make(session.model.providerID),
+                        variant: Model.VariantID.make(session.model.variant ?? "default"),
+                      })
+                    : undefined,
+                }
+              }),
+            { behavior: "immediate" },
+          )
+          .pipe(Effect.orDie)
+        if (captured === undefined) return "stale" as const
+        const options = { expectedSequence: captured.expectedSequence }
+        const enqueue = [
+          SessionEvent.InboxEnqueued,
+          {
+            inboxID: input.id,
+            sessionID: input.sessionID,
+            item: {
+              type: "synthetic",
+              payload: SyntheticPayload.make({ text: input.text, description: input.description }),
+              delivery: "steer",
+            },
+          },
+          { ...options, commit: input.commit },
+        ] as const
+        const publish: Effect.Effect<void> =
+          input.model && !sameModel(input.model, captured.previous)
+            ? bus.publishAll([
+                  [
+                    SessionEvent.ModelSelected,
+                    { sessionID: input.sessionID, model: input.model, previous: captured.previous },
+                    options,
+                  ] as const,
+                  enqueue,
+                ])
+                .pipe(Effect.asVoid)
+            : bus.publishAll([enqueue]).pipe(Effect.asVoid)
+        return yield* publish.pipe(
+          Effect.andThen(input.admitted ?? Effect.void),
+          Effect.as("admitted" as const),
+          Effect.catchDefect((defect) => {
+            if (!(defect instanceof Bus.StaleAggregateError)) return Effect.die(defect)
+            return reconcile(request).pipe(Effect.map((existing) => (existing ? ("duplicate" as const) : ("stale" as const))))
+          }),
+        )
+      }),
+    ).pipe(Effect.orDie)
   })
 
   const admitCompaction = Effect.fn("SessionInbox.admitCompaction")(function* (input: {
@@ -286,6 +513,10 @@ export const make = Effect.fn("SessionInbox.make")(function* () {
     reconcile,
     admit,
     admitCompaction,
+    idleBoundary,
+    prepareChild,
+    resolveChild,
+    admitAfter,
     cancel,
     steer,
     queue,
@@ -518,6 +749,56 @@ export const has = Effect.fn("SessionInbox.has")(function* (
     .pipe(Effect.orDie)
   return row !== undefined
 })
+
+const preparation = (db: DatabaseService, admissionID: string) =>
+  db
+    .select()
+    .from(SessionChildPreparationTable)
+    .where(eq(SessionChildPreparationTable.admission_id, admissionID))
+    .get()
+    .pipe(Effect.orDie)
+
+/** True while `boundaryID` is the Session's newest message and an idle entry with one of the accepted outcomes. */
+const continuationBoundary = Effect.fnUntraced(function* (
+  db: DatabaseService,
+  sessionID: SessionSchema.ID,
+  boundaryID: SessionMessage.ID,
+  outcomes: ReadonlyArray<"succeeded" | "failed" | "interrupted">,
+) {
+  const row = yield* db
+    .select()
+    .from(SessionMessageTable)
+    .where(eq(SessionMessageTable.session_id, sessionID))
+    .orderBy(desc(SessionMessageTable.seq))
+    .limit(1)
+    .get()
+    .pipe(Effect.orDie)
+  if (row?.id !== boundaryID || row.type !== "idle") return false
+  const [message] = yield* SessionHistory.decodeMessageRows(db, [row]).pipe(Effect.orDie)
+  return message?.type === "idle" && outcomes.some((outcome) => outcome === message.outcome)
+})
+
+const sameModel = (model: Model.Ref, current: Model.Ref | undefined) =>
+  current?.providerID === model.providerID &&
+  current.id === model.id &&
+  (current.variant ?? "default") === (model.variant ?? "default")
+
+const hasPreparedChild = (db: DatabaseService, sessionID: SessionSchema.ID) =>
+  db
+    .select({ id: SessionChildPreparationTable.admission_id })
+    .from(SessionChildPreparationTable)
+    .where(
+      and(
+        eq(SessionChildPreparationTable.session_id, sessionID),
+        eq(SessionChildPreparationTable.status, "prepared"),
+      ),
+    )
+    .limit(1)
+    .get()
+    .pipe(
+      Effect.orDie,
+      Effect.map((row) => row !== undefined),
+    )
 
 const publishMutation = <A, E, R>(input: PendingRef, effect: Effect.Effect<A, E, R>) =>
   serialized(input.sessionID, effect).pipe(

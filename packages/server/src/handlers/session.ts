@@ -16,6 +16,7 @@ import {
   ConflictError,
   CommandExecutionError,
   CommandNotFoundError,
+  ForbiddenError,
   FormAlreadySettledError,
   FormInvalidAnswerError,
   FormNotFoundError,
@@ -318,6 +319,21 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
                 Effect.catchTag("Session.SkillNotFoundError", (error) =>
                   Effect.fail(new InvalidRequestError({ message: `Skill not found: ${error.skill}`, field: "skills" })),
                 ),
+                // Selected skills are authorized before admission; a refusal rejects the whole prompt.
+                Effect.catchTags({
+                  "SessionSkill.ActivationDenied": (error) =>
+                    Effect.fail(
+                      new InvalidRequestError({ message: `Skill activation denied: ${error.reason}`, field: "skills" }),
+                    ),
+                  "Permission.BlockedError": (error) =>
+                    Effect.fail(new InvalidRequestError({ message: error.message, field: "skills" })),
+                  "Permission.CorrectedError": (error) =>
+                    Effect.fail(new InvalidRequestError({ message: error.feedback, field: "skills" })),
+                  // Only Core callers pass accepted activations; HTTP prompts cannot reach these.
+                  "SessionPrompt.AcceptedSkillConflict": (error) =>
+                    Effect.fail(new ConflictError({ message: "Accepted skill activations conflict", resource: error.messageID })),
+                  "Session.MessageDecodeError": (error) => Effect.die(error),
+                }),
                 locationErrors,
               ),
           }
@@ -362,10 +378,11 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
       .handle(
         "session.skill",
         Effect.fn(function* (ctx) {
-          yield* session
+          return yield* session
             .skill({
               sessionID: ctx.params.sessionID,
               skill: ctx.payload.id,
+              arguments: ctx.payload.arguments,
               resume: ctx.payload.resume,
             })
             .pipe(
@@ -373,9 +390,46 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
               Effect.catchTag("Session.SkillNotFoundError", (error) =>
                 Effect.fail(new SkillNotFoundError({ skill: error.skill, message: `Skill not found: ${error.skill}` })),
               ),
+              Effect.catchTag("Session.MessageDecodeError", failedMessageDecode),
+              Effect.catchTags({
+                "SessionSkill.ActivationDenied": (error) =>
+                  Effect.fail(new ForbiddenError({ message: `Skill activation denied: ${error.reason}` })),
+                "SessionSkill.ActivationConflict": (error) =>
+                  Effect.fail(
+                    new ConflictError({
+                      resource: error.activationID,
+                      message: `Skill activation conflict: ${error.activationID}`,
+                    }),
+                  ),
+                "Permission.BlockedError": (error) => Effect.fail(new ForbiddenError({ message: error.message })),
+                "Permission.CorrectedError": (error) => Effect.fail(new ForbiddenError({ message: error.feedback })),
+              }),
               locationErrors,
             )
-          return HttpApiSchema.NoContent.make()
+        }),
+      )
+      .handle(
+        "session.skillActivations",
+        Effect.fn(function* (ctx) {
+          return yield* session
+            .skillActivations({ sessionID: ctx.params.sessionID })
+            .pipe(Effect.catchTag("Session.MessageDecodeError", failedMessageDecode), locationErrors)
+        }),
+      )
+      .handle(
+        "session.skillActivation",
+        Effect.fn(function* (ctx) {
+          return yield* session
+            .skillActivation({ sessionID: ctx.params.sessionID, skillID: ctx.params.skillID })
+            .pipe(
+              Effect.catchTag("Session.MessageDecodeError", failedMessageDecode),
+              Effect.catchTag("SessionSkill.NotAccepted", (error) =>
+                Effect.fail(
+                  new SkillNotFoundError({ skill: error.skill, message: `Skill activation not accepted: ${error.skill}` }),
+                ),
+              ),
+              locationErrors,
+            )
         }),
       )
       .handle(

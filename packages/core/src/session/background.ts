@@ -46,6 +46,7 @@ export const outstanding = Effect.fnUntraced(function* (
       childSessionID: recovery.childSessionID,
       agent: recovery.agent,
       description: recovery.description,
+      wakes: recovery.completion !== "none",
     }
   })
 })

@@ -11,6 +11,8 @@ import { ScheduleTools } from "@opencode/core/tool/plugin/schedule"
 import { Document, Info, type Entry } from "@opencode/schema/config"
 import { ConfigExperimental } from "@opencode/schema/config/experimental"
 import type { CommandDefinition } from "@opencode/plugin/effect/command"
+import { Agent } from "@opencode/schema/agent"
+import { Command } from "@opencode/schema/command"
 import { testEffect } from "./lib/effect"
 import { imagePassthrough } from "./lib/image"
 import { permissionLayer } from "./lib/permission"
@@ -84,6 +86,7 @@ const setup = (experimental: ConfigExperimental.Info | undefined) =>
       event: { subscribe: () => Stream.never },
       command: {
         list: () => Effect.die("unused command.list"),
+        hook: () => Effect.die("unused command.hook"),
         reload: () => Effect.void,
         transform: (callback) =>
           Effect.sync(() => {
@@ -193,6 +196,8 @@ describe("ScheduleTools", () => {
       const { commands, prompts } = yield* setup(new ConfigExperimental.Info({ schedules: true }))
       yield* commands[0]!
         .execute({
+          invocationID: Command.InvocationID.create(),
+          agent: Agent.ID.make("build"),
           sessionID,
           prompt: { text: "  every morning at 9 check CI  " },
           delivery: "steer",
