@@ -405,7 +405,14 @@ function modelFromLanguage(info: RuntimeInfo, language: LanguageModelV3) {
       schema: Schema.Unknown,
       from: (request) =>
         Effect.try({
-          try: () => callOptions(request, packageName, info.modelID ?? info.id, optionKey),
+          try: () =>
+            callOptions(
+              request,
+              packageName,
+              info.modelID ?? info.id,
+              optionKey,
+              info.compatibility?.supportsPromptCacheKey !== false,
+            ),
           catch: (cause) =>
             cause instanceof AIError ? cause : ProviderShared.invalidRequest("Invalid AI SDK request", cause),
         }),
@@ -487,8 +494,11 @@ function callOptions(
   packageName: string | undefined,
   modelID: ID,
   optionKey: string,
+  supportsPromptCacheKey: boolean,
 ): LanguageModelV3CallOptions {
   const flattened = ProviderShared.flattenToolRequest(request)
+  const promptCacheKey =
+    optionKey === "openai" && supportsPromptCacheKey ? ProviderShared.promptCacheKey(request) : undefined
   return {
     prompt: prompt(flattened.request),
     maxOutputTokens: request.maxTokens,
@@ -502,7 +512,12 @@ function callOptions(
     tools: flattened.tools.map(tool),
     toolChoice: toolChoice(request.toolChoice),
     headers: request.headers,
-    providerOptions: requestProviderOptions(request.providerOptions, packageName, modelID, optionKey),
+    providerOptions: requestProviderOptions(
+      promptCacheKey === undefined ? request.providerOptions : { promptCacheKey, ...request.providerOptions },
+      packageName,
+      modelID,
+      optionKey,
+    ),
   }
 }
 
