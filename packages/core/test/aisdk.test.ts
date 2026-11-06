@@ -288,6 +288,100 @@ it.effect("leaves max output tokens unset when the request omits them", () =>
   }),
 )
 
+it.effect("forwards common prompt cache keys through AI SDK provider namespaces", () =>
+  Effect.gen(function* () {
+    // given
+    const aisdk = yield* AISDK.Service
+    yield* aisdk.hook.sdk((event) => {
+      event.sdk = { languageModel: () => ({ provider: event.model.providerID }) }
+    })
+
+    for (const packageName of ["@ai-sdk/openai", "file:///opencode-v2-provider.js"]) {
+      const resolved = yield* aisdk.model({ ...model(packageName), providerID: Provider.ID.openai })
+      for (const [promptCacheKey, cache, expected] of [
+        ["session-affinity", undefined, "session-affinity"],
+        ["session-affinity", "none", undefined],
+        ["\u{1f4a1}".repeat(65), undefined, "\u{1f4a1}".repeat(64)],
+        [undefined, undefined, undefined],
+      ] as const) {
+        // when
+        const prepared = yield* compileRequest(
+          ai.request({ model: resolved, prompt: "Hello", promptCacheKey, cache, providerOptions: { store: false } }),
+        )
+        // then
+        expect(prepared.body.providerOptions).toEqual({
+          openai: { store: false, ...(expected === undefined ? {} : { promptCacheKey: expected }) },
+        })
+      }
+    }
+  }),
+)
+
+it.effect("prefers explicit provider cache keys over common affinity", () =>
+  Effect.gen(function* () {
+    // given
+    const aisdk = yield* AISDK.Service
+    yield* aisdk.hook.sdk((event) => {
+      event.sdk = { languageModel: () => ({ provider: event.model.providerID }) }
+    })
+    const resolved = yield* aisdk.model({ ...model("file:///opencode-v2-provider.js"), providerID: Provider.ID.openai })
+    // when
+    const prepared = yield* compileRequest(
+      ai.request({
+        model: resolved,
+        prompt: "Hello",
+        promptCacheKey: "common",
+        providerOptions: { promptCacheKey: "explicit" },
+      }),
+    )
+    // then
+    expect(prepared.body.providerOptions).toEqual({ openai: { promptCacheKey: "explicit" } })
+  }),
+)
+
+for (const [packageName, key] of [
+  ["@ai-sdk/perplexity", "perplexity"],
+  ["@ai-sdk/github-copilot", "copilot"],
+] as const) {
+  it.effect(`does not forward common cache keys to ${packageName}`, () =>
+    Effect.gen(function* () {
+      // given
+      const aisdk = yield* AISDK.Service
+      yield* aisdk.hook.sdk((event) => {
+        event.sdk = { languageModel: () => ({ provider: event.model.providerID }) }
+      })
+      const resolved = yield* aisdk.model(model(packageName))
+      // when
+      const prepared = yield* compileRequest(
+        ai.request({ model: resolved, prompt: "Hello", promptCacheKey: "common", providerOptions: { store: false } }),
+      )
+      // then
+      expect(prepared.body.providerOptions).toEqual({ [key]: { store: false } })
+    }),
+  )
+}
+
+it.effect("does not forward common cache keys when compatibility disables them", () =>
+  Effect.gen(function* () {
+    // given
+    const aisdk = yield* AISDK.Service
+    yield* aisdk.hook.sdk((event) => {
+      event.sdk = { languageModel: () => ({ provider: event.model.providerID }) }
+    })
+    const resolved = yield* aisdk.model({
+      ...model("file:///opencode-v2-provider.js"),
+      providerID: Provider.ID.openai,
+      compatibility: { supportsPromptCacheKey: false },
+    })
+    // when
+    const prepared = yield* compileRequest(
+      ai.request({ model: resolved, prompt: "Hello", promptCacheKey: "common", providerOptions: { store: false } }),
+    )
+    // then
+    expect(prepared.body.providerOptions).toEqual({ openai: { store: false } })
+  }),
+)
+
 it.effect("maps pro reasoning bodies to AI SDK provider options", () =>
   Effect.gen(function* () {
     const aisdk = yield* AISDK.Service
