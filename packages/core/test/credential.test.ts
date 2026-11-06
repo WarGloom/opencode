@@ -224,6 +224,55 @@ describe("Credential", () => {
     }),
   )
 
+  it.effect("switches from an expected selection only while it is still selected", () =>
+    Effect.gen(function* () {
+      const credentials = yield* Credential.Service
+      const bus = yield* Bus.Service
+      const integrationID = Integration.ID.make("github-copilot")
+      const served = yield* credentials.create({ integrationID, value: Credential.Key.make({ type: "key", key: "a" }) })
+      const target = yield* credentials.create({
+        integrationID,
+        value: Credential.Key.make({ type: "key", key: "b" }),
+        activate: false,
+      })
+      const manual = yield* credentials.create({
+        integrationID,
+        value: Credential.Key.make({ type: "key", key: "x" }),
+        activate: false,
+      })
+      const other = yield* credentials.create({
+        integrationID: Integration.ID.make("openai"),
+        value: Credential.Key.make({ type: "key", key: "other" }),
+      })
+      const events = new Array<Event.Payload>()
+      yield* bus.listen((event) => Effect.sync(() => events.push(event)))
+
+      // Another choice replaced the served credential: nothing is written.
+      yield* credentials.activate(manual.id)
+      expect(yield* credentials.activate(target.id, { expected: served.id })).toBe("moved")
+      expect((yield* credentials.list(integrationID)).at(-1)?.id).toBe(manual.id)
+      expect(
+        yield* Effect.forEach(
+          [
+            credentials.activate(manual.id, { expected: manual.id }),
+            credentials.activate(other.id, { expected: manual.id }),
+            credentials.activate(Credential.ID.create(), { expected: manual.id }),
+          ],
+          (activation) => activation,
+        ),
+      ).toEqual(["rejected", "rejected", "rejected"])
+      expect((yield* credentials.list(integrationID)).at(-1)?.id).toBe(manual.id)
+
+      // The served credential is still selected: the switch happens once.
+      expect(yield* credentials.activate(target.id, { expected: manual.id })).toBe("switched")
+      expect((yield* credentials.list(integrationID)).at(-1)?.id).toBe(target.id)
+      expect(events.map((event) => ({ type: event.type, data: event.data }))).toEqual([
+        { type: Credential.Event.Switched.type, data: { integrationID, credentialID: manual.id } },
+        { type: Credential.Event.Switched.type, data: { integrationID, credentialID: target.id } },
+      ])
+    }),
+  )
+
   it.effect("creates credentials with a requested ID without taking over the current selection", () =>
     Effect.gen(function* () {
       const credentials = yield* Credential.Service
