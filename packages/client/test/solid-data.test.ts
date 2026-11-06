@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { getEventListeners } from "node:events"
-import { createRoot } from "solid-js"
+import { createComputed, createMemo, createRoot } from "solid-js"
+import { isServer } from "solid-js/web"
 import { createData, type CreateDataInput } from "../src/solid"
 import { OpenCode, type FormInfo, type ModelInfo, type OpenCodeEvent, type Project, type SessionInfo } from "../src/promise"
 
@@ -453,6 +454,67 @@ test("refreshes a loaded session's execution start when it starts running", asyn
     listeners.forEach((listener) => listener({ name: started.type, details: started }))
     expect(setup.data.session.status("ses_refresh")).toBe("running")
     await wait(() => setup.data.session.get("ses_refresh")?.time.busy === 3)
+  } finally {
+    setup.dispose()
+  }
+})
+
+test("keeps unchanged session memo consumers stable across invalidated syncs while updating changed fields", async () => {
+  let info: SessionInfo = { ...session(2), title: "Original", model: { providerID: "provider", id: "model" } }
+  let requests = 0
+  const runs = { memo: 0, consumer: 0 }
+  const changes: (readonly [string | undefined, number | undefined])[] = []
+  const api = OpenCode.make({
+    baseUrl: "http://opencode.local",
+    fetch: async () => {
+      requests++
+      return Response.json({ data: info })
+    },
+  })
+  const setup = createRoot((dispose) => {
+    const data = createData({
+      api: () => api,
+      directory: "/project",
+      event: { on: () => () => {}, listen: () => () => {} },
+    })
+    data.session.remember(info)
+    const stable = createMemo(() => {
+      runs.memo++
+      const current = data.session.get(info.id)
+      return [current?.model, current?.location] as const
+    })
+    createComputed(() => {
+      stable()
+      runs.consumer++
+    })
+    createComputed(() => {
+      const current = data.session.get(info.id)
+      changes.push([current?.title, current?.time.busy])
+    })
+    return { data, stable, dispose }
+  })
+  try {
+    const originalInfo = setup.data.session.get(info.id)
+    const original = setup.stable()
+    for (let refresh = 0; refresh < 2; refresh++) {
+      setup.data.session.invalidate(info.id)
+      await setup.data.session.sync(info.id)
+    }
+    expect(requests).toBe(2)
+    expect(runs).toEqual({ memo: 1, consumer: 1 })
+    expect(setup.data.session.get(info.id)).toBe(originalInfo)
+    expect(setup.stable()).toBe(original)
+    expect(changes).toEqual([["Original", undefined]])
+
+    info = { ...info, title: "Renamed", time: { ...info.time, busy: 3 } }
+    setup.data.session.invalidate(info.id)
+    await setup.data.session.sync(info.id)
+    expect(requests).toBe(3)
+    expect(setup.data.session.get(info.id)).toBe(originalInfo)
+    expect(setup.data.session.get(info.id)).toMatchObject({ title: "Renamed", time: { busy: 3 } })
+    expect(changes).toEqual(isServer ? [["Original", undefined]] : [["Original", undefined], ["Renamed", 3]])
+    expect(setup.stable()).toBe(original)
+    expect(runs).toEqual({ memo: 1, consumer: 1 })
   } finally {
     setup.dispose()
   }
