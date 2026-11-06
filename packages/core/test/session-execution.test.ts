@@ -4,6 +4,7 @@ import { AIError, TransportError } from "@opencode/ai/effect"
 import { Database } from "@opencode/core/database/database"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { LayerNode } from "@opencode/util/effect/layer-node"
+import { FSUtil } from "@opencode/util/fs-util"
 import { Bus } from "@opencode/core/bus"
 import { Instance } from "@opencode/core/instance/service"
 import { Job } from "@opencode/core/job"
@@ -20,6 +21,7 @@ import { SessionEvent } from "@opencode/core/session/event"
 import { SessionInbox } from "@opencode/core/session/inbox"
 import { SessionMessage } from "@opencode/core/session/message"
 import { SessionRunner } from "@opencode/core/session/runner/index"
+import { make } from "@opencode/core/session/session"
 import { SessionInboxTable, SessionTable } from "@opencode/core/session/sql"
 import { SessionStore } from "@opencode/core/session/store"
 import { SubagentAdmissionStore } from "@opencode/core/session/subagent-admission-store"
@@ -29,7 +31,18 @@ import { testEffect } from "./lib/effect"
 
 const it = testEffect(
   AppNodeBuilder.build(
-    LayerNode.group([Database.node, Bus.node, SessionStore.node, SessionInbox.node, Job.node, KV.node, Session.node, SubagentAdmissionStore.node]),
+    LayerNode.group([
+      Database.node,
+      Bus.node,
+      SessionStore.node,
+      SessionInbox.node,
+      Job.node,
+      KV.node,
+      Session.node,
+      SubagentAdmissionStore.node,
+      Instance.node,
+      FSUtil.node,
+    ]),
   ),
 )
 
@@ -140,6 +153,62 @@ describe("SessionExecution lifecycle", () => {
       expect(yield* execution.interrupt(sessionID)).toBeTrue()
       yield* execution.awaitIdle(sessionID)
       expect((yield* claims(database))[sessionID]).toBe(false)
+    }),
+  )
+
+  it.effect("redelivery resumes pending synthetic input but never wakes consumed input", () =>
+    Effect.gen(function* () {
+      // given
+      const database = yield* Database.Service
+      const bus = yield* Bus.Service
+      const store = yield* SessionStore.Service
+      const sessionID = Session.ID.make("ses_synthetic_redelivery")
+      const id = SessionMessage.ID.make("msg_synthetic_redelivery")
+      yield* seedSessions(database, [sessionID])
+      const scope = yield* Scope.make()
+      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+      const promoted: Array<number | undefined> = []
+      const context = yield* buildExecution(scope, (input) =>
+        SessionInbox.promote(database.db, bus, input.sessionID, "input").pipe(
+          Effect.tap((count) => Effect.sync(() => promoted.push(count))),
+          Effect.asVoid,
+        ),
+      )
+      const execution = Context.get(context, SessionExecution.Service)
+      const handles = yield* make().pipe(Effect.provideService(SessionExecution.Service, execution))
+      const session = handles.forSession(sessionID)
+      const original = { id, text: "original", metadata: { source: "original" }, delivery: "queue" as const }
+      const retry = { id, text: "replacement", metadata: { source: "replacement" }, delivery: "steer" as const }
+
+      // when: an admit-only input is retried while pending, then after consumption.
+      yield* session.synthetic({ ...original, resume: false })
+      yield* session.synthetic({ ...retry, resume: false })
+      expect(yield* execution.isActive(sessionID)).toBe(false)
+      expect(yield* session.inbox()).toMatchObject([
+        { id, delivery: "queue", payload: { text: "original", metadata: { source: "original" } } },
+      ])
+      yield* session.synthetic(retry)
+      yield* execution.awaitIdle(sessionID)
+      expect(promoted).toEqual([1])
+      expect(yield* session.message(id)).toMatchObject({
+        type: "synthetic",
+        text: "original",
+        metadata: { source: "original" },
+      })
+      yield* session.synthetic({ ...retry, resume: false })
+      yield* session.synthetic(retry)
+      yield* execution.awaitIdle(sessionID)
+
+      // then: consumed redelivery adds neither a drain nor an idle boundary.
+      expect(promoted).toEqual([1])
+      expect(yield* store.messages({ sessionID, type: "idle" })).toHaveLength(1)
+
+      yield* session.synthetic({ id: SessionMessage.ID.make("msg_synthetic_distinct"), text: "new input" })
+      yield* execution.awaitIdle(sessionID)
+      expect(promoted).toEqual([1, 1])
+      yield* session.resume()
+      yield* execution.awaitIdle(sessionID)
+      expect(promoted).toEqual([1, 1, 0])
     }),
   )
 
