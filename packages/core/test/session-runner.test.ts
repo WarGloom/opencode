@@ -29,6 +29,8 @@ import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { LayerNodePlatform } from "@opencode/core/effect/app-node-platform"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Bus } from "@opencode/core/bus"
+import { Credential } from "@opencode/core/credential"
+import { Integration } from "@opencode/core/integration"
 import { Command } from "@opencode/core/command"
 import { Event } from "@opencode/schema/event"
 import { App } from "@opencode/core/app"
@@ -238,6 +240,8 @@ const makeRunnerState = (compaction?: SessionRunnerModel.Resolved["compaction"])
     }).pipe(Effect.andThen(Deferred.succeed(barrier.release, undefined)), Effect.asVoid)
   return {
     currentModel: model,
+    // Connection that resolved models report as serving them; unknown unless a scenario sets it.
+    connectionKey: undefined as string | undefined,
     compaction,
     modelResolveHook: resolvesModel,
     systemBaseline: "Initial context",
@@ -357,13 +361,16 @@ const layer = Layer.unwrap(
         state.modelResolveHook.pipe(
           Effect.map(() => {
             const selected = session.model?.id === "replacement" ? replacementModel : state.currentModel
-            return SessionRunnerModel.resolved(selected, {
-              capabilities: { tools: true, input: ["text", "image"], output: ["text"] },
-              cost: [],
-              limit: modelLimits.get(String(selected.id)) ?? defaultModelLimit,
-              variant: session.model?.variant,
-              compaction: state.compaction,
-            })
+            return {
+              ...SessionRunnerModel.resolved(selected, {
+                capabilities: { tools: true, input: ["text", "image"], output: ["text"] },
+                cost: [],
+                limit: modelLimits.get(String(selected.id)) ?? defaultModelLimit,
+                variant: session.model?.variant,
+                compaction: state.compaction,
+              }),
+              connectionKey: state.connectionKey,
+            }
           }),
         ),
     })
@@ -512,6 +519,7 @@ const layer = Layer.unwrap(
       LayerNode.group([
         Database.node,
         Bus.node,
+        Credential.node,
         Form.node,
         SessionProjector.node,
         SessionStore.node,
@@ -6670,6 +6678,69 @@ describe("SessionRunnerLLM", () => {
     yield* TestClock.adjust("1 millis")
     yield* Fiber.join(run)
     expect(s.requests).toHaveLength(2)
+  })
+
+  scenario("retries the same model on a switched account before ordinary retry hooks", function* (s) {
+    // Given credential A serves the model and B is saved for the same integration.
+    const credentials = yield* Credential.Service
+    const integrationID = Integration.ID.make("test")
+    const served = yield* credentials.create({ integrationID, value: Credential.Key.make({ type: "key", key: "a" }) })
+    const next = yield* credentials.create({
+      integrationID,
+      value: Credential.Key.make({ type: "key", key: "b" }),
+      activate: false,
+    })
+    s.connectionKey = `credential:${served.id}`
+    const hooks = yield* PluginHooks.Service
+    const seen: string[] = []
+    // Registered first, like a model fallback plugin; it must not see the failure the switch consumed.
+    yield* hooks.register("session", "retry", () => Effect.sync(() => void seen.push("retry")))
+    yield* hooks.register("session", "model.request", (event) =>
+      Effect.sync(() => void seen.push(`request:${event.connectionKey}`)),
+    )
+    const checked = yield* Deferred.make<void>()
+    yield* hooks.register("session", "experimental.retry.connection", (event) =>
+      Effect.gen(function* () {
+        seen.push(`connection:${event.attempt}:${event.connectionKey}`)
+        seen.push(`switch:${yield* event.switch({ credentialID: next.id })}`)
+        s.modelResolveHook = Deferred.succeed(checked, undefined).pipe(Effect.asVoid)
+      }),
+    )
+    // The first readiness check still resolves A; only the model update published after it releases the wait.
+    yield* Deferred.await(checked).pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          s.connectionKey = `credential:${next.id}`
+        }),
+      ),
+      Effect.andThen(s.bus.publish(Model.Event.Updated, {}, { global: true })),
+      Effect.forkScoped,
+    )
+    yield* s.admit("Switch accounts")
+    yield* s.llm.push(Stream.fail(rateLimited()))
+    yield* s.llm.push(TestLLM.text("Recovered", "switched-account-success"))
+
+    // When attempt 1 fails before output and the plugin switches to B.
+    const scheduled = yield* subscribeRetries(s)
+    const run = yield* s.resume.pipe(Effect.forkChild)
+    yield* Queue.take(scheduled)
+    yield* TestClock.adjust("0 millis")
+    yield* Fiber.join(run)
+
+    // Then attempt 2 runs the same model on B at once, and the ordinary retry hook never runs.
+    expect(seen).toEqual([
+      `request:credential:${served.id}`,
+      `connection:2:credential:${served.id}`,
+      "switch:switched",
+      `request:credential:${next.id}`,
+    ])
+    expect(s.requests).toHaveLength(2)
+    expect(s.requests[1]?.model).toEqual(s.requests[0]?.model)
+    expect((yield* credentials.list(integrationID)).at(-1)?.id).toBe(next.id)
+    expect(yield* s.context).toMatchObject([
+      { type: "user" },
+      Expected.assistant({ finish: "stop" }, [Expected.text("Recovered")]),
+    ])
   })
 
   scenario("caps an excessive provider retry-after delay at fifteen minutes", function* (s) {

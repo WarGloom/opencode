@@ -1,6 +1,7 @@
 import type { ExperimentalSessionApi, SessionApi } from "@opencode/client/effect/api"
 import type { GenerationOptionsFields, Message, SystemPart } from "@opencode/ai/effect"
 import type { Agent } from "@opencode/schema/agent"
+import type { Credential } from "@opencode/schema/credential"
 import type { Model } from "@opencode/schema/model"
 import type { PromptInput } from "@opencode/schema/prompt-input"
 import type { Session } from "@opencode/schema/session"
@@ -165,6 +166,31 @@ export interface SessionRetry {
 }
 
 /**
+ * Outcome of `SessionRetryConnection.switch`: `switched` selected the credential, `moved` found that another choice
+ * already replaced the connection that served the failure and left it intact, `rejected` changed nothing.
+ */
+export type SessionRetryConnectionSwitch = "switched" | "moved" | "rejected"
+
+/**
+ * Runs before `retry` when a primary request failed before any output, on a known connection, while the retry
+ * budget still has an attempt. `connectionKey` is the connection that served the failed attempt. `switch` selects
+ * another saved credential of the same integration only while that connection is still selected; it works once,
+ * during this callback only. After `switched` or `moved`, once the same model is available on another connection,
+ * the Session retries it without delay and `retry` hooks do not run for this failure. Credential selection is
+ * shared by every Session. Experimental.
+ */
+export interface SessionRetryConnection {
+  readonly sessionID: Session.ID
+  readonly agent: Agent.ID
+  readonly model: Model.Ref
+  readonly kind: "primary"
+  readonly error: SessionError.Error
+  readonly attempt: number
+  readonly connectionKey: string
+  readonly switch: (input: { readonly credentialID: Credential.ID }) => Effect.Effect<SessionRetryConnectionSwitch>
+}
+
+/**
  * Background work still running for the idle Session or one of its descendants. `sessionID` is
  * the Session that owns the job: the idle Session itself, or a descendant such as a subagent child.
  */
@@ -232,6 +258,7 @@ export interface SessionHooks {
   readonly "experimental.ws.send": SessionWebSocketSend
   readonly "experimental.ws.receive": SessionWebSocketReceive
   readonly retry: SessionRetry
+  readonly "experimental.retry.connection": SessionRetryConnection
   readonly "experimental.idle": SessionIdle
   readonly "experimental.compaction.continue": SessionCompactionContinue
 }
