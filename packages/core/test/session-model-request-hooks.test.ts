@@ -6,13 +6,19 @@ import { Money } from "@opencode/schema/money"
 import { Session } from "@opencode/schema/session"
 import type { SessionRequestKind } from "@opencode/plugin/effect/session"
 import { Location } from "@opencode/core/location"
+import { Integration } from "@opencode/core/integration"
+import { IntegrationConnection } from "@opencode/core/integration/connection"
+import { Credential } from "@opencode/core/credential"
+import { Model } from "@opencode/core/model"
+import { ModelResolver } from "@opencode/core/model-resolver"
 import { PluginHooks } from "@opencode/core/plugin/hooks"
 import { Project } from "@opencode/core/project"
+import { Provider } from "@opencode/core/provider"
 import { AbsolutePath } from "@opencode/core/schema"
 import { SessionModelRequest } from "@opencode/core/session/model-request"
 import { SessionModelTransport } from "@opencode/core/session/model-transport"
 import { SessionRunnerModel } from "@opencode/core/session/runner/model"
-import { DateTime, Effect, Stream } from "effect"
+import { DateTime, Effect, Ref, Stream } from "effect"
 import { HttpClientRequest, HttpClientResponse } from "effect/http"
 import { testEffect } from "./lib/effect"
 import { PluginTestLayer } from "./plugin/fixture"
@@ -41,45 +47,96 @@ const transport = SessionModelTransport.Service.of({
 })
 
 describe("SessionModelRequest HTTP hooks", () => {
-  it.effect("tags every Session request kind on http.request and http.response", () =>
-    Effect.gen(function* () {
-      const hooks = yield* PluginHooks.Service
-      const seen: Array<{ hook: string; kind: SessionRequestKind; agent: Agent.ID }> = []
-      yield* hooks.register("session", "http.request", (event) =>
-        Effect.sync(() => {
-          seen.push({ hook: "request", kind: event.kind, agent: event.agent })
-        }),
-      )
-      yield* hooks.register("session", "http.response", (event) =>
-        Effect.sync(() => {
-          seen.push({ hook: "response", kind: event.kind, agent: event.agent })
-        }),
-      )
-      const requests = yield* SessionModelRequest.Service.pipe(Effect.provide(SessionModelRequest.layer))
-
-      for (const kind of KINDS) {
-        const prepared = yield* requests[kind]({
-          session,
-          agent: Agent.ID.make("build"),
-          model,
-          system: [],
-          messages: [],
+  for (const selection of [
+    {
+      connection: IntegrationConnection.CredentialInfo.make({
+        type: "credential",
+        id: Credential.ID.make("credential-a"),
+        label: "A",
+        method: "key",
+      }),
+      key: "credential:credential-a",
+    },
+    { connection: IntegrationConnection.EnvInfo.make({ type: "env", name: "FIXTURE_KEY_A" }), key: "env:FIXTURE_KEY_A" },
+    { connection: undefined, key: undefined },
+  ]) {
+    it.effect(`retains selected connection ${selection.key ?? "unknown"} on every request kind after a switch`, () =>
+      Effect.gen(function* () {
+        // Given a provider alias whose integration selects connection A.
+        const integrations = yield* Integration.Service
+        const providers = yield* Provider.Service
+        const active = yield* Ref.make<IntegrationConnection.Info | undefined>(selection.connection)
+        const provider = Provider.Info.make({
+          ...Provider.Info.empty(Provider.ID.make("alias")),
+          integrationID: Integration.ID.make("integration"),
         })
-        const http = prepared.options.http
-        if (!http) throw new Error(`Expected HTTP middleware for ${kind}`)
-        yield* http(HttpClientRequest.post("https://example.test/v1/chat/completions"), (request) =>
-          Effect.succeed(HttpClientResponse.fromWeb(request, new Response("{}", { status: 200 }))),
+        const resolver = yield* ModelResolver.Service.pipe(
+          Effect.provide(ModelResolver.layer),
+          Effect.provideService(Provider.Service, { ...providers, get: () => Effect.succeed(provider) }),
+          Effect.provideService(Integration.Service, {
+            ...integrations,
+            connection: {
+              ...integrations.connection,
+              active: (id) => (id === provider.integrationID ? Ref.get(active) : Effect.die("Wrong integration")),
+              resolve: () => Effect.undefined,
+            },
+          }),
         )
-      }
+        const resolved = yield* resolver.resolveModel(
+          Model.Info.make({
+            ...Model.Info.default(provider.id, Model.ID.make("gpt-5.5")),
+            package: "@opencode/ai/providers/openai",
+          }),
+        )
+        yield* Ref.set(active, IntegrationConnection.EnvInfo.make({ type: "env", name: "FIXTURE_KEY_B" }))
+        const hooks = yield* PluginHooks.Service
+        const seen: Array<{ hook: string; kind: SessionRequestKind; agent: Agent.ID; connectionKey: string | undefined }> = []
+        yield* hooks.register("session", "model.request", (event) =>
+          Effect.sync(() => {
+            seen.push({ hook: "model", kind: event.kind, agent: event.agent, connectionKey: event.connectionKey })
+          }),
+        )
+        yield* hooks.register("session", "http.request", (event) =>
+          Effect.sync(() => {
+            seen.push({ hook: "request", kind: event.kind, agent: event.agent, connectionKey: event.connectionKey })
+          }),
+        )
+        yield* hooks.register("session", "http.response", (event) =>
+          Effect.sync(() => {
+            seen.push({ hook: "response", kind: event.kind, agent: event.agent, connectionKey: event.connectionKey })
+            expect(event.response.bodyUsed).toBe(false)
+          }),
+        )
+        const requests = yield* SessionModelRequest.Service.pipe(Effect.provide(SessionModelRequest.layer))
 
-      expect(seen).toEqual(
-        KINDS.flatMap((kind) => [
-          { hook: "request", kind, agent: Agent.ID.make("build") },
-          { hook: "response", kind, agent: Agent.ID.make("build") },
-        ]),
-      )
-    }).pipe(Effect.provideService(SessionModelTransport.Service, transport)),
-  )
+        // When the resolved model makes a request after the active connection changes to B.
+        for (const kind of KINDS) {
+          const prepared = yield* requests[kind]({
+            session,
+            agent: Agent.ID.make("build"),
+            model: resolved,
+            system: [],
+            messages: [],
+          })
+          const http = prepared.options.http
+          if (!http) throw new Error(`Expected HTTP middleware for ${kind}`)
+          const response = yield* http(HttpClientRequest.post("https://example.test/v1/chat/completions"), (request) =>
+            Effect.succeed(HttpClientResponse.fromWeb(request, new Response("quota-stream", { status: 200 }))),
+          )
+          expect(yield* response.text).toBe("quota-stream")
+        }
+
+        // Then hooks retain A's identity (or unknown) while the response body remains readable.
+        expect(seen).toEqual(
+          KINDS.flatMap((kind) => [
+            { hook: "model", kind, agent: Agent.ID.make("build"), connectionKey: selection.key },
+            { hook: "request", kind, agent: Agent.ID.make("build"), connectionKey: selection.key },
+            { hook: "response", kind, agent: Agent.ID.make("build"), connectionKey: selection.key },
+          ]),
+        )
+      }).pipe(Effect.provideService(SessionModelTransport.Service, transport)),
+    )
+  }
 
   it.effect("sends a kept request's original body and a replaced request's new body", () =>
     Effect.gen(function* () {

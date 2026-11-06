@@ -16,6 +16,7 @@ import { Context, Effect, Layer, Schema, Struct } from "effect"
 import { AISDK } from "./aisdk.js"
 import { Credential } from "./credential.js"
 import { Integration } from "./integration.js"
+import { IntegrationConnection } from "./integration/connection.js"
 import { Capabilities, Compatibility, ID, Info, Model, Ref, VariantID } from "./model.js"
 import type { RuntimeInfo } from "./model.js"
 import { Npm } from "@opencode/util/npm"
@@ -121,6 +122,8 @@ export interface Resolved {
   readonly model: LanguageModel
   /** Selected catalog identity. Durable records and displays must use this, never the API model id. */
   readonly ref: Ref
+  /** Non-secret identity of the selected integration connection; undefined when unknown. */
+  readonly connectionKey?: string
   /** Catalog capabilities used to shape requests before provider lowering. */
   readonly capabilities: Capabilities
   /** Catalog pricing in dollars per million tokens. */
@@ -472,16 +475,17 @@ export const layer = Layer.effect(
       const connection = yield* integrations.connection.active(
         provider?.integrationID ?? Integration.ID.make(selected.providerID),
       )
+      const connectionKey = IntegrationConnection.key(connection)
       const credential = connection ? yield* integrations.connection.resolve(connection) : undefined
       const selectedVariant = yield* withVariant(selected, variant)
       const runtimeInfo: RuntimeInfo = {
         ...selectedVariant,
         settings: Provider.mergeOverlay(provider?.settings, Provider.modelSettings(selectedVariant.settings)),
       }
-      return { provider, credential, runtimeInfo }
+      return { provider, credential, runtimeInfo, connectionKey }
     })
     const load = Effect.fn("ModelResolver.resolveModel")(function* (selected: Info, variant?: VariantID) {
-      const { provider, credential, runtimeInfo } = yield* prepare(selected, variant)
+      const { provider, credential, runtimeInfo, connectionKey } = yield* prepare(selected, variant)
       const model = yield* fromCatalogModel(runtimeInfo, credential, dependencies)
       const runtime =
         provider?.activation === "enabled" &&
@@ -492,6 +496,7 @@ export const layer = Layer.effect(
           : model
       return {
         model: runtime,
+        connectionKey,
         ref: Ref.make({
           id: selected.id,
           providerID: selected.providerID,

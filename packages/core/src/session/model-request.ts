@@ -266,7 +266,7 @@ export const layer = Layer.effect(
     >(kind: SessionRequestKind, input: Input, shape: (draft: SessionRequest, tools: Definitions) => Effect.Effect<S>) {
       const session = input.session
       const model = input.model
-      const scope = { sessionID: session.id, agent: input.agent, model: model.ref, kind }
+      const scope = { sessionID: session.id, agent: input.agent, model: model.ref, kind, connectionKey: model.connectionKey }
       const tools = input.tools ?? {
         definitions: [],
         execute: () => new Tool.Error({ message: "Tools are not available for this request" }),
