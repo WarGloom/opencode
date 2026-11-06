@@ -59,13 +59,20 @@ export interface Interface {
     readonly label?: string
     readonly activate?: boolean
   }) => Effect.Effect<Info>
-  /** Selects a stored credential for its integration. */
-  readonly activate: (id: ID) => Effect.Effect<void>
+  /**
+   * Selects a stored credential for its integration; `rejected` when it is missing or already selected. With `expected`,
+   * an internal compare-and-set: selects it only while `expected` is still the integration's selection, returns
+   * `moved` without writing when another choice replaced it, and rejects a target equal to `expected` or of another
+   * integration.
+   */
+  readonly activate: (id: ID, options?: { readonly expected: ID }) => Effect.Effect<Activation>
   /** Updates the label or secret value of a stored credential. */
   readonly update: (id: ID, updates: Partial<Pick<Info, "label" | "value">>) => Effect.Effect<void>
   /** Removes a stored credential. */
   readonly remove: (id: ID) => Effect.Effect<void>
 }
+
+export type Activation = "switched" | "moved" | "rejected"
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Credential") {}
 
@@ -200,23 +207,33 @@ const layer = Layer.effect(
           )
         return credential
       }),
-      activate: Effect.fn("Credential.activate")(function* (id) {
-        const integrationID = yield* db
+      activate: Effect.fn("Credential.activate")(function* (id, options) {
+        const result = yield* db
           .transaction((tx) =>
             Effect.gen(function* () {
               const credential = yield* tx.select().from(CredentialTable).where(eq(CredentialTable.id, id)).get()
-              if (!credential?.integration_id) return
-              const active = yield* currentActive(tx, credential.integration_id)
-              if (active?.id === id) return
-              yield* switchActive(tx, credential.integration_id, id)
-              return credential.integration_id
+              if (!credential?.integration_id || id === options?.expected) return { outcome: "rejected" as const }
+              const integrationID = credential.integration_id
+              if (options) {
+                const expected = yield* tx
+                  .select({ integrationID: CredentialTable.integration_id })
+                  .from(CredentialTable)
+                  .where(eq(CredentialTable.id, options.expected))
+                  .get()
+                if (expected && expected.integrationID !== integrationID) return { outcome: "rejected" as const }
+              }
+              const active = yield* currentActive(tx, integrationID)
+              if (options && active?.id !== options.expected) return { outcome: "moved" as const }
+              if (active?.id === id) return { outcome: "rejected" as const }
+              yield* switchActive(tx, integrationID, id)
+              return { outcome: "switched" as const, integrationID }
             }),
           )
           .pipe(logFailure("credential activate failed", { credentialID: id }))
-        if (integrationID) {
-          yield* Effect.logInfo("credential activated", { integrationID, credentialID: id })
-          yield* bus.publish(Event.Switched, { integrationID, credentialID: id }, { global: true })
-        }
+        if (result.outcome !== "switched") return result.outcome
+        yield* Effect.logInfo("credential activated", { integrationID: result.integrationID, credentialID: id })
+        yield* bus.publish(Event.Switched, { integrationID: result.integrationID, credentialID: id }, { global: true })
+        return result.outcome
       }),
       update: Effect.fn("Credential.update")(function* (id, updates) {
         if (updates.label === undefined && updates.value === undefined) return
