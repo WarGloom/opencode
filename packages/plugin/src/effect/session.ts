@@ -85,6 +85,8 @@ export interface SessionModelRequest {
   readonly agent: Agent.ID
   readonly model: Model.Ref
   readonly kind: SessionRequestKind
+  /** Non-secret identity of the connection selected at model resolution; undefined when unknown. */
+  readonly connectionKey?: string
   baseURL?: string
   headers: Record<string, string>
 }
@@ -94,6 +96,8 @@ export interface SessionHttpRequest {
   readonly agent: Agent.ID
   readonly model: Model.Ref
   readonly kind: SessionRequestKind
+  /** Non-secret identity of the connection selected at model resolution; undefined when unknown. */
+  readonly connectionKey?: string
   request: Request
 }
 
@@ -102,6 +106,8 @@ export interface SessionHttpResponse {
   readonly agent: Agent.ID
   readonly model: Model.Ref
   readonly kind: SessionRequestKind
+  /** Non-secret identity of the connection selected at model resolution; undefined when unknown. */
+  readonly connectionKey?: string
   readonly request: Request
   response: Response
 }
