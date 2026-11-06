@@ -44,6 +44,11 @@ export const make = (
       .pipe(
         Effect.catchTag("SessionInbox.LifecycleConflict", () => new SyntheticConflictError({ sessionID, inputID: id })),
       )
-    if (input.resume !== false && !(yield* get).revert) yield* wake(sessionID)
+    if (
+      input.resume !== false &&
+      (yield* inbox.list(sessionID)).some((item) => item.id === admitted.id) &&
+      !(yield* get).revert
+    )
+      yield* wake(sessionID)
     return admitted
   }, Effect.uninterruptible)

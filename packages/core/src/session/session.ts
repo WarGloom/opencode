@@ -17,7 +17,6 @@ import {
   InboxConflictError,
   NotFoundError,
   PromptConflictError,
-  SyntheticConflictError,
 } from "./error.js"
 import { SessionEvent } from "./event.js"
 import { SessionExecution } from "./execution.js"
