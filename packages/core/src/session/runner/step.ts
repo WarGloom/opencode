@@ -46,13 +46,14 @@ interface Input {
   readonly assistantMessageID: SessionMessage.ID
   readonly agent: Agent.ID
   readonly model: SessionRunnerModel.Resolved
-  readonly prepared: Omit<SessionModelRequest.Prepared, "event">
+  readonly prepared: Omit<SessionModelRequest.Prepared, "event" | "retryConnection">
   /** Set when this attempt runs because an earlier one in the step scheduled a retry. */
   readonly retryAttempt?: number
   readonly retry: (
     cause: AIError,
     error: SessionError.Error,
     retry: boolean,
+    outputStarted: boolean,
   ) => Effect.Effect<{ readonly retry: false } | SessionRunnerRetry.Decision>
   readonly recoverContinuation: boolean
   /** The runner owns compaction policy; the attempt invokes it only before durable output. */
@@ -217,6 +218,7 @@ export const make = Effect.gen(function* () {
                   llmError,
                   SessionRunnerRetry.isRetryable(llmFailure) ||
                     (recorded.outputStarted && isInterruptedStream(llmFailure)),
+                  recorded.outputStarted,
                 ),
               )
             : undefined

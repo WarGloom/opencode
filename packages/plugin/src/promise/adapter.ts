@@ -8,7 +8,7 @@ import { HttpApiEndpoint, HttpApiSchema } from "effect/http-api"
 import { define } from "../effect/plugin.js"
 import type { ToolFailures, ToolHooks } from "../effect/tool.js"
 import type { SessionHooks } from "../effect/session.js"
-import type { SessionIdle } from "./session.js"
+import type { SessionIdle, SessionRetryConnection } from "./session.js"
 import { AssertInput } from "../permission.js"
 import type { Plugin } from "./plugin.js"
 import type { Info } from "./tool.js"
@@ -17,7 +17,10 @@ import type { RpcDomain, RpcHandlers } from "./rpc.js"
 type HostRegistration = { readonly dispose: Effect.Effect<void> }
 type Registration = { readonly dispose: () => Promise<void> }
 type PromiseContext = Parameters<Plugin["setup"]>[0]
-type PromiseSessionHooks = Omit<SessionHooks, "experimental.idle"> & { readonly "experimental.idle": SessionIdle }
+type PromiseSessionHooks = Omit<SessionHooks, "experimental.idle" | "experimental.retry.connection"> & {
+  readonly "experimental.idle": SessionIdle
+  readonly "experimental.retry.connection": SessionRetryConnection
+}
 type HostRpc = Parameters<Parameters<typeof define>[0]["effect"]>[0]["rpc"]
 type StreamAdapter = <A, E>(
   stream: Stream.Stream<A, E>,
@@ -269,6 +272,7 @@ export function fromPromise(plugin: Plugin) {
           retry: (event) => event,
           "experimental.compaction.continue": (event) => event,
           "experimental.idle": (event) => ({ ...event, admit: (input) => run(event.admit(input)) }),
+          "experimental.retry.connection": (event) => ({ ...event, switch: (input) => run(event.switch(input)) }),
         }
 
         const promiseExecutor =

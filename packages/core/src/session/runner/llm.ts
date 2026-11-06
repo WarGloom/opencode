@@ -1,9 +1,11 @@
 export * as SessionRunnerLLM from "./llm.js"
 
 import { Message } from "@opencode/ai/effect"
+import { Model } from "@opencode/schema/model"
 import { and, desc, eq, inArray, sql } from "drizzle-orm"
 import { Cause, Effect, Exit, FiberMap, Layer } from "effect"
 import { Database } from "../../database/database.js"
+import { Credential } from "../../credential.js"
 import { Bus } from "../../bus.js"
 import { LocationLifecycle } from "../../location-lifecycle.js"
 import { InstructionState } from "../instruction-state.js"
@@ -57,6 +59,7 @@ const layer = Layer.effect(
     const hooks = yield* PluginHooks.Service
     const jobs = yield* Job.Service
     const title = yield* SessionTitle.Service
+    const credentials = yield* Credential.Service
     const steps = yield* SessionStep.make
     // Title generation starts once input is visible and must not delay model execution.
     const titles = yield* FiberMap.make<SessionSchema.ID, void, never>()
@@ -304,6 +307,7 @@ const layer = Layer.effect(
               request: prepared.request,
               options: prepared.options,
               retry: prepared.retry,
+              retryConnection: prepared.retryConnection,
               executeTool: prepared.executeTool,
             })),
           )
@@ -319,7 +323,7 @@ const layer = Layer.effect(
             executeTool: (call) => plugins.awaitActivation.pipe(Effect.andThen(prepared.executeTool(call))),
           },
           retryAttempt,
-          retry: (cause, error, proposed) =>
+          retry: (cause, error, proposed, outputStarted) =>
             retry.decide({
               cause,
               error,
@@ -327,6 +331,16 @@ const layer = Layer.effect(
               model: loaded.model.ref,
               hook: prepared.retry,
               retry: proposed,
+              connection: {
+                served: loaded.model.connectionKey,
+                outputStarted,
+                hook: prepared.retryConnection,
+                switch: (credentialID) => switchConnection(loaded.model.connectionKey, credentialID),
+                ready: SessionRunnerRetry.awaitReady(
+                  bus.subscribe(Model.Event.Updated),
+                  servesElsewhere(sessionID, loaded.model),
+                ),
+              },
             }),
           recoverContinuation,
           recoverOverflow: Effect.suspend(() =>
@@ -438,6 +452,27 @@ const layer = Layer.effect(
       return event.enabled
     })
 
+    // Only a saved credential can be replaced; an environment connection has no stored selection to compare.
+    const switchConnection = (served: string | undefined, credentialID: Credential.ID) =>
+      served?.startsWith("credential:")
+        ? credentials.activate(credentialID, { expected: Credential.ID.make(served.slice("credential:".length)) })
+        : Effect.succeed("rejected" as const)
+
+    // Resolves as the next attempt will, so readiness means that attempt runs the same model on another connection.
+    const servesElsewhere = (sessionID: SessionSchema.ID, served: SessionContext.Loaded["model"]) =>
+      context.select(sessionID).pipe(
+        Effect.flatMap((selected) => context.resolveModel(selected.session)),
+        Effect.map(
+          (resolved) =>
+            resolved.ref.providerID === served.ref.providerID &&
+            resolved.ref.id === served.ref.id &&
+            resolved.ref.variant === served.ref.variant &&
+            resolved.connectionKey !== undefined &&
+            resolved.connectionKey !== served.connectionKey,
+        ),
+        Effect.orElseSucceed(() => false),
+      )
+
     const settleStaleCompactions = Effect.fn("SessionRunner.settleStaleCompactions")(function* (
       sessionID: SessionSchema.ID,
     ) {
@@ -518,5 +553,6 @@ export const node = makeLocationNode({
     Snapshot.node,
     ToolOutput.node,
     Database.node,
+    Credential.node,
   ],
 })

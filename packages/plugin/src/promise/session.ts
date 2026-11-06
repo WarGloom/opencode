@@ -1,6 +1,7 @@
 import type { ExperimentalSessionApi, SessionApi } from "@opencode/client/promise/api"
 import type { GenerationOptionsFields, Message, SystemPart } from "@opencode/ai/effect"
 import type { Agent } from "@opencode/schema/agent"
+import type { Credential } from "@opencode/schema/credential"
 import type { Model } from "@opencode/schema/model"
 import type { PromptInput } from "@opencode/schema/prompt-input"
 import type { Session } from "@opencode/schema/session"
@@ -10,7 +11,7 @@ import type { SessionMessage } from "@opencode/schema/session-message"
 import type { TokenUsage } from "@opencode/schema/token-usage"
 import type { JsonSchema, Types } from "effect"
 import type { Registration } from "./registration.js"
-import type { ContinueAfterIdleInput, ContinueAfterIdleOutcome, ContinueAfterFailureInput, ContinueAfterFailureOutcome, PluginInterruptResult, SessionHookOptions } from "../effect/session.js"
+import type { ContinueAfterIdleInput, ContinueAfterIdleOutcome, ContinueAfterFailureInput, ContinueAfterFailureOutcome, PluginInterruptResult, SessionHookOptions, SessionRetryConnectionSwitch } from "../effect/session.js"
 
 export interface SessionPrompt {
   readonly sessionID: Session.ID
@@ -161,6 +162,25 @@ export interface SessionRetry {
 }
 
 /**
+ * Runs before `retry` when a primary request failed before any output, on a known connection, while the retry
+ * budget still has an attempt. `connectionKey` is the connection that served the failed attempt. `switch` selects
+ * another saved credential of the same integration only while that connection is still selected; it works once,
+ * during this callback only. After `switched` or `moved`, once the same model is available on another connection,
+ * the Session retries it without delay and `retry` hooks do not run for this failure. Credential selection is
+ * shared by every Session. Experimental.
+ */
+export interface SessionRetryConnection {
+  readonly sessionID: Session.ID
+  readonly agent: Agent.ID
+  readonly model: Model.Ref
+  readonly kind: "primary"
+  readonly error: SessionError.Error
+  readonly attempt: number
+  readonly connectionKey: string
+  readonly switch: (input: { readonly credentialID: Credential.ID }) => Promise<SessionRetryConnectionSwitch>
+}
+
+/**
  * Background work still running for the idle Session or one of its descendants. `sessionID` is
  * the Session that owns the job: the idle Session itself, or a descendant such as a subagent child.
  */
@@ -227,6 +247,7 @@ export interface SessionHooks {
   readonly "experimental.ws.send": SessionWebSocketSend
   readonly "experimental.ws.receive": SessionWebSocketReceive
   readonly retry: SessionRetry
+  readonly "experimental.retry.connection": SessionRetryConnection
   readonly "experimental.idle": SessionIdle
   readonly "experimental.compaction.continue": SessionCompactionContinue
 }
@@ -253,7 +274,7 @@ export type SessionDomain = Pick<
     readonly hook: <Name extends keyof SessionHooks>(name: Name, callback: (event: SessionHooks[Name]) => void | Promise<void>, options?: SessionHookOptions<Name>) => Promise<Registration>
   }
 
-export type { ContinueAfterIdleInput, ContinueAfterIdleOutcome, ContinueAfterFailureInput, ContinueAfterFailureOutcome, PluginInterruptResult } from "../effect/session.js"
+export type { ContinueAfterIdleInput, ContinueAfterIdleOutcome, ContinueAfterFailureInput, ContinueAfterFailureOutcome, PluginInterruptResult, SessionRetryConnectionSwitch } from "../effect/session.js"
 
 /** Native continuation after a failed idle boundary. Experimental. */
 export interface ExperimentalSessionDomain {
