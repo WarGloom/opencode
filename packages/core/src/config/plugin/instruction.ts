@@ -36,8 +36,9 @@ export const Plugin = define({
       const start = yield* fs.resolve(location.directory)
       const root = yield* fs.resolve(location.project.directory)
       const home = yield* fs.resolve(global.home)
+      const trusted = discovery.root && path.isAbsolute(discovery.root) ? yield* fs.resolve(discovery.root) : undefined
       const project = discovery.project && FSUtil.contains(root, start)
-      const stop = FSUtil.contains(home, start) ? home : root
+      const stop = trusted && FSUtil.contains(trusted, start) ? trusted : FSUtil.contains(home, start) ? home : root
       const globalFile = yield* fs.resolve(join(global.config, "AGENTS.md"))
       // ~/.claude/CLAUDE.md stands in for the global AGENTS.md when it is missing.
       const claudeGlobalFile = yield* fs.resolve(join(home, ".claude", "CLAUDE.md"))

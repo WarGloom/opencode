@@ -193,6 +193,7 @@ function makeRoutes(
       InstructionDiscovery.configured({
         project: options.config?.project,
         claude: options.instructions?.claude,
+        root: options.instructionRoot,
       }),
     ),
     ShellSelect.node.replace(ShellSelect.configured({ gitbash: options.windows?.gitbash })),

@@ -25,6 +25,7 @@ export const ServerOptions = Schema.Struct({
     }),
   ),
   models: Schema.optional(ModelsDev.Options),
+  instructionRoot: Schema.optional(Schema.String),
   /**
    * Replaces `globalThis.fetch` for OpenCode's own HTTP requests: OpenCode Console config, model requests, web fetch
    * and search, well-known config, and remote MCP servers. Agent code in Code Mode keeps `globalThis.fetch`. For

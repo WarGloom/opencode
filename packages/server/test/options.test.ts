@@ -25,6 +25,11 @@ test("accepts durable event persistence configuration", () => {
   expect(Option.getOrThrow(decode({ events: { persist: true } })).events).toEqual({ persist: true })
 })
 
+test("accepts an instruction ancestry root", () => {
+  expect(Option.getOrThrow(decode({ instructionRoot: "/workspace" })).instructionRoot).toBe("/workspace")
+  expect(Option.isNone(decode({ instructionRoot: 42 }))).toBe(true)
+})
+
 test("accepts an optional CORS allowlist", () => {
   expect(Option.getOrThrow(decode({})).cors).toBeUndefined()
   expect(Option.getOrThrow(decode({ cors: [] })).cors).toEqual([])
