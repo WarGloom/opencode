@@ -33,6 +33,7 @@ const instructionLayer = (input: {
   instructions?: string[]
   http?: HttpClient.HttpClient
   project?: boolean
+  root?: string
 }) => {
   const watcher = Watcher.testLayer
   const config = Config.testLayer(input.instructions ? [configured(input.instructions)] : [])
@@ -49,7 +50,7 @@ const instructionLayer = (input: {
       ]),
       [
         Config.node.replace(config),
-        InstructionDiscovery.node.replace(InstructionDiscovery.configured({ project: input.project })),
+        InstructionDiscovery.node.replace(InstructionDiscovery.configured({ project: input.project, root: input.root })),
         Global.node.replace(
           input.config || input.home
             ? Global.layerWith({
@@ -195,6 +196,56 @@ describe("InstructionDiscovery", () => {
 })
 
 describe("ConfigInstructionPlugin.Plugin", () => {
+  it.live("uses a trusted ancestor root without replacing the home fallback", () =>
+    tmpdirScoped().pipe(
+      Effect.flatMap((tmp) => {
+        const home = path.join(tmp.path, "home")
+        const shared = path.join(home, "shared")
+        const project = path.join(shared, "repo")
+        const directory = path.join(project, "src")
+        const homeFile = path.join(home, "AGENTS.md")
+        const sharedFile = path.join(shared, "AGENTS.md")
+        const projectFile = path.join(project, "AGENTS.md")
+        const run = (root: string, projectEnabled = true, homeDirectory = home) =>
+          Effect.gen(function* () {
+            const discovery = yield* start()
+            return yield* discovery.list()
+          }).pipe(
+            Effect.provide(instructionLayer({
+              home: homeDirectory,
+              root,
+              project: projectEnabled,
+              locationServiceLayer: Layer.succeed(Location.Service, Location.Service.of(
+                location({ directory: AbsolutePath.make(directory) }, { projectDirectory: AbsolutePath.make(project) }),
+              )),
+            })),
+            Effect.scoped,
+          )
+        return Effect.gen(function* () {
+          yield* Effect.promise(async () => {
+            await fs.mkdir(directory, { recursive: true })
+            await fs.writeFile(homeFile, "home")
+            await fs.writeFile(sharedFile, "shared")
+            await fs.writeFile(projectFile, "project")
+          })
+          expect(yield* run(shared)).toEqual([file(projectFile, "project"), file(sharedFile, "shared")])
+          expect(yield* run(shared, true, path.join(tmp.path, "isolated-home"))).toEqual([
+            file(projectFile, "project"), file(sharedFile, "shared"),
+          ])
+          expect(yield* run(path.join(tmp.path, "other"), true, path.join(tmp.path, "isolated-home"))).toEqual([
+            file(projectFile, "project"),
+          ])
+          expect(yield* run(path.join(tmp.path, "other"))).toEqual([
+            file(projectFile, "project"), file(sharedFile, "shared"), file(homeFile, "home"),
+          ])
+          expect(yield* run("relative")).toEqual([
+            file(projectFile, "project"), file(sharedFile, "shared"), file(homeFile, "home"),
+          ])
+          expect(yield* run(shared, false)).toEqual([])
+        })
+      }),
+    ),
+  )
   it.live("loads global and upward project files and rescans them on change", () =>
     tmpdirScoped().pipe(
       Effect.flatMap((tmp) => {
