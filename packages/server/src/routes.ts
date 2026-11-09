@@ -141,7 +141,9 @@ function makeRoutes<AuthError, AuthServices>(
         content: options.config?.content,
       }),
     ),
-    InstructionDiscovery.node.replace(InstructionDiscovery.configured({ project: options.config?.project })),
+    InstructionDiscovery.node.replace(
+      InstructionDiscovery.configured({ project: options.config?.project, claude: options.config?.claude, root: options.instructionRoot }),
+    ),
     ShellSelect.node.replace(ShellSelect.configured({ gitbash: options.windows?.gitbash })),
     Mcp.node.replace(
       Mcp.configured({
