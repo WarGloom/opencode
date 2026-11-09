@@ -171,6 +171,21 @@ export const Plugin = {
                 if (result.target.environment.id !== environment.id) return
                 const resolved = yield* fs.resolve(result.target.absolute)
                 const root = yield* fs.resolve(workingDirectory.absolute)
+                if (
+                  (input.offset === undefined || input.offset === 1) &&
+                  result.content.type === "text" &&
+                  result.content.offset === 1 &&
+                  result.content.next === undefined &&
+                  FSUtil.contains(root, resolved)
+                )
+                  yield* sessionInstructions.load({
+                    sessionID: context.sessionID,
+                    paths: [resolved],
+                    retained: {
+                      content: result.content.content,
+                      page: true,
+                    },
+                  })
                 // The Location and its ancestors are already supplied by initial instructions,
                 // even when an upward walk from elsewhere in the project cannot reach root.
                 const discovered = yield* fs.up({

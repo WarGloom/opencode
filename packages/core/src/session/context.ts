@@ -34,6 +34,7 @@ import { SessionCwd } from "./cwd.js"
 import { SessionCwdInstructions } from "./cwd-instructions.js"
 import { AgentNotFoundError } from "./error.js"
 import { SessionHistory } from "./history.js"
+import { SessionInstructions } from "./instructions.js"
 import { InstructionEntry } from "./instruction-entry.js"
 import { SessionMessage } from "./message.js"
 import { SessionModelRequest } from "./model-request.js"
@@ -108,6 +109,7 @@ const layer = Layer.effect(
     const request = yield* SessionModelRequest.Service
     const referenceInstructions = yield* ReferenceInstructions.Service
     const skillInstructions = yield* SkillInstructions.Service
+    const sessionInstructions = yield* SessionInstructions.Service
     const store = yield* SessionStore.Service
     const registry = yield* Tool.Service
     const services = yield* CodeModeTool.services
@@ -204,6 +206,7 @@ const layer = Layer.effect(
           mcp: mcpInstructions.load(tools),
           machines: machineInstructions.load(),
           entries: entries.load(sessionID),
+          retained: sessionInstructions.source({ sessionID, permissions }),
         },
         { concurrency: "unbounded" },
       )
@@ -223,6 +226,7 @@ const layer = Layer.effect(
           loaded.discovery,
           loaded.builtins,
           loaded.cwd,
+          loaded.retained,
           loaded.entries,
           // Last: it changes whenever the user switches agents, so the sources above stay cached.
           AgentInstructions.make(agent.info),
@@ -296,6 +300,7 @@ export const node = makeLocationNode({
     SessionModelRequest.node,
     SessionStore.node,
     SkillInstructions.node,
+    SessionInstructions.node,
     Tool.node,
     WebSearch.node,
   ],
