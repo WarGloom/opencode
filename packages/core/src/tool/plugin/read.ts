@@ -135,6 +135,23 @@ export const Plugin = {
                 if (result.target.externalDirectory !== undefined) return
                 const resolved = yield* fs.resolve(result.target.absolute)
                 const root = yield* fs.resolve(location.directory)
+                if (
+                  (input.offset === undefined || input.offset === 1) &&
+                  ((result.content.type === "file" && result.content.encoding === "utf8") ||
+                    (result.content.type === "text-page" &&
+                      result.content.offset === 1 &&
+                      !result.content.truncated &&
+                      result.content.next === undefined)) &&
+                  FSUtil.contains(root, resolved)
+                )
+                  yield* sessionInstructions.load({
+                    sessionID: context.sessionID,
+                    paths: [resolved],
+                    retained: {
+                      content: result.content.content,
+                      ...(result.content.type === "text-page" ? { page: true } : {}),
+                    },
+                  })
                 // The Location and its ancestors are already supplied by initial instructions,
                 // even when an upward walk from elsewhere in the project cannot reach root.
                 const discovered = yield* fs.up({
