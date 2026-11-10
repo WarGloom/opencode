@@ -263,6 +263,7 @@ export function fromPromise(plugin: Plugin) {
           compaction: (event) => event,
           generate: (event) => event,
           title: (event) => event,
+          "experimental.model.resolve": (event) => event,
           "model.request": (event) => event,
           "http.request": (event) => event,
           "http.response": (event) => event,
