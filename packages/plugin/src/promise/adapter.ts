@@ -375,6 +375,7 @@ export function fromPromise(plugin: Plugin) {
             variant: { resolve: (input) => run(host.experimental.variant.resolve(input)) },
             model: { configuredInputs: () => run(host.experimental.model.configuredInputs()) },
             session: {
+              handoff: (input) => run(host.experimental.session.handoff(input)),
               continueAfterIdle: (input) => run(host.experimental.session.continueAfterIdle(input)),
               recover: (input, callback, options) => Effect.runPromiseWith(runtime)(host.experimental.session.recover(input, (boundary) => Effect.tryPromise(() => callback(boundary))), options),
               environment: (input) => run(host.experimental.session.environment(input)),

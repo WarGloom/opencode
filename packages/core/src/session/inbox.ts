@@ -211,6 +211,7 @@ export const make = Effect.fn("SessionInbox.make")(function* () {
     readonly item: Item & { readonly type: Type }
     readonly expectedSequence?: number
     readonly activations?: ReadonlyArray<Activation>
+    readonly commit?: Bus.PublishOptions["commit"]
   }) {
     const existing = yield* reconcile({ ...request, type: request.item.type, delivery: request.item.delivery })
     if (existing !== undefined) return existing
@@ -234,7 +235,7 @@ export const make = Effect.fn("SessionInbox.make")(function* () {
             [
               SessionEvent.InboxEnqueued,
               { inboxID: request.id, sessionID: request.sessionID, item: request.item },
-              { expectedSequence: request.expectedSequence },
+              { expectedSequence: request.expectedSequence, commit: request.commit },
             ] as const,
           ])
           .pipe(Effect.map((events) => events[events.length - 1]))
@@ -245,7 +246,7 @@ export const make = Effect.fn("SessionInbox.make")(function* () {
             sessionID: request.sessionID,
             item: request.item,
           },
-          { expectedSequence: request.expectedSequence },
+          { expectedSequence: request.expectedSequence, commit: request.commit },
         ))
       .pipe(
         Effect.map((event) =>

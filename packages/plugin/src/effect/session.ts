@@ -11,6 +11,7 @@ import type { SessionMessage } from "@opencode/schema/session-message"
 import type { TokenUsage } from "@opencode/schema/token-usage"
 import type { Effect, JsonSchema, Scope, Types } from "effect"
 import type { ModelHookOptions, Registration } from "./registration.js"
+import type { HandoffInput, HandoffReceipt } from "../session-handoff.js"
 
 export type SessionHookOptions<Name> = Name extends "prompt" | "experimental.idle" ? never : ModelHookOptions
 
@@ -323,6 +324,8 @@ export interface PluginInterruptResult {
 
 /** Native continuation after a failed idle boundary. Experimental. */
 export interface ExperimentalSessionDomain {
+  /** Checks or admits one project-bound peer message. Commit only after explicit user approval. Experimental. */
+  readonly handoff: (input: HandoffInput) => Effect.Effect<HandoffReceipt, unknown>
   /** Admits at the newest succeeded idle with no pending input, waking child or staged revert. Experimental. */
   readonly continueAfterIdle: (input: ContinueAfterIdleInput) => Effect.Effect<ContinueAfterIdleOutcome, unknown>
   readonly recover: (input: { readonly sessionID: Session.ID }, callback: (input: { readonly boundaryID: SessionMessage.ID }) => Effect.Effect<boolean, unknown>) => Effect.Effect<boolean, unknown>

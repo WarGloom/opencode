@@ -279,9 +279,12 @@ export type SessionDomain = Pick<
   }
 
 export type { ContinueAfterIdleInput, ContinueAfterIdleOutcome, ContinueAfterFailureInput, ContinueAfterFailureOutcome, PluginInterruptResult, SessionRetryConnectionSwitch } from "../effect/session.js"
+import type { HandoffInput, HandoffReceipt } from "../session-handoff.js"
 
 /** Native continuation after a failed idle boundary. Experimental. */
 export interface ExperimentalSessionDomain {
+  /** Checks or admits one project-bound peer message. Commit only after explicit user approval. Experimental. */
+  readonly handoff: (input: HandoffInput) => Promise<HandoffReceipt>
   /** Admits at the newest succeeded idle with no pending input, waking child or staged revert. Experimental. */
   readonly continueAfterIdle: (input: ContinueAfterIdleInput) => Promise<ContinueAfterIdleOutcome>
   readonly recover: (input: { readonly sessionID: Session.ID }, callback: (input: { readonly boundaryID: SessionMessage.ID }) => Promise<boolean>, options?: { readonly signal?: AbortSignal }) => Promise<boolean>
