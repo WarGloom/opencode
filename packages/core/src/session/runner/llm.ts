@@ -457,7 +457,7 @@ const layer = Layer.effect(
     // Resolves as the next attempt will, so readiness means that attempt runs the same model on another connection.
     const servesElsewhere = (sessionID: SessionSchema.ID, served: SessionContext.Loaded["model"]) =>
       context.select(sessionID).pipe(
-        Effect.flatMap((selected) => context.resolveModel(selected.session)),
+        Effect.flatMap((selected) => context.resolveModel(selected.session, { kind: "primary", agent: selected.agent.id })),
         Effect.map(
           (resolved) =>
             resolved.ref.providerID === served.ref.providerID &&
