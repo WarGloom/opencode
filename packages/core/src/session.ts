@@ -49,6 +49,7 @@ import { Node } from "@opencode/util/effect/app-node"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { SessionEvent } from "./session/event.js"
 import { SessionInbox } from "./session/inbox.js"
+import { SessionHandoff } from "./session/handoff.js"
 import { InstructionState } from "./session/instruction-state.js"
 import { SessionGenerate } from "./session/generate.js"
 import { SessionCommand } from "./session/command.js"
@@ -128,6 +129,7 @@ export { DestinationNotFoundError, DestinationNotDirectoryError, DestinationUnav
 export { TurnRangeError }
 
 export interface Interface {
+  readonly handoff: Effect.Success<typeof SessionHandoff.make>
   /** A cursor carries the filters of the request that produced it, so filters passed with a cursor are ignored. */
   readonly list: (input?: ListFilter & { readonly limit?: number; readonly cursor?: ListCursor }) => Effect.Effect<
     {
@@ -325,11 +327,13 @@ const layer = Layer.effect(
     const locations = yield* LocationServiceMap.Service
     const inbox = yield* SessionInbox.Service
     const sessions = yield* Session.make()
+    const handoff = yield* SessionHandoff.make
     const mediaBlob = (session: SessionSchema.Info) => SessionBlob.enabledFor(instances, session)
     const isDurableSessionEvent = (item: Bus.LogItem): item is SessionEvent.DurableEvent =>
       Object.hasOwn(SessionEvent.Durable.cases, item.type)
 
     const result = Service.of({
+      handoff,
       create: Effect.fn("Session.create")(function* (input) {
         const sessionID = input.id ?? SessionSchema.ID.create()
         const recorded = yield* store.get(sessionID)

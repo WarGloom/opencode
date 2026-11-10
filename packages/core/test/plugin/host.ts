@@ -79,6 +79,7 @@ export function host(overrides: Overrides = {}): Plugin.Context {
       variant: { resolve: () => Effect.die("unused experimental.variant.resolve") },
       model: { configuredInputs: () => Effect.die("unused experimental.model.configuredInputs") },
       session: {
+        handoff: () => Effect.die("unused experimental.session.handoff"),
         continueAfterIdle: () => Effect.die("unused experimental.session.continueAfterIdle"),
         recover: () => Effect.die("unused experimental.session.recover"),
         environment: () => Effect.die("unused experimental.session.environment"),

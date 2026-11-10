@@ -329,6 +329,7 @@ export const make = Effect.fn("PluginHost.make")(function* (plugin: Pick<Interfa
         }),
       },
       session: {
+        handoff: (input) => sessions.handoff({ ...input, pluginID, location: locationInfo() }),
         continueAfterIdle: (input) => sessions.continueAfterIdle(input),
         environment: (input) => Effect.gen(function* () {
           yield* sessions.get(input.sessionID)
