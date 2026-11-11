@@ -4,6 +4,7 @@ import { RGBA } from "@opentui/core"
 import { testRender } from "@opentui/solid"
 import type { Context } from "@opencode/plugin/tui/context"
 import { SidebarActivity } from "../../src/feature-plugins/sidebar/activity"
+import { createStore } from "solid-js/store"
 
 type Session = {
   id: string
@@ -108,4 +109,73 @@ test("an idle session still shows the workspace toggle when its project is busy"
   expect(text).toContain("Activity")
   expect(text).not.toContain("Activity (")
   expect(text).toContain("▶ Workspace (1 agent)")
+})
+
+test.each([
+  { change: "start", summary: "1 agent · 1 sub · 2 tasks · 1 cmd", workspace: "1 agent · 1 cmd" },
+  { change: "end", summary: "1 agent · 1 sub · 1 cmd", workspace: "1 agent · 1 cmd" },
+  { change: "append", summary: "1 agent · 1 sub · 2 tasks · 1 cmd", workspace: "1 agent · 1 cmd" },
+  { change: "remove", summary: "1 agent · 1 sub · 1 cmd", workspace: "1 agent · 1 cmd" },
+  { change: "replace", summary: "1 agent · 1 sub · 2 tasks · 2 cmds", workspace: "1 agent · 1 cmd" },
+  { change: "rename", summary: "1 agent · 1 sub · 2 tasks", workspace: "1 agent · 1 cmd" },
+  { change: "leave", summary: "1 agent · 1 task", workspace: "1 agent · 1 cmd" },
+  { change: "join", summary: "1 agent · 1 sub · 1 task · 1 cmd", workspace: "1 agent · 1 cmd" },
+  { change: "workspace-remove", summary: "1 agent · 1 sub · 1 task · 1 cmd", workspace: "1 agent" },
+] as const)("activity updates $change without revisiting unchanged resident history", async (item) => {
+  let reads = 0
+  const tool = (name: string, status: "running" | "streaming" | "completed" = "running") => ({
+    type: "assistant" as const,
+    content: [{ type: "tool" as const, name, state: { status } }],
+  })
+  const historical = () => Array.from({ length: 2_000 }, (): ReturnType<typeof tool> => {
+    const content = tool("read", "completed").content
+    return {
+      type: "assistant",
+      get content() {
+        reads++
+        return content
+      },
+    }
+  })
+  const [messages, updateMessages] = createStore({
+    root: [...historical(), tool("task"), tool("task", "streaming")],
+    child: [tool("shell")],
+    peer: [...historical(), tool("shell")],
+  })
+  const [active, updateActive] = createStore(item.change === "join" ? ["root", "peer"] : ["root", "child", "peer"])
+  const value = context(sessions, active)
+  const histories = new Map([
+    ["root", () => messages.root],
+    ["child", () => messages.child],
+    ["peer", () => messages.peer],
+  ])
+  Object.assign(value.data.session.message, {
+    list: (id: string) => histories.get(id)?.() ?? [],
+  })
+  await using app = await testRender(() => <SidebarActivity context={value} sessionID="root" />, { width: 80, height: 20 })
+  await app.renderOnce()
+  expect(app.captureCharFrame()).toContain(item.change === "join" ? "Activity (1 agent · 1 task)" : "Activity (1 agent · 1 sub · 1 task · 1 cmd)")
+  expect(app.captureCharFrame()).toContain("▶ Workspace (1 agent · 1 cmd)")
+  reads = 0
+
+  switch (item.change) {
+    case "start": updateMessages("root", 2_001, "content", 0, "state", "status", "running"); break
+    case "end": updateMessages("root", 2_000, "content", 0, "state", "status", "completed"); break
+    case "append": updateMessages("root", 2_001, "content", (parts) => [...parts, ...tool("task").content]); break
+    case "remove": updateMessages("root", (rows) => rows.filter((_, index) => index !== 2_000)); break
+    case "replace": updateMessages("root", 2_001, "content", [...tool("task").content, ...tool("shell").content]); break
+    case "rename": updateMessages("child", 0, "content", 0, "name", "task"); break
+    case "leave": updateActive(["root", "peer"]); break
+    case "join": updateActive(["root", "child", "peer"]); break
+    case "workspace-remove": updateMessages("peer", (rows) => rows.slice(0, -1)); break
+    default: item satisfies never
+  }
+  await app.renderOnce()
+  expect(app.captureCharFrame()).toContain(`Activity (${item.summary})`)
+  expect(app.captureCharFrame()).toContain(`▶ Workspace (${item.workspace})`)
+  if (item.change !== "leave" && item.change !== "join") expect(reads).toBe(0)
+  app.renderer.destroy()
+  reads = 0
+  updateMessages("root", 2_000, "content", [])
+  expect(reads).toBe(0)
 })
