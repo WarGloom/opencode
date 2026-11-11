@@ -32,6 +32,7 @@ export interface Interface {
    * Sequence-bounded lookups use it to find only work created by this period.
    */
   readonly periodStartSeq: (sessionID: SessionSchema.ID) => Effect.Effect<number | undefined>
+  readonly bindJob: (sessionID: SessionSchema.ID, generation: string) => Effect.Effect<void>
   /**
    * Interrupt active work owned by this process. Idle interruption is a no-op. Resolves once
    * the interruption is accepted; cleanup settles asynchronously in the execution fiber.
@@ -157,7 +158,7 @@ export const layer = Layer.effect(
       started: (sessionID) =>
         reportLifecycle(
           sessionID,
-          Effect.gen(function* () {
+          SessionInbox.serialized(sessionID, Effect.gen(function* () {
             // Bind before the started publication yields to SQLite so a cancel arriving during
             // that window still matches this generation.
             const before = yield* jobs.currentGeneration(sessionID)
@@ -167,7 +168,7 @@ export const layer = Layer.effect(
               startedSeq: event.durable.seq,
               boundGeneration: bound?.running ? bound.generation : undefined,
             })
-          }),
+          })),
         ),
       drain: (sessionID, force, promotable) => drain(sessionID, force, undefined, promotable),
       // One terminal observation per busy period, covering every coalesced drain.
@@ -184,9 +185,14 @@ export const layer = Layer.effect(
             }
             const attempt = journal.get(sessionID)
             const recovering = outcome.type === "interrupted" && outcome.reason === `recovery:${attempt?.record.id}`
-            if (recovering && attempt?.record.phase === "held") {
-              yield* bus.publish(SessionEvent.Execution.Interrupted, { sessionID, reason: "user" }, releaseOnCommit(sessionID))
-              return
+            if (recovering) {
+              const held = yield* SessionInbox.serialized(sessionID, Effect.gen(function* () {
+                if (attempt?.record.phase !== "held") return false
+                yield* bus.publish(SessionEvent.Execution.Interrupted, { sessionID, reason: "user" }, releaseOnCommit(sessionID))
+                subagentReport.hold(sessionID)
+                return true
+              }))
+              if (held) return
             }
             const settledOutcome = recovering && attempt?.record.phase === "failed"
               ? { type: "failed" as const, error: toSessionError(new Error(attempt.record.error ?? "Recovery abandoned")) }
@@ -223,20 +229,39 @@ export const layer = Layer.effect(
       active: reconcile.pipe(Effect.andThen(coordinator.active)),
       isActive: coordinator.isActive,
       periodStartSeq: subagentReport.periodStartSeq,
+      bindJob: (sessionID, generation) => Effect.gen(function* () {
+        const captured = yield* coordinator.capture(sessionID)
+        const startedSeq = yield* subagentReport.periodStartSeq(sessionID)
+        if (!captured || startedSeq === undefined) return
+        const current = yield* jobs.currentGeneration(sessionID, generation)
+        if (current?.running) subagentReport.bind(sessionID, startedSeq, current.generation)
+      }),
       interrupt: (sessionID, options) =>
         Effect.gen(function* () {
-          const held = yield* SessionInbox.serialized(sessionID, Effect.gen(function* () {
-            const attempt = journal.get(sessionID)
-            if (attempt?.record.phase !== "held") return undefined
-            yield* journal.finish(attempt, "cancelled", "Recovery revoked by cancellation")
-            return attempt
-          }))
-          if (held) {
-            yield* jobs.cancel(sessionID, held.record.generation ?? undefined)
-            yield* journal.signal(held)
+          const captured = yield* coordinator.capture(sessionID)
+          const startedSeq = yield* subagentReport.periodStartSeq(sessionID)
+          if (captured && startedSeq !== undefined) {
+            const current = yield* jobs.currentGeneration(sessionID)
+            if (current?.running) subagentReport.bind(sessionID, startedSeq, current.generation)
           }
-          const interrupted = yield* coordinator.interrupt(sessionID, "user")
-          if (!options?.resume) return interrupted
+          const cancellation = yield* SessionInbox.serialized(sessionID, Effect.gen(function* () {
+            const attempt = journal.get(sessionID)
+            if (attempt?.record.phase !== "held") return { interrupted: yield* coordinator.interrupt(sessionID, "user") }
+            yield* journal.finish(attempt, "cancelled", "Recovery revoked by cancellation")
+            const interrupted = yield* coordinator.interrupt(sessionID, "user")
+            if (!subagentReport.isHeld(sessionID)) return { interrupted, held: attempt }
+            const outcome = { type: "interrupted" as const, reason: "user" as const }
+            const settlement = yield* subagentReport.prepare(sessionID, outcome)
+            yield* publishTerminal(bus, sessionID, outcome, settlement.commit)
+            return { interrupted, held: attempt, delivery: settlement.deliver }
+          }))
+          if (cancellation.delivery)
+            yield* cancellation.delivery.pipe(Effect.ignoreCause({ log: "Error", message: "Subagent report delivery failed" }))
+          if (cancellation.held) {
+            yield* jobs.cancel(sessionID, cancellation.held.record.generation ?? undefined, { execution: "already-interrupted" })
+            yield* journal.signal(cancellation.held)
+          }
+          if (!options?.resume) return cancellation.interrupted
           // Resume steering input and between-turn control work from the interrupted
           // intent. Queued next-turn prompts stay parked: a steer-scoped drain never
           // promotes them, and a control item behind a queued prompt waits its turn.
@@ -246,10 +271,10 @@ export const layer = Layer.effect(
           // rows inside uninterruptible publications, so a steer row is either still
           // promotable here or was fully delivered and needs no resumption.
           const next = yield* SessionInbox.nextPromotable(db, sessionID, "input")
-          if (next === undefined) return interrupted
+          if (next === undefined) return cancellation.interrupted
           if (next.delivery === "steer" || next.type === "compaction" || next.type === "move")
             yield* coordinator.wake(sessionID, "steer")
-          return interrupted
+          return cancellation.interrupted
         }),
       resume: (sessionID) => reconcile.pipe(Effect.andThen(coordinator.run(sessionID))),
       wake: (sessionID) => reconcile.pipe(Effect.andThen(coordinator.wake(sessionID))),
@@ -337,6 +362,7 @@ export const noop = Service.of({
     resume: () => Effect.void,
     wake: () => Effect.void,
     periodStartSeq: () => Effect.succeed(undefined),
+    bindJob: () => Effect.void,
     interrupt: () => Effect.succeed(false),
     awaitIdle: () => Effect.void,
     recover: () => Effect.succeed(false),

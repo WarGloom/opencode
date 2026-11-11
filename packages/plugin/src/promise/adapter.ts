@@ -258,6 +258,7 @@ export function fromPromise(plugin: Plugin) {
 
         const run = <A, E>(effect: Effect.Effect<A, E>) => Effect.runPromiseWith(runtime)(effect)
         const sessionHook: { readonly [Name in keyof SessionHooks]: (event: SessionHooks[Name]) => PromiseSessionHooks[Name] } = {
+          fork: (event) => event,
           prompt: (event) => event,
           context: (event) => event,
           compaction: (event) => event,

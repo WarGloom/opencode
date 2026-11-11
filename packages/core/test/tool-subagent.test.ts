@@ -1,4 +1,5 @@
-import { describe, expect } from "bun:test"
+import { describe, expect, spyOn } from "bun:test"
+import { eq } from "drizzle-orm"
 import { Context, Deferred, Effect, Exit, Fiber, Layer, Schema, Scope, Stream } from "effect"
 import { AIError, InvalidRequestError, LanguageModel, LLMEvent } from "@opencode/ai/effect"
 import { OpenAIChat } from "@opencode/ai/protocols"
@@ -30,7 +31,9 @@ import { SessionInbox } from "@opencode/core/session/inbox"
 import { SessionMessage } from "@opencode/core/session/message"
 import { SessionRunnerModel } from "@opencode/core/session/runner/model"
 import { SessionStore } from "@opencode/core/session/store"
+import { SessionTable } from "@opencode/core/session/sql"
 import { SubagentJob } from "@opencode/core/session/subagent-job"
+import { SubagentAdmissionStore } from "@opencode/core/session/subagent-admission-store"
 import { Plugin } from "@opencode/core/plugin"
 import { PluginHooks } from "@opencode/core/plugin/hooks"
 import { PluginSupervisor } from "@opencode/core/plugin/supervisor"
@@ -145,6 +148,7 @@ const nodes = LayerNode.group([
   SessionExecution.node,
   LocationServiceMap.node,
   SessionStore.node,
+  SubagentAdmissionStore.node,
 ])
 const replacements = [
   SessionExecution.node.replace(executionNode),
@@ -911,6 +915,140 @@ const reportingFixture = () =>
   })
 
 describe("SubagentTool reporting", () => {
+  completionIt.live("reports held cancellation once when requested before the original settle finishes", () =>
+    Effect.gen(function* () {
+      const fixture = yield* reportingFixture()
+      const llm = yield* TestLLM.Test
+      const bus = yield* Bus.Service
+      const child = yield* fixture.sessions.create({ parentID: fixture.parent.id, title: "review", agent: Agent.ID.make("reviewer"), model: childModel })
+      const gate = yield* llm.gate()
+      yield* Effect.addFinalizer(() => gate.release)
+      yield* fixture.sessions.prompt({ sessionID: child.id, text: "original" })
+      yield* gate.started.pipe(Effect.timeout("2 seconds"))
+      const settling = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined))
+      const publish = bus.publish
+      let hold = true
+      const pause: Bus.Interface["publish"] = (definition, data, options) => publish(definition, data, options).pipe(Effect.tap((event) => {
+        if (!hold || event.type !== SessionEvent.Execution.Interrupted.type || event.durable?.aggregateID !== child.id) return Effect.void
+        hold = false
+        return Deferred.succeed(settling, undefined).pipe(Effect.andThen(Deferred.await(release)))
+      }))
+      const spy = spyOn(bus, "publish").mockImplementation(pause)
+      yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()))
+      const recovering = yield* fixture.sessions.recover(
+        { sessionID: child.id, owner: { pluginID: "test", lifetime: "early-cancel" } },
+        () => Effect.succeed(false),
+      ).pipe(Effect.forkScoped({ startImmediately: true }))
+      yield* Deferred.await(settling).pipe(Effect.timeout("2 seconds"))
+      const cancelling = yield* fixture.sessions.interrupt(child.id).pipe(Effect.forkScoped({ startImmediately: true }))
+      yield* Deferred.succeed(release, undefined)
+      yield* Fiber.join(cancelling).pipe(Effect.timeout("2 seconds"))
+      yield* Fiber.join(recovering).pipe(Effect.timeout("2 seconds"))
+      yield* fixture.sessions.wait(child.id).pipe(Effect.timeout("2 seconds"))
+      const reports = (yield* fixture.notices).filter((notice) => notice.metadata?.["childID"] === child.id)
+      expect(reports).toHaveLength(1)
+      expect(reports[0]?.text).toContain('state="cancelled"')
+    }),
+  )
+
+  completionIt.live("reports held cancellation without waiting for or releasing a successor period", () =>
+    Effect.gen(function* () {
+      const fixture = yield* reportingFixture()
+      const llm = yield* TestLLM.Test
+      const bus = yield* Bus.Service
+      const jobs = yield* Job.Service
+      const database = yield* Database.Service
+      const primary = yield* llm.gate()
+      yield* Effect.addFinalizer(() => primary.release)
+      const launched = yield* fixture.call("held-successor-background")
+      const child = yield* fixture.sessions.get(outputSessionID(launched.metadata))
+      yield* primary.started.pipe(Effect.timeout("2 seconds"))
+      const held = yield* Deferred.make<void>()
+      const releaseRecovery = yield* Deferred.make<void>()
+      yield* Effect.addFinalizer(() => Deferred.succeed(releaseRecovery, undefined))
+      const recovering = yield* fixture.sessions.recover(
+        { sessionID: child.id, owner: { pluginID: "test", lifetime: "successor-order" } },
+        () => Deferred.succeed(held, undefined).pipe(Effect.andThen(Deferred.await(releaseRecovery)), Effect.as(false)),
+      ).pipe(Effect.forkScoped({ startImmediately: true }))
+      yield* Deferred.await(held).pipe(Effect.timeout("2 seconds"))
+      const cancelEntered = yield* Deferred.make<void>()
+      const releaseCancel = yield* Deferred.make<void>()
+      yield* Effect.addFinalizer(() => Deferred.succeed(releaseCancel, undefined))
+      const cancel = jobs.cancel
+      const spy = spyOn(jobs, "cancel").mockImplementation((id, generation, options) => id === child.id
+        ? Deferred.succeed(cancelEntered, undefined).pipe(Effect.andThen(Deferred.await(releaseCancel)), Effect.andThen(cancel(id, generation, options)))
+        : cancel(id, generation, options))
+      yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()))
+      const notified = yield* Deferred.make<void>()
+      const successorStarted = yield* Deferred.make<void>()
+      yield* bus.listen((event) => {
+        if (event.type === SessionEvent.InboxEnqueued.type && event.durable?.aggregateID === fixture.parent.id)
+          return Deferred.succeed(notified, undefined).pipe(Effect.asVoid)
+        if (event.type === SessionEvent.Execution.Started.type && event.durable?.aggregateID === child.id)
+          return Deferred.succeed(successorStarted, undefined).pipe(Effect.asVoid)
+        return Effect.void
+      })
+      const cancelling = yield* fixture.sessions.interrupt(child.id).pipe(Effect.forkScoped({ startImmediately: true }))
+      yield* Deferred.await(cancelEntered).pipe(Effect.timeout("2 seconds"))
+      const successor = yield* llm.gate()
+      yield* Effect.addFinalizer(() => successor.release)
+      yield* fixture.sessions.synthetic({ sessionID: child.id, text: "new work" })
+      yield* Deferred.await(successorStarted).pipe(Effect.timeout("2 seconds"))
+      yield* successor.started.pipe(Effect.timeout("2 seconds"))
+      yield* Deferred.succeed(releaseCancel, undefined)
+      yield* Fiber.join(cancelling).pipe(Effect.timeout("2 seconds"))
+      yield* Deferred.await(notified).pipe(Effect.timeoutOrElse({ duration: "2 seconds", orElse: () => Effect.fail(new Error("Cancellation report waited for the successor")) }))
+      expect((yield* fixture.sessions.active).has(child.id)).toBe(true)
+      const claim = yield* database.db.select({ suspended: SessionTable.time_suspended }).from(SessionTable).where(eq(SessionTable.id, child.id)).get().pipe(Effect.orDie)
+      expect(claim?.suspended).not.toBeNull()
+      const reports = (yield* fixture.notices).filter((notice) => notice.metadata?.["childID"] === child.id)
+      expect(reports).toHaveLength(1)
+      expect(reports[0]?.text).toContain('state="cancelled"')
+      yield* successor.release
+      yield* fixture.sessions.wait(child.id).pipe(Effect.timeout("2 seconds"))
+      expect((yield* fixture.sessions.get(child.id)).outcome).toBe("succeeded")
+      yield* Deferred.succeed(releaseRecovery, undefined)
+      yield* Fiber.join(recovering).pipe(Effect.timeout("2 seconds"))
+    }),
+  )
+
+  for (const background of [false, true]) {
+    completionIt.live(`reports cancellation during held recovery for ${background ? "background" : "untracked"} child work`, () =>
+      Effect.gen(function* () {
+        const fixture = yield* reportingFixture()
+        const llm = yield* TestLLM.Test
+        const bus = yield* Bus.Service
+        const notification = yield* Deferred.make<void>()
+        yield* bus.listen((event) => event.type === SessionEvent.InboxEnqueued.type && event.durable?.aggregateID === fixture.parent.id
+          ? Deferred.succeed(notification, undefined).pipe(Effect.asVoid) : Effect.void)
+        const gate = yield* llm.gate()
+        yield* Effect.addFinalizer(() => gate.release)
+        const childID = background
+          ? outputSessionID((yield* fixture.call("held-recovery-background")).metadata)
+          : (yield* fixture.sessions.create({ parentID: fixture.parent.id, title: "review", agent: Agent.ID.make("reviewer"), model: childModel })).id
+        if (!background) yield* fixture.sessions.prompt({ sessionID: childID, text: "review" })
+        yield* gate.started.pipe(Effect.timeout("2 seconds"))
+        const held = yield* Deferred.make<void>()
+        const release = yield* Deferred.make<void>()
+        yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined))
+        const recovering = yield* fixture.sessions.recover(
+          { sessionID: childID, owner: { pluginID: "test", lifetime: "held-cancel" } },
+          () => Deferred.succeed(held, undefined).pipe(Effect.andThen(Deferred.await(release)), Effect.as(false)),
+        ).pipe(Effect.forkScoped({ startImmediately: true }))
+        yield* Deferred.await(held).pipe(Effect.timeout("2 seconds"))
+        yield* fixture.sessions.interrupt(childID)
+        yield* Deferred.await(notification).pipe(Effect.timeoutOrElse({ duration: "2 seconds", orElse: () => Effect.fail(new Error("Held recovery cancellation did not notify the parent")) }))
+        yield* Deferred.succeed(release, undefined)
+        yield* Fiber.join(recovering).pipe(Effect.timeout("2 seconds"))
+        const reports = (yield* fixture.notices).filter((notice) => notice.metadata?.["childID"] === childID)
+        expect(reports).toHaveLength(1)
+        expect(reports[0]?.text).toContain('state="cancelled"')
+      }),
+    )
+  }
+
   completionIt.live("reports the child's final answer to the parent", () =>
     Effect.gen(function* () {
       const fixture = yield* reportingFixture()
@@ -1040,6 +1178,9 @@ describe("SubagentJob cancellation", () => {
   it.live("interrupts the child only for an explicit cancel and preserves shutdown claims", () =>
     Effect.gen(function* () {
       const database = yield* Database.Service
+      const bus = yield* Bus.Service
+      const admissions = yield* SubagentAdmissionStore.Service
+      const sessions = yield* Session.Service
       const scope = yield* Scope.make()
       const cancelStarted = yield* Deferred.make<void>()
       const shutdownStarted = yield* Deferred.make<void>()
@@ -1049,6 +1190,7 @@ describe("SubagentJob cancellation", () => {
       const interrupted = new Set<Session.ID>()
       const claimed = new Set<Session.ID>()
       const execution = SessionExecution.Service.of({
+        ...SessionExecution.noop,
         active: Effect.succeed(new Set<Session.ID>()),
         isActive: () => Effect.succeed(false),
         resume: (sessionID) =>
@@ -1075,6 +1217,13 @@ describe("SubagentJob cancellation", () => {
         SubagentJob.layer.pipe(
           Layer.provide(Layer.succeed(SessionExecution.Service, execution)),
           Layer.provide(Layer.succeed(Job.Service, jobs)),
+          Layer.provide(Layer.succeed(Bus.Service, bus)),
+          Layer.provide(Layer.succeed(SubagentAdmissionStore.Service, admissions)),
+          Layer.provide(Layer.succeed(Session.Service, Session.Service.of({
+            ...sessions,
+            resume: execution.resume,
+            wait: execution.awaitIdle,
+          }))),
         ),
         scope,
       )
