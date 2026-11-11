@@ -129,7 +129,9 @@ export function SubagentsTab(props: { sessionID: string }) {
       label: "Subagents",
       hints: () => {
         const entry = selectedEntry()
+        const total = entries().length
         return [
+          { label: `${Math.min(total, Math.max(0, store.selected) + 1)}/${total}`, shortcut: "" },
           ...(entry?.status === "running"
             ? [{ label: "interrupt", shortcut: shortcuts.get("composer.subagent.interrupt") ?? "" }]
             : []),
