@@ -17,6 +17,7 @@ export type Outcome =
 export type Period = {
   readonly startedSeq: number
   readonly boundGeneration?: number
+  readonly held?: true
 }
 
 export type Deps = {
@@ -48,9 +49,23 @@ export const make = (deps: Deps) => {
     periods.set(sessionID, period)
   }
 
+  const bind = (sessionID: SessionSchema.ID, startedSeq: number, generation: number) => {
+    const period = periods.get(sessionID)
+    if (period?.startedSeq !== startedSeq || period.boundGeneration !== undefined) return
+    periods.set(sessionID, { ...period, boundGeneration: generation })
+  }
+
   const clear = (sessionID: SessionSchema.ID) => {
     periods.delete(sessionID)
   }
+
+  const hold = (sessionID: SessionSchema.ID) => {
+    const period = periods.get(sessionID)
+    if (period) periods.set(sessionID, { ...period, held: true })
+  }
+
+  const isHeld = (sessionID: SessionSchema.ID) => periods.get(sessionID)?.held === true
+
   const periodStartSeq = (sessionID: SessionSchema.ID) => Effect.sync(() => periods.get(sessionID)?.startedSeq)
 
   const resolveBody = Effect.fnUntraced(function* (
@@ -209,5 +224,5 @@ export const make = (deps: Deps) => {
     return { commit, deliver }
   })
 
-  return { started, clear, periodStartSeq, prepare }
+  return { started, bind, clear, hold, isHeld, periodStartSeq, prepare }
 }

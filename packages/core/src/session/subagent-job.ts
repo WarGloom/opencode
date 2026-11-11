@@ -184,6 +184,7 @@ const make = Effect.gen(function* () {
             if (info !== undefined) ending.add(info.generation)
           }))),
         }).pipe(
+          Effect.tap((info) => recovery.pluginID === undefined ? Effect.void : execution.bindJob(recovery.childSessionID, info.generation)),
           Effect.tap(() => recovery.pluginID === undefined ? Effect.void : execution.wake(recovery.childSessionID)),
           Effect.tap((info) => jobs.wait({ id: info.id, generation: info.generation }).pipe(
             Effect.tap(() => Effect.sync(() => {

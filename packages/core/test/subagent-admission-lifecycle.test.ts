@@ -1,6 +1,7 @@
 import { describe, expect, spyOn } from "bun:test"
 import { Context, Deferred, Effect, Fiber, Layer, Schema, Scope, Exit } from "effect"
 import { LanguageModel } from "@opencode/ai/effect"
+import { LLMClient } from "@opencode/ai/route"
 import { OpenAIChat } from "@opencode/ai/protocols"
 import { TestLLM } from "@opencode/ai/testing"
 import { Agent } from "@opencode/core/agent"
@@ -14,8 +15,8 @@ import { Plugin } from "@opencode/core/plugin"
 import type { SubagentDomain } from "@opencode/plugin/effect/subagent"
 import { SubagentAdmission } from "@opencode/core/session/subagent-admission"
 import { SubagentAdmissionRun } from "@opencode/core/session/subagent-admission-run"
-import { SubagentJob } from "@opencode/core/session/subagent-job"
 import { SessionInbox } from "@opencode/core/session/inbox"
+import { SessionProjector } from "@opencode/core/session/projector"
 import { SessionMessage } from "@opencode/core/session/message"
 import { SessionEvent } from "@opencode/core/session/event"
 import { Bus } from "@opencode/core/bus"
@@ -123,19 +124,28 @@ describe("subagent admission lifecycle", () => {
       const locations = yield* LocationServiceMap.Service
       yield* Effect.gen(function* () {
         const admissions = yield* SubagentAdmissionStore.Service
-        const ownership = LayerNode.compile(LayerNode.group([Job.node, SubagentJob.node, SubagentAdmissionRun.node]), { replacements: [
-          Session.node.replace(Layer.succeed(Session.Service, sessions)),
+        const ownership = AppNodeBuilder.build(LayerNode.group([Session.node, Job.node, SessionExecution.node, LocationServiceMap.node]), [
           Database.node.replace(Layer.succeed(Database.Service, yield* Database.Service)),
           Bus.node.replace(Layer.succeed(Bus.Service, bus)),
+          SessionProjector.node.replace(Layer.empty),
+          KV.node.replace(Layer.succeed(KV.Service, yield* KV.Service)),
           SubagentAdmissionStore.node.replace(Layer.succeed(SubagentAdmissionStore.Service, admissions)),
-          SessionExecution.node.replace(Layer.succeed(SessionExecution.Service, yield* SessionExecution.Service)),
-          SubagentAdmission.node.replace(Layer.succeed(SubagentAdmission.Service, yield* SubagentAdmission.Service)),
-          SessionInbox.node.replace(Layer.succeed(SessionInbox.Service, yield* SessionInbox.Service)),
-        ] })
+          Global.node.replace(tempGlobalLayer),
+          offlineModels,
+          Watcher.node.replace(Watcher.configured({ enabled: false })),
+          LayerNodePlatform.llmClient.replace(Layer.succeed(LLMClient.Service, llm)),
+          SessionRunnerModel.node.replace(Layer.succeed(SessionRunnerModel.Service, {
+            resolve: () => Effect.succeed(SessionRunnerModel.resolved(
+              LanguageModel.make({ id: "review", provider: "test", route: OpenAIChat.route }),
+              { capabilities: { tools: true, input: ["text"], output: ["text"] }, cost: [], limit: { context: 200_000, output: 32_000 } },
+            )),
+          })),
+        ])
         const originalScope = yield* Scope.make()
         yield* Effect.addFinalizer(() => Scope.close(originalScope, Exit.void))
         const original = yield* Layer.buildWithScope(Layer.fresh(ownership), originalScope)
-        const originalRuns = Context.get(original, SubagentAdmissionRun.Service)
+        const originalLocations = Context.get(original, LocationServiceMap.Service)
+        const originalRuns = yield* SubagentAdmissionRun.Service.pipe(Effect.provide(originalLocations.get(parent.location)))
         const model = Model.Ref.make({ providerID: input.model.providerID, id: Model.ID.make("fallback"), variant: Model.VariantID.make("high") })
         const start = { admissionID: prepared.admissionID, prompt: { text: "restart after model change" }, delivery: "queue" as const, mode: "background" as const, completion: "parent" as const }
         yield* sessions.switchModel({ sessionID: prepared.childSessionID, model })
@@ -155,12 +165,15 @@ describe("subagent admission lifecycle", () => {
         yield* Effect.addFinalizer(() => Scope.close(restartedScope, Exit.void))
         const restarted = yield* Layer.buildWithScope(Layer.fresh(ownership), restartedScope)
         const jobs = Context.get(restarted, Job.Service)
-        const runs = Context.get(restarted, SubagentAdmissionRun.Service)
+        const restartedLocations = Context.get(restarted, LocationServiceMap.Service)
+        const runs = yield* SubagentAdmissionRun.Service.pipe(Effect.provide(restartedLocations.get(parent.location)))
         expect(yield* jobs.get(run.childSessionID)).toBeUndefined()
         expect((yield* jobs.pendingBackground).map((job) => [job.status, job.recovery])).toEqual([["running", expect.objectContaining({ pluginID: "lifetime-owner", generation: run.generation, parentSessionID: parent.id, childSessionID: run.childSessionID, agent: input.agent })]])
         const completion = yield* Deferred.make<void>()
         yield* bus.listen((event) => event.type === SessionEvent.InboxEnqueued.type && event.durable?.aggregateID === parent.id
           ? Deferred.succeed(completion, undefined).pipe(Effect.asVoid) : Effect.void)
+        const resumed = yield* llm.gate()
+        yield* Effect.addFinalizer(() => resumed.release)
         const ready = yield* runs.ready("lifetime-owner", { run }).pipe(Effect.timeout("2 seconds"))
 
         // then
@@ -168,7 +181,8 @@ describe("subagent admission lifecycle", () => {
         expect((yield* jobs.get(run.childSessionID))?.generation).toBe(run.generation)
         expect((yield* sessions.get(run.childSessionID)).model).toEqual(model)
         expect((yield* admissions.get("lifetime-owner", prepared.admissionID))?.model).toEqual(input.model)
-        yield* primary.release
+        yield* resumed.started.pipe(Effect.timeout("2 seconds"))
+        yield* resumed.release
         expect((yield* runs.wait("lifetime-owner", { run }).pipe(Effect.timeout("2 seconds"))).receipt).toMatchObject({ status: "completed", run, output: "Review complete" })
         yield* Deferred.await(completion).pipe(Effect.timeout("2 seconds"))
         yield* runs.ready("lifetime-owner", { run })
@@ -425,6 +439,76 @@ describe("subagent admission lifecycle", () => {
       expect(yield* Deferred.await(notified).pipe(Effect.timeout("2 seconds"))).toBe(other.childSessionID)
       const synthetics = (yield* sessions.inbox(parent.id)).filter((item) => item.type === "synthetic")
       expect(synthetics.map((item) => item.type === "synthetic" && item.payload.metadata?.childID)).toEqual([other.childSessionID])
+    }),
+  )
+
+  it.live("keeps an adopted active period silent on owner cancellation but reports a later ordinary period", () =>
+    Effect.gen(function* () {
+      const { sessions, host, input, parent, llm, bus } = yield* admissionFixture
+      yield* sessions.setPermissions({ sessionID: parent.id, permissions: [{ action: "subagent", resource: "reviewer", effect: "allow" }] })
+      const child = yield* sessions.create({ parentID: parent.id, agent: input.agent, model: input.model, title: "adopted" })
+      const gate = yield* llm.gate()
+      yield* Effect.addFinalizer(() => gate.release)
+      yield* sessions.prompt({ sessionID: child.id, text: "existing work" })
+      yield* gate.started.pipe(Effect.timeout("2 seconds"))
+      const prepared = yield* host.experimental.subagent.prepare({ ...input, admissionID: "adopt-active", target: { kind: "existing", sessionID: child.id } })
+      const started = yield* host.experimental.subagent.start({ admissionID: prepared.admissionID, prompt: { text: "follow-up" }, delivery: "steer", mode: "background", completion: "parent" })
+      if (!started.run) throw new Error("Native start omitted its run")
+      const jobs = yield* Job.Service
+      const reportStarted = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined))
+      const prepareReport = jobs.prepareSubagentReport
+      const spy = spyOn(jobs, "prepareSubagentReport").mockImplementation((...args) =>
+        Deferred.succeed(reportStarted, undefined).pipe(Effect.andThen(Deferred.await(release)), Effect.andThen(prepareReport(...args))),
+      )
+      yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()))
+      expect((yield* host.experimental.subagent.cancel({ run: started.run })).status).toBe("cancelled")
+      yield* Deferred.await(reportStarted).pipe(Effect.timeout("2 seconds"))
+      yield* Deferred.succeed(release, undefined)
+      yield* sessions.wait(child.id).pipe(Effect.timeout("2 seconds"))
+      spy.mockRestore()
+      expect(yield* sessions.inbox(parent.id)).toEqual([])
+      const notified = yield* Deferred.make<void>()
+      yield* bus.listen((event) => event.type === SessionEvent.InboxEnqueued.type && event.durable?.aggregateID === parent.id
+        ? Deferred.succeed(notified, undefined).pipe(Effect.asVoid) : Effect.void)
+      yield* gate.release
+      yield* sessions.prompt({ sessionID: child.id, text: "ordinary follow-up" })
+      yield* Deferred.await(notified).pipe(Effect.timeout("2 seconds"))
+      const notices = (yield* sessions.inbox(parent.id)).filter((item) => item.type === "synthetic")
+      expect(notices).toHaveLength(1)
+      expect(notices[0]?.type === "synthetic" && notices[0].payload.text).toContain('state="completed"')
+    }),
+  )
+
+  it.live("reports an adopted active period once when another caller cancels its job", () =>
+    Effect.gen(function* () {
+      const { sessions, host, input, parent, llm, bus } = yield* admissionFixture
+      yield* sessions.setPermissions({ sessionID: parent.id, permissions: [{ action: "subagent", resource: "reviewer", effect: "allow" }] })
+      const child = yield* sessions.create({ parentID: parent.id, agent: input.agent, model: input.model, title: "adopted" })
+      const gate = yield* llm.gate()
+      yield* Effect.addFinalizer(() => gate.release)
+      yield* sessions.prompt({ sessionID: child.id, text: "existing work" })
+      yield* gate.started.pipe(Effect.timeout("2 seconds"))
+      const prepared = yield* host.experimental.subagent.prepare({ ...input, admissionID: "adopt-job-cancel", target: { kind: "existing", sessionID: child.id } })
+      const started = yield* host.experimental.subagent.start({ admissionID: prepared.admissionID, prompt: { text: "follow-up" }, delivery: "steer", mode: "background", completion: "parent" })
+      if (!started.run) throw new Error("Native start omitted its run")
+      const nativeNotice = yield* Deferred.make<void>()
+      const notificationID = `msg_subagent_${started.run.generation}`
+      yield* bus.listen((event) => {
+        if (event.type !== SessionEvent.InboxEnqueued.type || event.durable?.aggregateID !== parent.id) return Effect.void
+        const data = Schema.decodeUnknownSync(Schema.toType(SessionEvent.InboxEnqueued.data))(event.data)
+        return data.inboxID === notificationID ? Deferred.succeed(nativeNotice, undefined).pipe(Effect.asVoid) : Effect.void
+      })
+      const jobs = yield* Job.Service
+      yield* jobs.cancel(child.id, started.run.generation).pipe(Effect.timeout("2 seconds"))
+      yield* sessions.wait(child.id).pipe(Effect.timeout("2 seconds"))
+      yield* Deferred.await(nativeNotice).pipe(Effect.timeout("2 seconds"))
+      yield* gate.release
+      yield* sessions.wait(parent.id).pipe(Effect.timeout("2 seconds"))
+      const pending = (yield* sessions.inbox(parent.id)).filter((item) => item.type === "synthetic")
+      const delivered = (yield* sessions.context(parent.id)).filter((item) => item.type === "synthetic")
+      expect([...pending, ...delivered]).toHaveLength(1)
     }),
   )
 

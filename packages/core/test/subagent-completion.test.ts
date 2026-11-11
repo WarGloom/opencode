@@ -42,6 +42,7 @@ describe("SubagentCompletion", () => {
             childSessionID: grandchild,
             agent: "explore",
             description: "Audit\n routes",
+            wakes: true,
           },
         ]),
       ).toBe(

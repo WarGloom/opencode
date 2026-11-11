@@ -8,6 +8,7 @@ import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { Instance } from "@opencode/core/instance/service"
 import { Job } from "@opencode/core/job"
 import { JobTable } from "@opencode/core/job/sql"
+import { KV } from "@opencode/core/kv"
 import { LocationServiceMap } from "@opencode/core/location-service-map"
 import type { LocationServices } from "@opencode/core/location-services"
 import { Model } from "@opencode/core/model"
@@ -31,7 +32,7 @@ import { testEffect } from "./lib/effect"
 
 const it = testEffect(
   AppNodeBuilder.build(
-    LayerNode.group([Database.node, Bus.node, SessionStore.node, SessionInbox.node, SessionProjector.node, Job.node]),
+    LayerNode.group([Database.node, Bus.node, SessionStore.node, SessionInbox.node, SessionProjector.node, Job.node, KV.node]),
   ),
 )
 
@@ -667,6 +668,7 @@ function buildExecution(scope: Scope.Scope, drain: Drain) {
     const store = yield* SessionStore.Service
     const jobs = yield* Job.Service
     const inbox = yield* SessionInbox.Service
+    const kv = yield* KV.Service
     const runner = Layer.succeed(
       SessionRunner.Service,
       SessionRunner.Service.of({
@@ -689,6 +691,7 @@ function buildExecution(scope: Scope.Scope, drain: Drain) {
         Layer.provide(Layer.succeed(SessionStore.Service, store)),
         Layer.provide(Layer.succeed(SessionInbox.Service, inbox)),
         Layer.provide(Layer.succeed(Job.Service, jobs)),
+        Layer.provide(Layer.succeed(KV.Service, kv)),
         Layer.provide(
           AppNodeBuilder.build(Instance.node, [LocationServiceMap.node.replace(locations)]).pipe(Layer.fresh),
         ),

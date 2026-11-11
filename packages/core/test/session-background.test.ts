@@ -110,7 +110,7 @@ describe("SessionBackground.outstanding", () => {
 
 const info = (id: SessionSchema.ID, status: Job.Status, notificationID?: SessionMessage.ID): Job.Info => ({
   id,
-  generation: "generation",
+  generation: id,
   type: "subagent",
   status,
   started_at: 0,

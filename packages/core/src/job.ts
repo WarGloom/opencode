@@ -170,16 +170,17 @@ export interface Interface {
   readonly block: (input: BlockInput) => Effect.Effect<BlockResult | undefined>
   readonly background: (id: string) => Effect.Effect<Info | undefined>
   readonly backgroundAll: (input: BackgroundAllInput) => Effect.Effect<Info[]>
-  readonly cancel: (id: string, generation?: string) => Effect.Effect<Info | undefined>
+  readonly cancel: (id: string, generation?: string, options?: { readonly execution?: "already-interrupted" }) => Effect.Effect<Info | undefined>
   readonly cancelSession: (sessionID: SessionSchema.ID) => Effect.Effect<Info[]>
   readonly pendingBackground: Effect.Effect<readonly Background[]>
   readonly runningBackground: Effect.Effect<readonly Recovery[]>
   readonly backgroundJobs: Effect.Effect<readonly JobList.Item[]>
   readonly completeBackground: (notificationID: SessionMessage.ID) => Effect.Effect<void>
-  /** Whether an explicit caller cancellation stopped this job (not shutdown teardown). */
+  /** Whether cancellation must also interrupt the child execution. */
   readonly isCancelled: (id: string) => Effect.Effect<boolean>
   readonly currentGeneration: (
     id: string,
+    runGeneration?: string,
   ) => Effect.Effect<{ readonly generation: number; readonly running: boolean } | undefined>
   readonly prepareSubagentReport: (id: string, boundGeneration?: number, creationTickCancelled?: boolean) => Effect.Effect<SubagentReportState>
   readonly recordSubagentReport: (report: SubagentOutboxReport) => Effect.Effect<void>
@@ -535,7 +536,7 @@ export const make = Effect.gen(function* () {
     return result.map((item) => item.info)
   })
 
-  const cancelInternal = Effect.fnUntraced(function* (id: string, persist = true, generation?: string) {
+  const cancelInternal = Effect.fnUntraced(function* (id: string, persist = true, generation?: string, execution?: "already-interrupted") {
     const completed_at = yield* Clock.currentTimeMillis
     const result = yield* SynchronizedRef.modifyEffect(
       state.jobs,
@@ -547,7 +548,7 @@ export const make = Effect.gen(function* () {
         const next = {
           ...job,
           blockingSessions: new Map<SessionSchema.ID, number>(),
-          cancelledByCaller: persist,
+          cancelledByCaller: persist && execution !== "already-interrupted",
           info: {
             ...job.info,
             status: "cancelled" as const,
@@ -569,7 +570,7 @@ export const make = Effect.gen(function* () {
     return result.info
   })
 
-  const cancel: Interface["cancel"] = Effect.fn("Job.cancel")((id, generation) => cancelInternal(id, true, generation))
+  const cancel: Interface["cancel"] = Effect.fn("Job.cancel")((id, generation, options) => cancelInternal(id, true, generation, options?.execution))
 
   const cancelSession: Interface["cancelSession"] = Effect.fn("Job.cancelSession")(function* (sessionID) {
     const ids = [...(yield* SynchronizedRef.get(state.jobs)).values()]
@@ -641,9 +642,9 @@ export const make = Effect.gen(function* () {
     ),
   )
 
-  const currentGeneration: Interface["currentGeneration"] = Effect.fn("Job.currentGeneration")(function* (id) {
+  const currentGeneration: Interface["currentGeneration"] = Effect.fn("Job.currentGeneration")(function* (id, runGeneration) {
     const job = (yield* SynchronizedRef.get(state.jobs)).get(id)
-    if (!job) return undefined
+    if (!job || (runGeneration !== undefined && job.info.generation !== runGeneration)) return undefined
     return { generation: job.generation, running: job.info.status === "running" && !job.settling }
   })
 
