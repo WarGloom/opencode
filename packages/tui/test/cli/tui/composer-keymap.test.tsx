@@ -35,14 +35,13 @@ const shells = [shell("sh-a", "bun test"), shell("sh-b", "bun dev"), shell("sh-c
 async function renderComposer(
   defaultTab: "subagents" | "shell",
   keybinds: Partial<TuiKeybind.Keybinds>,
-  focusedTextarea = false,
-  open = () => true,
+  options: { readonly focusedTextarea?: boolean; readonly open?: () => boolean; readonly mode?: "light" | "dark" } = {},
 ) {
   const events = createEventStream()
   const interrupted: string[] = []
   const removed: string[] = []
   const viewed: string[] = []
-  const ready = Promise.withResolvers<void>()
+  const ready = Promise.withResolvers<ReturnType<typeof useData>>()
   const switched = Promise.withResolvers<void>()
   let closed = 0
   let listReads = 0
@@ -107,15 +106,15 @@ async function renderComposer(
         data.shell.sync(),
       ])
         .then(() => wait(() => data.session.status("child-a") === "running"))
-        .then(() => ready.resolve(), ready.reject)
+        .then(() => ready.resolve(data), ready.reject)
     })
     return (
       <>
-        {focusedTextarea && <textarea focused={true} initialValue="draft" />}
+        {options.focusedTextarea && <textarea focused={true} initialValue="draft" />}
         {/* Mirrors the app, which keys the session route by sessionID and remounts it on navigation. */}
         <Show when={route.data.type === "session" ? route.data.sessionID : undefined} keyed>
           {(sessionID) => (
-            <Composer sessionID={sessionID} open={open()} defaultTab={defaultTab} onClose={() => closed++} />
+            <Composer sessionID={sessionID} open={options.open?.() ?? true} defaultTab={defaultTab} onClose={() => closed++} />
           )}
         </Show>
       </>
@@ -133,7 +132,7 @@ async function renderComposer(
 
   const app = await testRender(
     () => (
-      <TestTuiContexts directory={directory} paths={{ state: state.path }}>
+      <TestTuiContexts directory={directory} paths={{ state: state.path, home: state.path }}>
         <TuiAppProvider value={{ name: "test", version: "test", channel: "test" }}>
           <StorageProvider>
             <ConfigProvider config={createTuiResolvedConfig({ keybinds })}>
@@ -142,7 +141,7 @@ async function renderComposer(
                   <DataProvider directory={process.cwd()}>
                     <LocationProvider>
                       <RouteProvider initialRoute={{ type: "session", sessionID: "parent" }}>
-                        <ThemeProvider mode="dark" source={{ discover: async () => ({}) }}>
+                        <ThemeProvider mode={options.mode ?? "dark"} source={{ discover: async () => ({}) }}>
                           <ToastProvider>
                             <DialogProvider>
                               <Content />
@@ -162,10 +161,11 @@ async function renderComposer(
     ),
     { width: 100, height: 20, kittyKeyboard: true },
   )
-  await ready.promise
+  const data = await ready.promise
   await app.renderOnce()
   return {
     app,
+    data,
     events,
     switched: switched.promise,
     interrupted,
@@ -178,8 +178,8 @@ async function renderComposer(
   }
 }
 
-test("subagent rows show the selected model and update on model changes", async () => {
-  const composer = await renderComposer("subagents", {})
+test.each(["light", "dark"] as const)("subagent rows show model changes in %s mode", async (mode) => {
+  const composer = await renderComposer("subagents", {}, { mode })
   try {
     expect(composer.app.captureCharFrame()).toContain("First Claude Sonnet Anthropic · high")
     composer.events.emit({
@@ -198,10 +198,12 @@ test("subagent rows show the selected model and update on model changes", async 
     }
     await composer.app.renderOnce()
     expect(composer.app.captureCharFrame()).toContain("First Claude Opus Anthropic · max")
+    expect(composer.app.captureCharFrame()).toContain("1/2")
     await composer.app.resize(44, 20)
     await composer.app.renderOnce()
     expect(composer.app.captureCharFrame()).toContain("First")
     expect(composer.app.captureCharFrame()).toContain(" Running")
+    expect(composer.app.captureCharFrame()).toContain("1/2")
   } finally {
     composer.app.renderer.destroy()
   }
@@ -242,6 +244,7 @@ test("the inactive subagent filter only changes with its toggle", async () => {
     await composer.app.renderOnce()
     expect(composer.app.captureCharFrame()).toContain("Third")
     expect(composer.app.captureCharFrame()).not.toContain("First")
+    expect(composer.app.captureCharFrame()).toContain("1/1")
 
     composer.app.mockInput.pressEnter()
     expect(composer.route()).toMatchObject({ type: "session", sessionID: "child-c" })
@@ -261,7 +264,7 @@ test("the inactive subagent filter only changes with its toggle", async () => {
 
 test("a closed composer does not list subagents", async () => {
   const [open, setOpen] = createSignal(false)
-  const composer = await renderComposer("subagents", {}, false, open)
+  const composer = await renderComposer("subagents", {}, { open })
   try {
     expect(composer.listReads()).toBe(0)
 
@@ -276,6 +279,69 @@ test("a closed composer does not list subagents", async () => {
     setOpen(true)
     await composer.app.renderOnce()
     expect(composer.app.captureCharFrame()).toContain("First")
+  } finally {
+    composer.app.renderer.destroy()
+  }
+})
+
+test("subagent position follows keyboard wrapping, mouse selection and list changes", async () => {
+  const composer = await renderComposer("subagents", {})
+  try {
+    expect(composer.app.captureCharFrame()).toContain("1/2")
+    composer.app.mockInput.pressArrow("down")
+    await composer.app.renderOnce()
+    expect(composer.app.captureCharFrame()).toContain("2/2")
+    composer.app.mockInput.pressArrow("down")
+    await composer.app.renderOnce()
+    expect(composer.app.captureCharFrame()).toContain("1/2")
+
+    const row = composer.app
+      .captureCharFrame()
+      .split("\n")
+      .findIndex((line) => line.includes("Second"))
+    await composer.app.mockMouse.moveTo(5, row)
+    await composer.app.renderOnce()
+    expect(composer.app.captureCharFrame()).toContain("2/2")
+
+    composer.app.renderer.start()
+    composer.events.emit({
+      id: "evt_counter_child_b_done",
+      created: 1,
+      type: "session.execution.succeeded",
+      durable: { aggregateID: "child-b", seq: 1, version: 1 },
+      data: { sessionID: "child-b" },
+    })
+    expect(await composer.app.waitForFrame((frame) => frame.includes("1/1"))).not.toContain("Second")
+    composer.events.emit({
+      id: "evt_counter_child_a_done",
+      created: 2,
+      type: "session.execution.succeeded",
+      durable: { aggregateID: "child-a", seq: 1, version: 1 },
+      data: { sessionID: "child-a" },
+    })
+    expect(await composer.app.waitForFrame((frame) => frame.includes("0/0"))).toContain("No active subagents")
+    composer.app.mockInput.pressKey("a", { ctrl: true })
+    expect(await composer.app.waitForFrame((frame) => frame.includes("1/3"))).toContain("Third")
+
+    for (let index = 1; index <= 4; index++) {
+      composer.data.session.remember(session(`child-extra-${index}`, `Extra ${index}`, "parent"))
+    }
+    expect(await composer.app.waitForFrame((frame) => frame.includes("1/7"))).toContain("First")
+    for (let index = 0; index < 6; index++) {
+      composer.app.mockInput.pressArrow("down")
+      await composer.app.renderOnce()
+    }
+    const last = await composer.app.waitForFrame((frame) => frame.includes("7/7"))
+    expect(last).toContain("7/7")
+    expect(last).toContain("Extra 4")
+    expect(last).not.toContain("Build: First")
+    expect(last.split("\n").filter((line) => line.includes("Build:")).length).toBe(5)
+    composer.app.mockInput.pressArrow("down")
+    const wrapped = await composer.app.waitForFrame((frame) => frame.includes("1/7"))
+    expect(wrapped).toContain("1/7")
+    expect(wrapped).toContain("Build: First")
+    expect(wrapped).not.toContain("Extra 4")
+    expect(wrapped.split("\n").filter((line) => line.includes("Build:")).length).toBe(5)
   } finally {
     composer.app.renderer.destroy()
   }
@@ -342,7 +408,7 @@ test("shell list shows one line per command", async () => {
 })
 
 test("configured composer bindings work with a focused textarea", async () => {
-  const composer = await renderComposer("subagents", { "composer.shell.kill": "ctrl+u" }, true)
+  const composer = await renderComposer("subagents", { "composer.shell.kill": "ctrl+u" }, { focusedTextarea: true })
   try {
     composer.app.mockInput.pressArrow("right")
     await composer.app.renderOnce()
@@ -367,7 +433,7 @@ test("ctrl+c closes the active composer", async () => {
 })
 
 test("shell output respects a configured binding with a focused textarea", async () => {
-  const composer = await renderComposer("shell", { "composer.shell.select": "ctrl+o" }, true)
+  const composer = await renderComposer("shell", { "composer.shell.select": "ctrl+o" }, { focusedTextarea: true })
   try {
     composer.app.mockInput.pressEnter()
     await composer.app.renderOnce()
