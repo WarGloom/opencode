@@ -1,5 +1,5 @@
 import { Plugin } from "@opencode/plugin/tui"
-import { createMemo, For, Show } from "solid-js"
+import { createComputed, createMemo, createSignal, For, mapArray, onCleanup, Show } from "solid-js"
 
 type Session = ReturnType<Plugin.Context["data"]["session"]["list"]>[number]
 
@@ -10,25 +10,48 @@ function plural(count: number, word: string) {
   return count ? `${count} ${word}${count === 1 ? "" : "s"}` : ""
 }
 
-function summarize(context: Plugin.Context, sessions: Session[]) {
-  const running = sessions.flatMap((session) =>
-    context.data.session.message
-      .list(session.id)
-      .flatMap((message) =>
-        message.type === "assistant"
-          ? message.content.filter((part) => part.type === "tool" && part.state.status === "running")
-          : [],
-      ),
-  )
-  const subagents = sessions.filter((session) => session.parentID).length
-  return [
-    plural(sessions.length - subagents, "agent"),
-    subagents ? `${subagents} sub` : "",
-    plural(running.filter((part) => part.type === "tool" && TASK_TOOLS.has(part.name)).length, "task"),
-    plural(running.filter((part) => part.type === "tool" && COMMAND_TOOLS.has(part.name)).length, "cmd"),
-  ]
-    .filter(Boolean)
-    .join(" · ")
+function summarize(context: Plugin.Context, sessions: () => Session[]) {
+  const counts = mapArray(sessions, (session) => {
+    const [total, setTotal] = createSignal({ tasks: 0, commands: 0 })
+    createComputed(mapArray(() => context.data.session.message.list(session.id), (message) => {
+      let previous = { tasks: 0, commands: 0 }
+      createComputed(() => {
+        const next = { tasks: 0, commands: 0 }
+        if (message.type === "assistant") {
+          for (const part of message.content) {
+            if (part.type !== "tool" || part.state.status !== "running") continue
+            if (TASK_TOOLS.has(part.name)) next.tasks++
+            if (COMMAND_TOOLS.has(part.name)) next.commands++
+          }
+        }
+        if (next.tasks === previous.tasks && next.commands === previous.commands) return
+        setTotal((value) => ({
+          tasks: value.tasks + next.tasks - previous.tasks,
+          commands: value.commands + next.commands - previous.commands,
+        }))
+        previous = next
+      })
+      onCleanup(() => {
+        if (!previous.tasks && !previous.commands) return
+        setTotal((value) => ({ tasks: value.tasks - previous.tasks, commands: value.commands - previous.commands }))
+      })
+    }))
+    return total
+  })
+  createComputed(counts)
+  return createMemo(() => {
+    const running = counts().reduce(
+      (total, count) => ({ tasks: total.tasks + count().tasks, commands: total.commands + count().commands }),
+      { tasks: 0, commands: 0 },
+    )
+    const subagents = sessions().filter((session) => session.parentID).length
+    return [
+      plural(sessions().length - subagents, "agent"),
+      subagents ? `${subagents} sub` : "",
+      plural(running.tasks, "task"),
+      plural(running.commands, "cmd"),
+    ].filter(Boolean).join(" · ")
+  })
 }
 
 function ActivityRow(props: { context: Plugin.Context; session: Session }) {
@@ -94,10 +117,10 @@ export function SidebarActivity(props: { context: Plugin.Context; sessionID: str
     return {
       session,
       workspace,
-      summary: summarize(props.context, session),
-      workspaceSummary: summarize(props.context, workspace),
     }
   })
+  const summary = summarize(props.context, () => activity().session)
+  const workspaceSummary = summarize(props.context, () => activity().workspace)
 
   return (
     <Show when={activity().session.length > 0 || activity().workspace.length > 0}>
@@ -106,8 +129,8 @@ export function SidebarActivity(props: { context: Plugin.Context; sessionID: str
           <text fg={theme.text.base}>{view.open ? "▼" : "▶"}</text>
           <text fg={theme.text.base}>
             <b>Activity</b>
-            <Show when={activity().summary}>
-              <span style={{ fg: theme.text.muted }}> ({activity().summary})</span>
+            <Show when={summary()}>
+              <span style={{ fg: theme.text.muted }}> ({summary()})</span>
             </Show>
           </text>
         </box>
@@ -116,7 +139,7 @@ export function SidebarActivity(props: { context: Plugin.Context; sessionID: str
           <Show when={activity().workspace.length > 0}>
             <box flexDirection="row" gap={1} onMouseDown={() => toggle("workspace")}>
               <text fg={theme.text.muted}>{view.workspace ? "▼" : "▶"}</text>
-              <text fg={theme.text.muted}>Workspace ({activity().workspaceSummary})</text>
+              <text fg={theme.text.muted}>Workspace ({workspaceSummary()})</text>
             </box>
             <Show when={view.workspace}>
               <For each={activity().workspace}>
