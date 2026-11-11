@@ -46,12 +46,9 @@ export const make = Effect.gen(function* () {
         target.location.workspaceID !== undefined
       )
         return yield* conflict("Handoffs require local host sessions")
-      if (
-        sender.projectID !== input.location.project.id ||
-        target.projectID !== sender.projectID ||
-        input.target.projectID !== target.projectID
-      )
-        return yield* conflict("Sender and target must belong to the exact current project")
+      if (sender.projectID !== input.location.project.id)
+        return yield* conflict("Sender must belong to the exact current project")
+      if (input.target.projectID !== target.projectID) return yield* conflict("Approved target project changed")
       if (
         sender.location.directory !== input.location.directory ||
         target.location.directory !== input.target.location.directory ||
@@ -121,8 +118,12 @@ export const make = Effect.gen(function* () {
           senderAgent: input.sender.agent,
           senderMessageID: input.sender.messageID,
           senderCallID: input.sender.callID,
+          senderProjectID: input.location.project.id,
+          senderDirectory: input.location.directory,
           projectID: input.target.projectID,
           targetSessionID: input.target.sessionID,
+          targetDirectory: input.target.location.directory,
+          ...(input.target.agent === undefined ? {} : { targetAgent: input.target.agent }),
         }
         yield* inbox
           .admit({

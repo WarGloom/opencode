@@ -1,11 +1,19 @@
 import { expect } from "bun:test"
 import { eq } from "drizzle-orm"
-import { Deferred, Effect, Fiber } from "effect"
-import { Agent } from "@opencode/schema/agent"
+import { Context, Deferred, Effect, Fiber, Layer } from "effect"
+import { mkdir } from "node:fs/promises"
+import { Agent } from "../src/agent.js"
+import { AppNodeBuilder } from "../src/effect/app-node-builder.js"
+import { Config } from "../src/config.js"
+import { Instance } from "../src/instance/service.js"
+import { InstructionDiscovery } from "../src/instruction-discovery.js"
+import { ModelsDev } from "../src/models-dev.js"
+import { Permission } from "../src/permission.js"
 import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
 import { Project } from "@opencode/schema/project"
 import { LayerNode } from "@opencode/util/effect/layer-node"
+import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { Global } from "@opencode/util/global"
 import { WorkspaceID } from "@opencode/schema/workspace-id"
 import { AbsolutePath } from "../src/schema.js"
@@ -23,12 +31,21 @@ import { SessionTable } from "../src/session/sql.js"
 import { SessionStore } from "../src/session/store.js"
 import { SessionProjector } from "../src/session/projector.js"
 import { SessionRunCoordinator } from "../src/session/run-coordinator.js"
+import { SessionRunner } from "../src/session/runner/index.js"
+import { SessionRunnerLLM } from "../src/session/runner/llm.js"
 import { tempGlobalLayer } from "./fixture/global"
 import { testEffect } from "./lib/effect"
 
 const it = testEffect(
   LayerNode.compile(
-    LayerNode.group([Database.node, Bus.node, SessionProjector.node, SessionStore.node, SessionInbox.node]),
+    LayerNode.group([
+      Global.node,
+      Database.node,
+      Bus.node,
+      SessionProjector.node,
+      SessionStore.node,
+      SessionInbox.node,
+    ]),
     { replacements: [Bus.node.replace(Bus.configured({ persist: true })), Global.node.replace(tempGlobalLayer)] },
   ),
 )
@@ -36,28 +53,41 @@ const senderID = SessionSchema.ID.make("ses_handoff_sender")
 const targetID = SessionSchema.ID.make("ses_handoff_target")
 const messageID = SessionMessage.ID.make("msg_handoff_call")
 const agent = Agent.ID.make("build")
+const targetAgent = Agent.ID.make("review")
+const targetProject = Project.ID.make("handoff-target-project")
 const source = Location.Ref.make({ directory: AbsolutePath.make("/handoff-project") })
+const destination = Location.Ref.make({ directory: AbsolutePath.make("/handoff-target") })
 
 const setup = Effect.fnUntraced(function* (options?: {
   readonly execution?: SessionExecution.Interface
   readonly store?: (real: SessionStore.Interface) => SessionStore.Interface
+  readonly location?: { readonly source: Location.Ref; readonly target: Location.Ref }
+  readonly crossProject?: boolean
 }) {
   const database = yield* Database.Service
   const bus = yield* Bus.Service
   const store = yield* SessionStore.Service
+  const senderLocation = options?.location?.source ?? source
+  const targetLocation = options?.location?.target ?? destination
+  const projectID = options?.crossProject === false ? Project.ID.global : targetProject
   yield* database.db
     .insert(ProjectTable)
-    .values({ id: Project.ID.global, worktree: source.directory, sandboxes: [] })
+    .values([
+      { id: Project.ID.global, worktree: senderLocation.directory, sandboxes: [] },
+      ...(projectID === Project.ID.global
+        ? []
+        : [{ id: projectID, worktree: targetLocation.directory, sandboxes: [] }]),
+    ])
     .run()
     .pipe(Effect.orDie)
   yield* Effect.forEach([senderID, targetID], (sessionID) =>
     bus.publish(SessionEvent.Created, {
       sessionID,
-      projectID: Project.ID.global,
-      location: source,
+      projectID: sessionID === senderID ? Project.ID.global : projectID,
+      location: sessionID === senderID ? senderLocation : targetLocation,
       slug: "handoff",
       version: "test",
-      agent,
+      agent: sessionID === senderID ? agent : targetAgent,
     }),
   )
   yield* bus.publish(SessionEvent.Step.Started, {
@@ -99,50 +129,63 @@ const setup = Effect.fnUntraced(function* (options?: {
   const input = {
     pluginID: "omo",
     location: new Location.Info({
-      ...source,
-      project: { id: Project.ID.global, directory: source.directory, canonical: source.directory },
+      ...senderLocation,
+      project: { id: Project.ID.global, directory: senderLocation.directory, canonical: senderLocation.directory },
     }),
     sender: { sessionID: senderID, agent, messageID, callID: "call" },
-    target: { sessionID: targetID, projectID: Project.ID.global, location: source, agent },
+    target: { sessionID: targetID, projectID, location: targetLocation, agent: targetAgent },
     text: "Repair the reviewed behavior",
     commit: true,
   }
   return { send, input, store, bus, db: database.db, wakes }
 })
 
-it.live("inspects without admission, then durably queues one approved peer message before waking", () =>
-  Effect.gen(function* () {
-    const f = yield* setup()
-    expect((yield* f.send({ ...f.input, commit: false })).status).toBe("approval-required")
-    expect(yield* SessionInbox.list(f.db, targetID)).toEqual([])
-    expect(f.wakes).toEqual([])
-    const receipt = yield* f.send(f.input)
-    expect(receipt).toMatchObject({ sessionID: targetID, status: "admitted", duplicate: false, wakeScheduled: true })
-    const pending = yield* SessionInbox.list(f.db, targetID)
-    expect(pending).toHaveLength(1)
-    expect(pending[0]).toMatchObject({
-      id: receipt.id,
-      delivery: "queue",
-      type: "synthetic",
-      payload: {
-        metadata: {
-          peerHandoff: {
-            senderSessionID: senderID,
-            senderAgent: agent,
-            senderMessageID: messageID,
-            senderCallID: "call",
-            targetSessionID: targetID,
-            projectID: Project.ID.global,
+for (const crossProject of [false, true]) {
+  it.live(
+    `inspects without admission, then durably queues one approved peer message with crossProject=${crossProject}`,
+    () =>
+      Effect.gen(function* () {
+        const f = yield* setup({ crossProject })
+        expect((yield* f.send({ ...f.input, commit: false })).status).toBe("approval-required")
+        expect(yield* SessionInbox.list(f.db, targetID)).toEqual([])
+        expect(f.wakes).toEqual([])
+        const receipt = yield* f.send(f.input)
+        expect(receipt).toMatchObject({
+          sessionID: targetID,
+          status: "admitted",
+          duplicate: false,
+          wakeScheduled: true,
+        })
+        const pending = yield* SessionInbox.list(f.db, targetID)
+        expect(pending).toHaveLength(1)
+        expect(pending[0]).toMatchObject({
+          id: receipt.id,
+          delivery: "queue",
+          type: "synthetic",
+          payload: {
+            metadata: {
+              peerHandoff: {
+                senderSessionID: senderID,
+                senderAgent: agent,
+                senderMessageID: messageID,
+                senderCallID: "call",
+                targetSessionID: targetID,
+                projectID: crossProject ? targetProject : Project.ID.global,
+                senderProjectID: Project.ID.global,
+                senderDirectory: source.directory,
+                targetDirectory: destination.directory,
+                targetAgent,
+              },
+            },
           },
-        },
-      },
-    })
-    const item = pending[0]
-    if (item?.type !== "synthetic") throw new Error("Expected peer message")
-    expect(JSON.parse(item.payload.text.slice(item.payload.text.indexOf("\n") + 1)).message).toBe(f.input.text)
-    expect(f.wakes).toEqual([targetID])
-  }),
-)
+        })
+        const item = pending[0]
+        if (item?.type !== "synthetic") throw new Error("Expected peer message")
+        expect(JSON.parse(item.payload.text.slice(item.payload.text.indexOf("\n") + 1)).message).toBe(f.input.text)
+        expect(f.wakes).toEqual([targetID])
+      }),
+  )
+}
 
 it.live("reconciles pending and delivered retries while rejecting changed content and recipient", () =>
   Effect.gen(function* () {
@@ -235,31 +278,57 @@ for (const busy of [false, true]) {
   )
 }
 
-it.live("rejects a project change after approval without admitting the queued handoff", () =>
-  Effect.gen(function* () {
-    const f = yield* setup()
-    yield* f.send({ ...f.input, commit: false })
-    const other = Project.ID.make("other")
-    yield* f.db
-      .insert(ProjectTable)
-      .values({ id: other, worktree: AbsolutePath.make("/other"), sandboxes: [] })
-      .run()
-      .pipe(Effect.orDie)
-    yield* f.db
-      .update(SessionTable)
-      .set({ project_id: other })
-      .where(eq(SessionTable.id, targetID))
-      .run()
-      .pipe(Effect.orDie)
-    expect(yield* f.send(f.input).pipe(Effect.flip)).toBeInstanceOf(SessionHandoff.Conflict)
-    expect(yield* SessionInbox.list(f.db, targetID)).toEqual([])
-    expect(f.wakes).toEqual([])
-  }),
-)
+for (const boundary of [
+  "project",
+  "directory",
+  "agent",
+  "workspace",
+  "parent",
+  "archived",
+  "sender-project",
+  "sender-directory",
+  "sender-agent",
+] as const) {
+  it.live(`rejects a ${boundary} change after approval without admitting the queued handoff`, () =>
+    Effect.gen(function* () {
+      const f = yield* setup()
+      yield* f.send({ ...f.input, commit: false })
+      const change = (() => {
+        switch (boundary) {
+          case "project":
+            return { id: targetID, values: { project_id: Project.ID.global } }
+          case "directory":
+            return { id: targetID, values: { directory: AbsolutePath.make("/moved") } }
+          case "agent":
+            return { id: targetID, values: { agent } }
+          case "workspace":
+            return { id: targetID, values: { workspace_id: WorkspaceID.make("wrk_remote") } }
+          case "parent":
+            return { id: targetID, values: { parent_id: senderID } }
+          case "archived":
+            return { id: targetID, values: { time_archived: 1 } }
+          case "sender-project":
+            return { id: senderID, values: { project_id: targetProject } }
+          case "sender-directory":
+            return { id: senderID, values: { directory: AbsolutePath.make("/moved-sender") } }
+          case "sender-agent":
+            return { id: senderID, values: { agent: targetAgent } }
+          default: {
+            const exhaustive: never = boundary
+            return exhaustive
+          }
+        }
+      })()
+      yield* f.db.update(SessionTable).set(change.values).where(eq(SessionTable.id, change.id)).run().pipe(Effect.orDie)
+      expect(yield* f.send(f.input).pipe(Effect.flip)).toBeInstanceOf(SessionHandoff.Conflict)
+      expect(yield* SessionInbox.list(f.db, targetID)).toEqual([])
+      expect(f.wakes).toEqual([])
+    }),
+  )
+}
 
-it.live(
-  "rolls back at the admission transaction when the target leaves the project between inspection and the atomic commit check",
-  () =>
+for (const boundary of ["project", "directory", "agent", "workspace", "parent", "archived"] as const) {
+  it.live(`rolls back the admission transaction when the target changes ${boundary} after the pre-check`, () =>
     Effect.gen(function* () {
       let targetReads = 0
       const f = yield* setup({
@@ -269,23 +338,156 @@ it.live(
             get: (sessionID) =>
               sessionID !== targetID
                 ? real.get(sessionID)
-                : real
-                    .get(sessionID)
-                    .pipe(
-                      Effect.map((session) =>
-                        session === undefined
-                          ? undefined
-                          : ++targetReads >= 2
-                            ? { ...session, projectID: Project.ID.make("other") }
-                            : session,
-                      ),
-                    ),
+                : real.get(sessionID).pipe(
+                    Effect.map((session) => {
+                      if (session === undefined || ++targetReads < 2) return session
+                      switch (boundary) {
+                        case "project":
+                          return { ...session, projectID: Project.ID.global }
+                        case "directory":
+                          return { ...session, location: Location.Ref.make({ directory: AbsolutePath.make("/moved") }) }
+                        case "agent":
+                          return { ...session, agent }
+                        case "workspace":
+                          return {
+                            ...session,
+                            location: Location.Ref.make({
+                              ...session.location,
+                              workspaceID: WorkspaceID.make("wrk_remote"),
+                            }),
+                          }
+                        case "parent":
+                          return { ...session, parentID: senderID }
+                        case "archived":
+                          return { ...session, time: { ...session.time, archived: session.time.created } }
+                        default: {
+                          const exhaustive: never = boundary
+                          return exhaustive
+                        }
+                      }
+                    }),
+                  ),
           }),
       })
       expect(yield* f.send(f.input).pipe(Effect.flip)).toBeInstanceOf(SessionHandoff.Conflict)
-      expect(targetReads).toBeGreaterThanOrEqual(2)
-      expect((yield* f.store.get(targetID))?.projectID).toBe(Project.ID.global)
+      expect(targetReads).toBe(2)
+      expect((yield* f.store.get(targetID))?.projectID).toBe(targetProject)
       expect(yield* SessionInbox.list(f.db, targetID)).toEqual([])
       expect(f.wakes).toEqual([])
     }),
+  )
+}
+
+it.live("native execution promotes the handoff in the recipient Location with its agent permissions", () =>
+  Effect.gen(function* () {
+    const database = yield* Database.Service
+    const bus = yield* Bus.Service
+    const store = yield* SessionStore.Service
+    const inbox = yield* SessionInbox.Service
+    const global = yield* Global.Service
+    const location = {
+      source: Location.Ref.make({ directory: AbsolutePath.make(`${global.tmp}/sender`) }),
+      target: Location.Ref.make({ directory: AbsolutePath.make(`${global.tmp}/recipient`) }),
+    }
+    yield* Effect.promise(() =>
+      Promise.all(Object.values(location).map((ref) => mkdir(ref.directory, { recursive: true }))),
+    )
+    const observed: { directory: string; agent: Agent.ID; shellAllowed: boolean }[] = []
+    const runner = Layer.effect(
+      SessionRunner.Service,
+      Effect.gen(function* () {
+        const current = yield* Location.Service
+        const agents = yield* Agent.Service
+        const permission = yield* Permission.Service
+        return SessionRunner.Service.of({
+          drain: (input) =>
+            Effect.gen(function* () {
+              const session = yield* store.get(input.sessionID)
+              if (!session) return yield* Effect.die(new Error("Missing native handoff recipient"))
+              const selected = yield* agents.select(session.agent)
+              if (!selected.info)
+                return yield* Effect.die(new Error("Recipient agent is unavailable in the selected Location"))
+              const shellAllowed = yield* permission
+                .allows({
+                  sessionID: session.id,
+                  action: "shell",
+                  resources: ["*"],
+                  source: { type: "tool", messageID, id: "permission-probe" },
+                })
+                .pipe(Effect.orDie)
+              yield* SessionInbox.promote(database.db, bus, session.id, input.promotable ?? "input")
+              observed.push({ directory: current.directory, agent: selected.id, shellAllowed })
+              return SessionRunner.DrainResult.Complete()
+            }),
+        })
+      }),
+    )
+    const runtime = yield* Layer.buildWithScope(
+      AppNodeBuilder.build(LayerNode.group([Instance.node, SessionExecution.node]), [
+        Database.node.replace(Layer.succeed(Database.Service, database)),
+        Bus.node.replace(Layer.succeed(Bus.Service, bus)),
+        SessionStore.node.replace(Layer.succeed(SessionStore.Service, store)),
+        SessionInbox.node.replace(Layer.succeed(SessionInbox.Service, inbox)),
+        Global.node.replace(Layer.succeed(Global.Service, global)),
+        Config.node.replace(Config.testLayer()),
+        ModelsDev.node.replace(ModelsDev.configured({ fetch: false, snapshot: false })),
+        InstructionDiscovery.node.replace(InstructionDiscovery.configured({ project: false, global: false })),
+        SessionRunnerLLM.node.replace(
+          makeLocationNode({
+            service: SessionRunner.Service,
+            layer: runner,
+            deps: [Location.node, Agent.node, Permission.node],
+          }),
+        ),
+      ]),
+      yield* Effect.scope,
+    )
+    const execution = Context.get(runtime, SessionExecution.Service)
+    const instances = Context.get(runtime, Instance.Service)
+    const f = yield* setup({ execution, location })
+    for (const id of [senderID, targetID]) {
+      const session = yield* store.get(id)
+      if (!session) return yield* Effect.die(new Error("Missing native handoff session"))
+      yield* Agent.Service.use((agents) =>
+        agents.transform((editor) => {
+          editor.update(id === senderID ? agent : targetAgent, (entry) => {
+            entry.permissions = [{ action: "shell", resource: "*", effect: id === senderID ? "allow" : "deny" }]
+          })
+        }),
+      ).pipe(instances.provide(session))
+      if (id === senderID) {
+        const senderAllowed = yield* Permission.Service.use((permission) =>
+          permission.allows({
+            sessionID: id,
+            action: "shell",
+            resources: ["*"],
+            source: { type: "tool", messageID, id: "sender-permission-probe" },
+          }),
+        ).pipe(instances.provide(session), Effect.orDie)
+        expect(senderAllowed).toBe(true)
+      }
+    }
+    yield* f.send({ ...f.input, commit: false })
+    const receipt = yield* f.send(f.input)
+    yield* execution.awaitIdle(targetID)
+    expect(observed).toEqual([{ directory: location.target.directory, agent: targetAgent, shellAllowed: false }])
+    expect((yield* store.message(receipt.id))?.message).toMatchObject({ type: "synthetic" })
+    expect(yield* store.messages({ sessionID: senderID, type: "synthetic" })).toEqual([])
+    expect(yield* f.send({ ...f.input, commit: false })).toMatchObject({
+      status: "delivered",
+      duplicate: true,
+      wakeScheduled: false,
+    })
+    console.log(
+      JSON.stringify({
+        proof: "native-handoff-routing",
+        recipientLocation: "recipient",
+        agent: targetAgent,
+        shellAllowed: observed[0]?.shellAllowed,
+        delivered: true,
+        providerCalls: 0,
+        toolExecutions: 0,
+      }),
+    )
+  }),
 )
