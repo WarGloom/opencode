@@ -4227,6 +4227,8 @@ describe("SessionRunnerLLM", () => {
         error: expect.objectContaining({ message: "prompt too long" }),
       }),
     )
+    const failed = (yield* s.context).find((message) => message.type === "assistant" && message.finish === "error")
+    expect(failed?.type === "assistant" ? failed.error?.kind : undefined).toBeUndefined()
     expect(yield* s.context).not.toContainEqual(expect.objectContaining({ type: "compaction" }))
     expect(yield* recordedEventTypes(sessionID)).not.toContain(
       Bus.versionedType(SessionEvent.Compaction.Started.type, 1),
@@ -4367,14 +4369,16 @@ describe("SessionRunnerLLM", () => {
     expect(s.requests[1]?.maxTokens).toBe(16_000)
   })
 
-  scenario("publishes the original overflow when recovery summarization fails", function* (s) {
+  scenario("settles the compaction failure when overflow recovery summarization fails", function* (s) {
     yield* setupOverflowRecovery(s)
     yield* s.llm.push(
       TestLLM.failAfter(providerRejected({ message: "prompt too long", classification: "context-overflow" })),
       TestLLM.failAfter(providerRejected({ message: "summary unavailable" })),
     )
     yield* s.admit("Continue")
-    expect((yield* s.resume.pipe(Effect.flip)).message).toBe("prompt too long")
+    expect(yield* s.resume.pipe(Effect.flip)).toMatchObject({
+      error: { type: "provider.invalid-request", message: "summary unavailable", kind: "compaction" },
+    })
 
     expect(s.requests).toHaveLength(2)
     const context = yield* s.context
@@ -4389,7 +4393,7 @@ describe("SessionRunnerLLM", () => {
     expect(context.slice(-3)).toMatchObject([
       Expected.user("Continue"),
       { type: "compaction", status: "failed", reason: "auto" },
-      { type: "assistant", finish: "error", error: { message: "prompt too long" } },
+      { type: "assistant", finish: "error", error: { message: "summary unavailable", kind: "compaction" } },
     ])
   })
 

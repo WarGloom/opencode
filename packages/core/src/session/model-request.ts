@@ -440,7 +440,7 @@ export const layer = Layer.effect(
         request,
         options: { ...(http ? { http } : {}), ...(webSocket ? { webSocket } : {}) },
         retry: (event: Parameters<Prepared["retry"]>[0]) =>
-          hooks.trigger("session", "retry", event).pipe(Effect.asVoid),
+          hooks.trigger("session", "retry", Object.assign(event, { kind })).pipe(Effect.asVoid),
         retryConnection: (event: Parameters<Prepared["retryConnection"]>[0]) =>
           hooks.trigger("session", "experimental.retry.connection", event).pipe(Effect.asVoid),
         // Permission.assert and the question tool throw declines as defects so tools cannot

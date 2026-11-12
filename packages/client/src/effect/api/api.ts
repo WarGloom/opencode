@@ -890,6 +890,7 @@ export type ExperimentalSessionLogOutput =
             readonly error: {
               readonly type: string
               readonly message: string
+              readonly kind?: "primary" | "compaction" | "title" | "generate" | undefined
               readonly status?: number | undefined
               readonly response?: { readonly body: string } | undefined
               readonly retryAfterMs?: number | undefined
@@ -1074,6 +1075,7 @@ export type ExperimentalSessionLogOutput =
             readonly error: {
               readonly type: string
               readonly message: string
+              readonly kind?: "primary" | "compaction" | "title" | "generate" | undefined
               readonly status?: number | undefined
               readonly response?: { readonly body: string } | undefined
               readonly retryAfterMs?: number | undefined
@@ -1263,6 +1265,7 @@ export type ExperimentalSessionLogOutput =
             readonly error: {
               readonly type: string
               readonly message: string
+              readonly kind?: "primary" | "compaction" | "title" | "generate" | undefined
               readonly status?: number | undefined
               readonly response?: { readonly body: string } | undefined
               readonly retryAfterMs?: number | undefined
@@ -1311,6 +1314,7 @@ export type ExperimentalSessionLogOutput =
             readonly error: {
               readonly type: string
               readonly message: string
+              readonly kind?: "primary" | "compaction" | "title" | "generate" | undefined
               readonly status?: number | undefined
               readonly response?: { readonly body: string } | undefined
               readonly retryAfterMs?: number | undefined
@@ -1373,6 +1377,7 @@ export type ExperimentalSessionLogOutput =
             readonly error: {
               readonly type: string
               readonly message: string
+              readonly kind?: "primary" | "compaction" | "title" | "generate" | undefined
               readonly status?: number | undefined
               readonly response?: { readonly body: string } | undefined
               readonly retryAfterMs?: number | undefined
