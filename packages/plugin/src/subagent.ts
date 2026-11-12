@@ -83,6 +83,7 @@ export interface Receipt {
   readonly promptID?: SessionMessage.ID
   readonly completion?: "parent" | "none"
   readonly output?: string
+  readonly outputModel?: Model.Ref
   readonly error?: string
   /** Set on a revoked team provisioning anchor. Status, output and error keep their historical values. */
   readonly revoked?: true

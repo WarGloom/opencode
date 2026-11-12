@@ -1,12 +1,14 @@
 export * as SubagentJob from "./subagent-job.js"
 
-import { Context, Deferred, Effect, Exit, Layer, Scope } from "effect"
+import { Cause, Context, Deferred, Effect, Exit, Layer, Scope } from "effect"
 import { Node } from "@opencode/util/effect/app-node"
 import type { LayerNode } from "@opencode/util/effect/layer-node"
 import { Job } from "../job.js"
 import { Bus } from "../bus.js"
+import { Database } from "../database/database.js"
 import { Session } from "../session.js"
 import { SessionExecution } from "./execution.js"
+import { SessionStore } from "./store.js"
 import { SubagentCompletion } from "./subagent-completion.js"
 import { SubagentAdmissionStore } from "./subagent-admission-store.js"
 import { SessionMessage } from "./message.js"
@@ -55,6 +57,8 @@ const make = Effect.gen(function* () {
   const jobs = yield* Job.Service
   const admissions = yield* SubagentAdmissionStore.Service
   const execution = yield* SessionExecution.Service
+  const store = yield* SessionStore.Service
+  const { db } = yield* Database.Service
   const bus = yield* Bus.Service
   const scope = yield* Scope.Scope
   // Jobs and their completion observers outlive the plugin that launched them.
@@ -126,6 +130,8 @@ const make = Effect.gen(function* () {
             generation: info.generation,
           }, { id: Event.ID.make(`evt_subagent_accepted_${info.generation}`) }).pipe(Effect.asVoid),
           run: Effect.gen(function* () {
+            const startedSeq = (yield* execution.periodStartSeq(recovery.childSessionID)) ??
+              (yield* Bus.latestSequence(db, recovery.childSessionID))
             const info = yield* jobs.get(recovery.childSessionID)
             const generation = info?.generation ?? recovery.generation
             const revision = generation === undefined ? 0 : revisions.get(generation) ?? 0
@@ -164,7 +170,23 @@ const make = Effect.gen(function* () {
                 const child = yield* sessions.get(recovery.childSessionID)
                 if (child.outcome === "failed" || child.outcome === "interrupted")
                   return Exit.fail(assistant?.error ?? new Error(`Subagent execution ${child.outcome}`))
-                if (recovery.pluginID !== undefined) return Exit.succeed(SubagentCompletion.text(assistant))
+                if (recovery.pluginID !== undefined) {
+                  const observed = yield* store.lastAssistantAfter({ sessionID: recovery.childSessionID, afterSeq: startedSeq }).pipe(
+                    Effect.catchCauseIf(
+                      (cause) => !Cause.hasInterrupts(cause),
+                      (cause) => Effect.logWarning("subagent output model observation failed", { sessionID: recovery.childSessionID, cause }).pipe(Effect.as(undefined)),
+                    ),
+                  )
+                  if (observed !== undefined && observed.id === assistant?.id && generation !== undefined &&
+                    assistant.content.some((part) => part.type === "text" && part.text.length > 0)) {
+                    const entries = yield* admissions.list(recovery.pluginID)
+                    for (const entry of entries) {
+                      if (entry.childSessionID === recovery.childSessionID && entry.generation === generation)
+                        yield* admissions.put({ ...entry, outputModel: observed.model })
+                    }
+                  }
+                  return Exit.succeed(SubagentCompletion.text(assistant))
+                }
                 return Exit.succeed("")
                 }))
                 if (result === "await-start") {
@@ -211,5 +233,5 @@ export const layer = Layer.effect(Service, make)
 export const node: LayerNode.Provider<Service, never, typeof Node.tags.values.global> = Node.makeGlobalNode({
   service: Service,
   layer,
-  deps: [Session.node, Job.node, SubagentAdmissionStore.node, SessionExecution.node, Bus.node],
+  deps: [Session.node, Job.node, SubagentAdmissionStore.node, SessionExecution.node, SessionStore.node, Database.node, Bus.node],
 })

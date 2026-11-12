@@ -31,6 +31,7 @@ export function receipt(entry: SubagentAdmissionStore.Entry): Receipt {
     promptID: entry.start?.promptID ?? promptID(entry.pluginID, entry.admissionID),
     ...(entry.start === undefined ? {} : { completion: entry.start.completion }),
     ...(entry.output === undefined ? {} : { output: entry.output }),
+    ...(entry.outputModel === undefined ? {} : { outputModel: entry.outputModel }),
     ...(entry.error === undefined ? {} : { error: entry.error }),
     ...(entry.revoked === undefined ? {} : { revoked: entry.revoked }),
   }
