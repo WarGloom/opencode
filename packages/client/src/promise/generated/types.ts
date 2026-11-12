@@ -120,6 +120,7 @@ export type ToolFileContent = { type: "file"; uri: string; mime: string; name?: 
 export type SessionStructuredError = {
   type: string
   message: string
+  kind?: "primary" | "compaction" | "title" | "generate"
   status?: number
   response?: { body: string }
   retryAfterMs?: number

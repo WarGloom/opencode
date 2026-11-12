@@ -272,7 +272,7 @@ const layer = Layer.effect(
               Effect.asVoid,
             ),
         })
-        if (compacted.status === "failed") return yield* new StepFailedError({ error: compacted.error })
+        if (compacted.status === "failed") return yield* new StepFailedError({ error: { ...compacted.error, kind: "compaction" } })
         if (compacted.status === "completed") {
           if (!autoCompactionEnabled) return "compaction-vetoed" as const
           assistantMessageID = SessionMessage.ID.create()
@@ -362,7 +362,9 @@ const layer = Layer.effect(
                       ),
                   })
                   .pipe(
-                    Effect.map((result) => result.status === "completed"),
+                    Effect.map((result) =>
+                      result.status === "failed" ? { ...result.error, kind: "compaction" as const } : result.status === "completed",
+                    ),
                   )
               : Effect.succeed(false),
           ),
