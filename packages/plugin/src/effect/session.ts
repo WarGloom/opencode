@@ -161,6 +161,7 @@ export interface SessionRetry {
   readonly sessionID: Session.ID
   readonly agent: Agent.ID
   readonly model: Model.Ref
+  readonly kind?: SessionRequestKind
   readonly error: SessionError.Error
   readonly attempt: number
   decision: SessionRetryDecision

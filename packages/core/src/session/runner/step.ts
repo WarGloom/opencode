@@ -63,7 +63,7 @@ interface Input {
   /** A tool whose successful call ends this turn without another model step. */
   readonly endsTurnTool?: string
   /** The runner owns compaction policy; the attempt invokes it only before durable output. */
-  readonly recoverOverflow: Effect.Effect<boolean>
+  readonly recoverOverflow: Effect.Effect<boolean | SessionError.Error>
 }
 
 const TOOLS_INTERRUPTED = { type: "aborted", message: "Tool execution interrupted" } as const
@@ -202,11 +202,11 @@ export const make = Effect.gen(function* () {
         )
           return yield* Effect.interrupt
 
-        if (
-          !publisher.record().outputStarted &&
-          isContextOverflowFailure(streamFailure) &&
-          (yield* restore(input.recoverOverflow))
-        ) {
+        const overflow =
+          !publisher.record().outputStarted && isContextOverflowFailure(streamFailure)
+            ? yield* restore(input.recoverOverflow)
+            : false
+        if (overflow === true) {
           yield* Effect.logWarning("provider rejected the request as too long; compacting", {
             sessionID: input.sessionID,
             model: input.model.ref,
@@ -226,7 +226,8 @@ export const make = Effect.gen(function* () {
               })
             : undefined
         const llmFailure = streamFailure instanceof AIError ? streamFailure : unknownFinish
-        const llmError = llmFailure && !recorded.providerFailed ? toSessionError(llmFailure) : undefined
+        const overflowError = typeof overflow === "object" ? overflow : undefined
+        const llmError = overflowError ?? (llmFailure && !recorded.providerFailed ? toSessionError(llmFailure) : undefined)
         const tokens = recorded.finish?.usage
         yield* Effect.annotateCurrentSpan({
           ...(firstOutputAt === undefined ? {} : { "opencode.llm.first_output_ms": firstOutputAt - started }),
@@ -325,6 +326,7 @@ export const make = Effect.gen(function* () {
         if (llmError && retry?.retry && tools.declines.length === 0 && !tools.interrupted)
           return Outcome.Retry({ error: llmError, decision: retry, freshAssistant: true })
 
+        if (overflowError) return yield* new StepFailedError({ error: overflowError })
         if (Exit.isFailure(stream)) return yield* Effect.failCause(stream.cause)
         if (tools.declines.length > 0) {
           if (input.isLocationClosed()) return Outcome.Completed({ needsContinuation: true })
