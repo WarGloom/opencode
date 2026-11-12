@@ -64,6 +64,7 @@ export const Entry = Schema.Struct({
   generation: Schema.optionalKey(Schema.String),
   start: Schema.optionalKey(Start),
   output: Schema.optionalKey(Schema.String),
+  outputModel: Schema.optionalKey(Model.Ref),
   error: Schema.optionalKey(Schema.String),
   skills: Schema.optionalKey(Skills),
   // Revocation removes future team authority without rewriting the historical outcome.

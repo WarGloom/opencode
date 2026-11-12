@@ -21,6 +21,7 @@ import { SessionMessage } from "@opencode/core/session/message"
 import { SessionEvent } from "@opencode/core/session/event"
 import { Bus } from "@opencode/core/bus"
 import { SubagentAdmissionStore } from "@opencode/core/session/subagent-admission-store"
+import { SubagentCompletion } from "@opencode/core/session/subagent-completion"
 import { SessionRestart } from "@opencode/core/session/execution/restart"
 import { SessionExecution } from "@opencode/core/session/execution"
 import { SessionInterruptJournal } from "@opencode/core/session/interrupt-journal"
@@ -115,6 +116,85 @@ const admissionFixture = Effect.gen(function* () {
 })
 
 describe("subagent admission lifecycle", () => {
+  it.live("output-model gate leaves host-generated no-text output unattributed", () =>
+    Effect.gen(function* () {
+      const { sessions, host, input, parent, llm } = yield* admissionFixture
+      yield* sessions.setPermissions({ sessionID: parent.id, permissions: [{ action: "subagent", resource: "reviewer", effect: "allow" }] })
+      yield* llm.push(TestLLM.stop())
+      const prepared = yield* host.experimental.subagent.prepare({ ...input, admissionID: "output-model-no-text", target: { kind: "create" } })
+      const receipt = yield* host.experimental.subagent.start({ admissionID: prepared.admissionID, prompt: { text: "inspect" }, delivery: "queue", mode: "foreground", completion: "none" }).pipe(Effect.timeout("2 seconds"))
+      expect(receipt.status).toBe("completed")
+      expect(receipt.output).toBe(SubagentCompletion.NO_TEXT)
+      expect(receipt.outputModel).toBeUndefined()
+    }),
+  )
+
+  it.live("output-model gate attributes actual text even when it equals the no-text fallback", () =>
+    Effect.gen(function* () {
+      const { sessions, host, input, parent, llm } = yield* admissionFixture
+      yield* sessions.setPermissions({ sessionID: parent.id, permissions: [{ action: "subagent", resource: "reviewer", effect: "allow" }] })
+      yield* llm.push(TestLLM.text(SubagentCompletion.NO_TEXT, "fallback-text"))
+      const prepared = yield* host.experimental.subagent.prepare({ ...input, admissionID: "output-model-fallback-text", target: { kind: "create" } })
+      const receipt = yield* host.experimental.subagent.start({ admissionID: prepared.admissionID, prompt: { text: "inspect" }, delivery: "queue", mode: "foreground", completion: "none" }).pipe(Effect.timeout("2 seconds"))
+      expect(receipt.status).toBe("completed")
+      expect(receipt.output).toBe(SubagentCompletion.NO_TEXT)
+      expect(receipt.outputModel).toEqual(input.model)
+    }),
+  )
+
+  it.live("output-model gate keeps a successful result when the optional observation defects", () =>
+    Effect.gen(function* () {
+      const { sessions, host, input, parent } = yield* admissionFixture
+      yield* sessions.setPermissions({ sessionID: parent.id, permissions: [{ action: "subagent", resource: "reviewer", effect: "allow" }] })
+      const store = yield* SessionStore.Service
+      const observer = spyOn(store, "lastAssistantAfter").mockImplementation(() => Effect.die(new Error("Synthetic observation failure")))
+      yield* Effect.addFinalizer(() => Effect.sync(() => observer.mockRestore()))
+      const prepared = yield* host.experimental.subagent.prepare({ ...input, admissionID: "output-model-observation-defect", target: { kind: "create" } })
+      const receipt = yield* host.experimental.subagent.start({ admissionID: prepared.admissionID, prompt: { text: "inspect" }, delivery: "queue", mode: "foreground", completion: "none" }).pipe(Effect.timeout("2 seconds"))
+      expect(receipt.status).toBe("completed")
+      expect(receipt.output).toBe("Review complete")
+      expect(receipt.outputModel).toBeUndefined()
+    }),
+  )
+
+  it.live("output-model gate propagates interruption of the optional observation", () =>
+    Effect.gen(function* () {
+      const { sessions, host, input, parent } = yield* admissionFixture
+      yield* sessions.setPermissions({ sessionID: parent.id, permissions: [{ action: "subagent", resource: "reviewer", effect: "allow" }] })
+      const store = yield* SessionStore.Service
+      const observer = spyOn(store, "lastAssistantAfter").mockImplementation(() => Effect.interrupt)
+      yield* Effect.addFinalizer(() => Effect.sync(() => observer.mockRestore()))
+      const prepared = yield* host.experimental.subagent.prepare({ ...input, admissionID: "output-model-observation-interrupted", target: { kind: "create" } })
+      const receipt = yield* host.experimental.subagent.start({ admissionID: prepared.admissionID, prompt: { text: "inspect" }, delivery: "queue", mode: "foreground", completion: "none" }).pipe(Effect.timeout("2 seconds"))
+      expect(receipt.status).toBe("cancelled")
+      expect(receipt.outputModel).toBeUndefined()
+    }),
+  )
+
+  for (const observed of [true, false]) {
+    it.live(`reports the output-producing model only when generation evidence is ${observed ? "available" : "missing"}`, () =>
+      Effect.gen(function* () {
+        const { sessions, host, input, parent } = yield* admissionFixture
+        yield* sessions.setPermissions({ sessionID: parent.id, permissions: [{ action: "subagent", resource: "reviewer", effect: "allow" }] })
+        const selected = Model.Ref.make({ providerID: input.model.providerID, id: Model.ID.make("selected") })
+        const locations = yield* LocationServiceMap.Service
+        yield* Effect.gen(function* () {
+          const providers = yield* Provider.Service
+          yield* providers.transform((editor) => editor.models.update(selected.providerID, selected.id, () => {}))
+        }).pipe(Effect.provide(locations.get(parent.location)))
+        if (!observed) {
+          const store = yield* SessionStore.Service
+          const observer = spyOn(store, "lastAssistantAfter").mockImplementation(() => Effect.succeed(undefined))
+          yield* Effect.addFinalizer(() => Effect.sync(() => observer.mockRestore()))
+        }
+        const prepared = yield* host.experimental.subagent.prepare({ ...input, model: selected, admissionID: `output-model-${observed}`, target: { kind: "create" } })
+        const receipt = yield* host.experimental.subagent.start({ admissionID: prepared.admissionID, prompt: { text: "inspect" }, delivery: "queue", mode: "foreground", completion: "none" }).pipe(Effect.timeout("2 seconds"))
+        expect(receipt.status).toBe("completed")
+        expect(receipt.outputModel).toEqual(observed ? input.model : undefined)
+      }),
+    )
+  }
+
   it.live("restarts a running admission after a model change with its original generation and initial model", () =>
     Effect.gen(function* () {
       // given
