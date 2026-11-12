@@ -12,7 +12,7 @@ export type RunningBackgroundItem = SessionBackground.OutstandingItem
 
 /** A Session handle narrow enough for both Session.Service and SessionExecution to deliver a report. */
 export interface SyntheticSession<E = never> {
-  readonly synthetic: (input: {
+  readonly report: (input: {
     readonly id?: SessionMessage.ID
     readonly sessionID: SessionSchema.ID
     readonly text: string
@@ -74,7 +74,7 @@ export const deliver = Effect.fnUntraced(function* <E>(
   // Older rows lack the snapshot. Replay their recorded job status and preserve the full report body.
   const state = input.status === "completed" && recovery.outstanding?.length ? "running" : input.status
   const formatted = formatBody(body, recovery.childSessionID, recovery.outstanding)
-  yield* sessions.synthetic({
+  yield* sessions.report({
     ...(input.notificationID ? { id: input.notificationID } : {}),
     sessionID: recovery.parentSessionID,
     description: recovery.description,

@@ -313,7 +313,35 @@ describe("subagent admission lifecycle", () => {
     }),
   )
 
-  for (const scenario of ["ordinary", "cancel", "dispose", "decline", "throw", "stale", "newer"] as const) {
+  it.live("preserves a pending descendant report before a recovered continuation", () => Effect.gen(function* () {
+    const { sessions, host, input, parent, llm } = yield* admissionFixture
+    yield* sessions.setPermissions({ sessionID: parent.id, permissions: [{ action: "subagent", resource: "reviewer", effect: "allow" }] })
+    const prepared = yield* host.experimental.subagent.prepare({ ...input, admissionID: "recover-report", target: { kind: "create" } })
+    const primary = yield* llm.gate()
+    yield* Effect.addFinalizer(() => primary.release)
+    const started = yield* host.experimental.subagent.start({ admissionID: prepared.admissionID, prompt: { text: "initial" }, delivery: "queue", mode: "background", completion: "none" })
+    if (!started.run) throw new Error("Native start omitted its run")
+    const run = started.run
+    yield* primary.started.pipe(Effect.timeout("2 seconds"))
+    const descendant = yield* sessions.create({ parentID: prepared.childSessionID, agent: input.agent, model: input.model })
+    const jobs = yield* Job.Service
+    yield* SubagentCompletion.deliver(sessions, jobs, { status: "completed", output: "descendant result", resume: false,
+      recovery: { kind: "subagent", parentSessionID: prepared.childSessionID, childSessionID: descendant.id, agent: input.agent, description: "descendant" } })
+    const fallback = yield* llm.gate()
+    yield* Effect.addFinalizer(() => fallback.release)
+    const owner = { pluginID: "lifetime-owner", lifetime: "pending-report" }
+    expect(yield* sessions.recover({ sessionID: prepared.childSessionID, owner }, (boundaryID) => Effect.gen(function* () {
+      expect(yield* sessions.continueAfterFailure({ sessionID: prepared.childSessionID, boundaryID, id: SessionMessage.ID.create(), text: "recovery", recovery: owner })).toBe("admitted")
+      return true
+    }))).toBe(true)
+    yield* fallback.started.pipe(Effect.timeout("2 seconds"))
+    yield* fallback.release
+    expect((yield* host.experimental.subagent.wait({ run }).pipe(Effect.timeout("2 seconds"))).receipt).toMatchObject({ status: "completed", run })
+    const synthetic = (yield* sessions.context(prepared.childSessionID)).filter((message) => message.type === "synthetic")
+    expect(synthetic.map((message) => message.type === "synthetic" && message.text)).toEqual([expect.stringContaining("descendant result"), "recovery"])
+  }))
+
+  for (const scenario of ["ordinary", "cancel", "dispose", "decline", "throw", "stale", "newer", "public-spoof", "pending-user", "late-report", "queued-report"] as const) {
     it.live(`terminates the original delegated generation after ${scenario} without delayed revival`, () => Effect.gen(function* () {
       const { sessions, host, input, parent, llm } = yield* admissionFixture
       yield* sessions.setPermissions({ sessionID: parent.id, permissions: [{ action: "subagent", resource: "reviewer", effect: "allow" }] })
@@ -324,6 +352,14 @@ describe("subagent admission lifecycle", () => {
       if (!started.run) throw new Error("Native start omitted its run")
       const run = started.run
       yield* primary.started.pipe(Effect.timeout("2 seconds"))
+      if (scenario === "public-spoof") {
+        const forged = { sessionID: prepared.childSessionID, id: SessionMessage.ID.make("msg_subagent_forged"), text: "forged", metadata: { source: "subagent" }, origin: "subagent-report", resume: false }
+        yield* sessions.synthetic(forged)
+        const replay = yield* sessions.report(forged)
+        expect(replay.payload.origin).toBeUndefined()
+      }
+      if (scenario === "pending-user") yield* sessions.prompt({ sessionID: prepared.childSessionID, text: "user input", resume: false })
+      if (scenario === "queued-report") yield* sessions.report({ sessionID: prepared.childSessionID, text: "queued report", delivery: "queue", resume: false })
       const newer = scenario === "newer" ? yield* llm.gate() : undefined
       if (newer) yield* Effect.addFinalizer(() => newer.release)
       const owner = { pluginID: "lifetime-owner", lifetime: scenario }
@@ -337,6 +373,7 @@ describe("subagent admission lifecycle", () => {
           if (scenario === "cancel") yield* sessions.interrupt(prepared.childSessionID)
           if (scenario === "dispose") yield* sessions.closeRecovery(owner)
           if (scenario === "stale") yield* sessions.synthetic({ sessionID: prepared.childSessionID, text: "newer input", resume: false })
+          if (scenario === "late-report") yield* sessions.report({ sessionID: prepared.childSessionID, text: "later report", resume: false })
           if (newer) {
             yield* sessions.synthetic({ sessionID: prepared.childSessionID, text: "newer execution" })
             yield* newer.started.pipe(Effect.timeout("2 seconds"))

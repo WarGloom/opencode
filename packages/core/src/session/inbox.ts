@@ -371,6 +371,7 @@ export const make = Effect.fn("SessionInbox.make")(function* () {
     readonly description?: string
     readonly model?: Model.Ref
     readonly outcomes?: ReadonlyArray<"succeeded" | "failed" | "interrupted">
+    readonly pending?: "none" | "prior-reports"
     readonly authority?: Effect.Effect<boolean>
     readonly commit?: () => Effect.Effect<void>
     readonly admitted?: Effect.Effect<void>
@@ -385,9 +386,14 @@ export const make = Effect.fn("SessionInbox.make")(function* () {
             () =>
               Effect.gen(function* () {
                 if (input.authority && !(yield* input.authority)) return undefined
-                if (yield* has(db, input.sessionID, "input")) return undefined
-                if (!(yield* continuationBoundary(db, input.sessionID, input.boundaryID, input.outcomes ?? ["failed"])))
-                  return undefined
+                const boundary = yield* continuationBoundary(db, input.sessionID, input.boundaryID, input.outcomes ?? ["failed"])
+                if (boundary === undefined) return undefined
+                if (input.pending === "prior-reports") {
+                  const pending = yield* db.select().from(SessionInboxTable)
+                    .where(eq(SessionInboxTable.session_id, input.sessionID)).all().pipe(Effect.orDie)
+                  if (pending.some((row) => row.type !== "synthetic" || row.delivery !== "steer" ||
+                    row.enqueued_seq >= boundary || decodeSynthetic(row.payload).origin !== "subagent-report")) return undefined
+                } else if (yield* has(db, input.sessionID, "input")) return undefined
                 const session = yield* db
                   .select({ model: SessionTable.model, revert: SessionTable.revert })
                   .from(SessionTable)
@@ -759,7 +765,7 @@ const preparation = (db: DatabaseService, admissionID: string) =>
     .get()
     .pipe(Effect.orDie)
 
-/** True while `boundaryID` is the Session's newest message and an idle entry with one of the accepted outcomes. */
+/** Returns the sequence while the boundary is the newest idle message with an accepted outcome. */
 const continuationBoundary = Effect.fnUntraced(function* (
   db: DatabaseService,
   sessionID: SessionSchema.ID,
@@ -774,9 +780,9 @@ const continuationBoundary = Effect.fnUntraced(function* (
     .limit(1)
     .get()
     .pipe(Effect.orDie)
-  if (row?.id !== boundaryID || row.type !== "idle") return false
+  if (row?.id !== boundaryID || row.type !== "idle") return undefined
   const [message] = yield* SessionHistory.decodeMessageRows(db, [row]).pipe(Effect.orDie)
-  return message?.type === "idle" && outcomes.some((outcome) => outcome === message.outcome)
+  return message?.type === "idle" && outcomes.some((outcome) => outcome === message.outcome) ? row.seq : undefined
 })
 
 const sameModel = (model: Model.Ref, current: Model.Ref | undefined) =>
