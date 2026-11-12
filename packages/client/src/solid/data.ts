@@ -279,9 +279,12 @@ function createSync() {
     return entry.promise
   }
   return {
-    run(key: string, load: () => Promise<void>) {
+    run(key: string, load: () => Promise<void>, onCacheHit?: () => void) {
       const active = state.get(key)
-      if (active === true) return Promise.resolve()
+      if (active === true) {
+        onCacheHit?.()
+        return Promise.resolve()
+      }
       if (!active) return start(key, load)
       if (!active.invalidated) return active.promise
       return start(key, load, active.promise)
@@ -2096,83 +2099,87 @@ export function createData(config: CreateDataInput) {
             ),
           )
         },
-        sync(sessionID: string) {
-          return sync.run(`session.message:${sessionID}`, async () => {
-            const started = deletionEpoch
-            // The loaded messages that are where the server has them, oldest first. An input's row sits where it was
-            // admitted until its delivery moves it, so it is not history.
-            const history = () => {
-              if (!anchored.has(sessionID)) return []
-              const inputs = new Set(result.session.input.list(sessionID))
-              return (store.session.message[sessionID] ?? []).filter(
-                (item) => !outbox.has(item.id) && !inputs.has(item.id) && !stranded.get(sessionID)?.has(item.id),
-              )
-            }
-            const newest = await api()
-              .message.list({
-                sessionID,
-                limit: config.initialMessageLimit?.() ?? messagePageLimit,
-                order: "desc",
-              })
-              .catch(evictMissing)
-            if ((deletedAt.get(sessionID) ?? 0) > started) return
-            const pages = [newest]
-            const read = () => pages.flatMap((page) => page.data).toReversed()
-            // More than one page arrived while its events were missed, so messages lie between the newest page and
-            // the loaded history. Older pages close the gap. After a longer absence only the newest messages stay,
-            // as on a first read: the transcript never skips messages.
-            for (const limit of bridgePageLimits) {
-              const next = pages.at(-1)?.cursor.next
-              if (!next || !apart(history(), read())) break
-              pages.push(await api().message.list({ sessionID, limit, cursor: next }).catch(evictMissing))
-              if ((deletedAt.get(sessionID) ?? 0) > started) return
-            }
-            const fetched = read().map(stored)
-            // A kept message that was still running may have changed while its events were missed.
-            const refreshed = new Map(
-              (
-                await Promise.all(
-                  (before(history(), fetched) ?? []).filter(unsettled).map((item) =>
-                    api()
-                      .session.message.get({ sessionID, messageID: item.id })
-                      .then(stored)
-                      .catch((error) => (isMessageNotFoundError(error) ? undefined : evictMissing(error))),
-                  ),
+        sync(sessionID: string, onCacheHit?: () => void) {
+          return sync.run(
+            `session.message:${sessionID}`,
+            async () => {
+              const started = deletionEpoch
+              // The loaded messages that are where the server has them, oldest first. An input's row sits where it was
+              // admitted until its delivery moves it, so it is not history.
+              const history = () => {
+                if (!anchored.has(sessionID)) return []
+                const inputs = new Set(result.session.input.list(sessionID))
+                return (store.session.message[sessionID] ?? []).filter(
+                  (item) => !outbox.has(item.id) && !inputs.has(item.id) && !stranded.get(sessionID)?.has(item.id),
                 )
-              ).flatMap((item) => (item ? [[item.id, item] as const] : [])),
-            )
-            if ((deletedAt.get(sessionID) ?? 0) > started) return
-            // Same protection as the pending sync: a re-fetch racing an
-            // admission must not wipe its local transcript row.
-            const ids = new Set(fetched.map((item) => item.id))
-            const admitted = new Set(
-              (store.session.pending[sessionID] ?? []).flatMap((item) =>
-                item.type === "user" || item.type === "synthetic" ? [item.id] : [],
-              ),
-            )
-            const local = (store.session.message[sessionID] ?? []).filter(
-              (item) => !ids.has(item.id) && (outbox.has(item.id) || admitted.has(item.id)),
-            )
-            // The pages the reader loaded stay when the fetched messages start inside them: the messages before
-            // that point cannot have been removed, since a revert removes from its boundary to the end.
-            const kept = before(history(), fetched)?.map((item) => refreshed.get(item.id) ?? item)
-            const messages = [...(kept ?? []), ...fetched, ...local]
-            // The transcript only holds delivered input, so a pending row it contains missed its
-            // inbox.delivered event (and maybe its enqueued echo) while the event stream was down.
-            const delivered = [...admitted].filter((id) => ids.has(id))
-            batch(() => {
-              delivered.forEach((id) => {
-                outbox.delete(id)
-                removePending(sessionID, id)
+              }
+              const newest = await api()
+                .message.list({
+                  sessionID,
+                  limit: config.initialMessageLimit?.() ?? messagePageLimit,
+                  order: "desc",
+                })
+                .catch(evictMissing)
+              if ((deletedAt.get(sessionID) ?? 0) > started) return
+              const pages = [newest]
+              const read = () => pages.flatMap((page) => page.data).toReversed()
+              // More than one page arrived while its events were missed, so messages lie between the newest page and
+              // the loaded history. Older pages close the gap. After a longer absence only the newest messages stay,
+              // as on a first read: the transcript never skips messages.
+              for (const limit of bridgePageLimits) {
+                const next = pages.at(-1)?.cursor.next
+                if (!next || !apart(history(), read())) break
+                pages.push(await api().message.list({ sessionID, limit, cursor: next }).catch(evictMissing))
+                if ((deletedAt.get(sessionID) ?? 0) > started) return
+              }
+              const fetched = read().map(stored)
+              // A kept message that was still running may have changed while its events were missed.
+              const refreshed = new Map(
+                (
+                  await Promise.all(
+                    (before(history(), fetched) ?? []).filter(unsettled).map((item) =>
+                      api()
+                        .session.message.get({ sessionID, messageID: item.id })
+                        .then(stored)
+                        .catch((error) => (isMessageNotFoundError(error) ? undefined : evictMissing(error))),
+                    ),
+                  )
+                ).flatMap((item) => (item ? [[item.id, item] as const] : [])),
+              )
+              if ((deletedAt.get(sessionID) ?? 0) > started) return
+              // Same protection as the pending sync: a re-fetch racing an
+              // admission must not wipe its local transcript row.
+              const ids = new Set(fetched.map((item) => item.id))
+              const admitted = new Set(
+                (store.session.pending[sessionID] ?? []).flatMap((item) =>
+                  item.type === "user" || item.type === "synthetic" ? [item.id] : [],
+                ),
+              )
+              const local = (store.session.message[sessionID] ?? []).filter(
+                (item) => !ids.has(item.id) && (outbox.has(item.id) || admitted.has(item.id)),
+              )
+              // The pages the reader loaded stay when the fetched messages start inside them: the messages before
+              // that point cannot have been removed, since a revert removes from its boundary to the end.
+              const kept = before(history(), fetched)?.map((item) => refreshed.get(item.id) ?? item)
+              const messages = [...(kept ?? []), ...fetched, ...local]
+              // The transcript only holds delivered input, so a pending row it contains missed its
+              // inbox.delivered event (and maybe its enqueued echo) while the event stream was down.
+              const delivered = [...admitted].filter((id) => ids.has(id))
+              batch(() => {
+                delivered.forEach((id) => {
+                  outbox.delete(id)
+                  removePending(sessionID, id)
+                })
+                anchored.add(sessionID)
+                stranded.delete(sessionID)
+                messageIndex.set(sessionID, new Map(messages.map((message, index) => [message.id, index])))
+                setStore("session", "message", sessionID, reconcile(messages))
+                // Kept pages keep the cursor to the page before them.
+                if (!kept) setStore("session", "messageCursor", sessionID, pages.at(-1)?.cursor.next ?? undefined)
               })
-              anchored.add(sessionID)
-              stranded.delete(sessionID)
-              messageIndex.set(sessionID, new Map(messages.map((message, index) => [message.id, index])))
-              setStore("session", "message", sessionID, reconcile(messages))
-              // Kept pages keep the cursor to the page before them.
-              if (!kept) setStore("session", "messageCursor", sessionID, pages.at(-1)?.cursor.next ?? undefined)
-            })
-          })
+            },
+            onCacheHit,
+          )
         },
         more(sessionID: string) {
           return store.session.messageCursor[sessionID] !== undefined
