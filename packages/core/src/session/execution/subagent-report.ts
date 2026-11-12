@@ -95,7 +95,7 @@ export const make = (deps: Deps) => {
     }
     const delivered = yield* SubagentCompletion.deliver(
       {
-        synthetic: (notice) =>
+        report: (notice) =>
           deps.inbox.admit({
             id: notice.id ?? report.notificationID,
             sessionID: notice.sessionID,
@@ -105,6 +105,7 @@ export const make = (deps: Deps) => {
                 text: notice.text,
                 description: notice.description,
                 metadata: notice.metadata,
+                origin: "subagent-report",
               }),
               delivery: "steer",
             },

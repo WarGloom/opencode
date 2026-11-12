@@ -268,6 +268,9 @@ export interface Interface {
   readonly synthetic: (
     input: Parameters<Session.Handle["synthetic"]>[0] & { sessionID: SessionSchema.ID },
   ) => ReturnType<Session.Handle["synthetic"]>
+  readonly report: (
+    input: Parameters<Session.Handle["report"]>[0] & { sessionID: SessionSchema.ID },
+  ) => ReturnType<Session.Handle["report"]>
   readonly continueAfterIdle: (input: {
     readonly sessionID: SessionSchema.ID
     readonly boundaryID: SessionMessage.ID
@@ -593,6 +596,7 @@ const layer = Layer.effect(
       }),
       resume: (sessionID) => sessions.forSession(sessionID).resume(),
       synthetic: (input) => sessions.forSession(input.sessionID).synthetic(input),
+      report: (input) => sessions.forSession(input.sessionID).report(input),
       continueAfterIdle: (input) =>
         Effect.uninterruptible(
           Effect.gen(function* () {
@@ -616,6 +620,7 @@ const layer = Layer.effect(
             const outcome = yield* inbox.admitAfter({ ...input,
               outcomes: attempt ? ["failed", "interrupted"] : input.outcomes,
               authority: attempt?.check,
+              pending: attempt ? "prior-reports" : "none",
               commit: attempt ? () => attempt.commit().pipe(Effect.andThen(store.claim(input.sessionID))) : undefined,
               admitted: Effect.gen(function* () {
                 if (!(yield* result.get(input.sessionID).pipe(Effect.orDie)).revert) yield* execution.wake(input.sessionID)

@@ -312,7 +312,7 @@ export const make = Effect.fn("Session.make")(function* () {
     yield* get(sessionID)
     yield* execution.resume(sessionID)
   })
-  const synthetic = Effect.fn("Session.synthetic")(
+  const admitSynthetic = Effect.fn("Session.synthetic")(
     (
       sessionID: SessionSchema.ID,
       input: {
@@ -323,6 +323,7 @@ export const make = Effect.fn("Session.make")(function* () {
         delivery?: SessionInbox.Delivery
         resume?: boolean
       },
+      origin?: "subagent-report",
     ) =>
       Effect.uninterruptible(
         Effect.gen(function* () {
@@ -334,6 +335,7 @@ export const make = Effect.fn("Session.make")(function* () {
               text: input.text,
               description: input.description,
               metadata: input.metadata,
+              ...(origin ? { origin } : {}),
             }),
             delivery: input.delivery ?? "steer",
           } satisfies SessionInbox.Item
@@ -359,6 +361,8 @@ export const make = Effect.fn("Session.make")(function* () {
         }),
       ),
   )
+  const synthetic = (sessionID: SessionSchema.ID, input: Parameters<typeof admitSynthetic>[1]) => admitSynthetic(sessionID, input)
+  const report = (sessionID: SessionSchema.ID, input: Parameters<typeof admitSynthetic>[1]) => admitSynthetic(sessionID, input, "subagent-report")
   const interrupt = Effect.fn("Session.interrupt")(
     (sessionID: SessionSchema.ID, options?: { readonly resume?: boolean }) =>
       Effect.uninterruptible(execution.interrupt(sessionID, options)),
@@ -404,6 +408,7 @@ export const make = Effect.fn("Session.make")(function* () {
     inbox,
     prompt,
     synthetic,
+    report,
     shell,
     skill,
     acceptSkills,
@@ -431,6 +436,7 @@ export const make = Effect.fn("Session.make")(function* () {
     const inbox = operations.inbox.bind(undefined, sessionID)
     const prompt = operations.prompt.bind(undefined, sessionID)
     const synthetic = operations.synthetic.bind(undefined, sessionID)
+    const report = operations.report.bind(undefined, sessionID)
     const shell = operations.shell.bind(undefined, sessionID)
     const skill = operations.skill.bind(undefined, sessionID)
     const acceptSkills = operations.acceptSkills.bind(undefined, sessionID)
@@ -461,6 +467,7 @@ export const make = Effect.fn("Session.make")(function* () {
       inbox,
       prompt,
       synthetic,
+      report,
       shell,
       skill,
       acceptSkills,

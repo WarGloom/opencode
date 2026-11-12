@@ -12,7 +12,7 @@ export type RunningBackgroundItem = SessionBackground.OutstandingItem
 
 /** A Session handle narrow enough for both Session.Service and SessionExecution to deliver a report. */
 export interface SyntheticSession<E = never> {
-  readonly synthetic: (input: {
+  readonly report: (input: {
     readonly id?: SessionMessage.ID
     readonly sessionID: SessionSchema.ID
     readonly text: string
@@ -74,7 +74,7 @@ export const deliver = Effect.fnUntraced(function* <E>(
   // The body is all a recovered outbox row keeps, so the still-running list is how a replay tells this period apart.
   // Only the model-facing tag says "running": the job and the message metadata keep the period's real status.
   const state = input.status === "completed" && body.includes(STILL_RUNNING) ? "running" : input.status
-  yield* sessions.synthetic({
+  yield* sessions.report({
     ...(input.notificationID ? { id: input.notificationID } : {}),
     sessionID: recovery.parentSessionID,
     description: recovery.description,

@@ -95,7 +95,12 @@ export type SkillName = string
 
 export type SessionInboxDelivery = "steer" | "queue"
 
-export type SessionInboxSyntheticPayload = { text: string; description?: string; metadata?: { [x: string]: JsonValue } }
+export type SessionInboxSyntheticPayload = {
+  text: string
+  description?: string
+  metadata?: { [x: string]: JsonValue }
+  origin?: "subagent-report"
+}
 
 export type SessionInboxCompactionPayload = {}
 
@@ -169,7 +174,12 @@ export type InstructionKey = string
 
 export type InstructionHash = string
 
-export type SessionInboxSyntheticPayload1 = { text: string; description?: string; metadata?: { [x: string]: any } }
+export type SessionInboxSyntheticPayload1 = {
+  text: string
+  description?: string
+  metadata?: { [x: string]: any }
+  origin?: "subagent-report"
+}
 
 export type SessionMessageNative1 = { [x: string]: any }
 

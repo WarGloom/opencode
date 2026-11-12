@@ -14,7 +14,7 @@ const recovery = {
   description: "Deliver report",
 }
 
-type SyntheticInput = Parameters<SubagentCompletion.SyntheticSession["synthetic"]>[0]
+type SyntheticInput = Parameters<SubagentCompletion.SyntheticSession["report"]>[0]
 
 describe("SubagentCompletion", () => {
   it.effect("leaves the report body unchanged when no background work runs", () =>
@@ -66,7 +66,7 @@ describe("SubagentCompletion", () => {
       const sent: SyntheticInput[] = []
       const completed: SessionMessage.ID[] = []
       const sessions: SubagentCompletion.SyntheticSession = {
-        synthetic: (input) =>
+        report: (input) =>
           Effect.sync(() => {
             sent.push(input)
             return input
@@ -131,7 +131,7 @@ describe("SubagentCompletion", () => {
       const notificationID = SessionMessage.ID.create()
       const sent: SyntheticInput[] = []
       const sessions: SubagentCompletion.SyntheticSession = {
-        synthetic: (input) =>
+        report: (input) =>
           Effect.sync(() => {
             sent.push(input)
             return input
