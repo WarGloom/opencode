@@ -33,7 +33,7 @@ import { Provider } from "@opencode/core/provider"
 import { daemonShells } from "./fixture/shell-daemon"
 import { SubagentCompletion } from "@opencode/core/session/subagent-completion"
 import { SubagentAdmissionStore } from "@opencode/core/session/subagent-admission-store"
-import { Context, Deferred, Effect, Exit, Fiber, Layer, LayerMap, Logger, Scope } from "effect"
+import { Cause, Context, Deferred, Effect, Exit, Fiber, Layer, LayerMap, Logger, Scope } from "effect"
 import { eq } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
 

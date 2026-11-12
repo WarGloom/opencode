@@ -325,7 +325,7 @@ describe("subagent admission lifecycle", () => {
     yield* primary.started.pipe(Effect.timeout("2 seconds"))
     const descendant = yield* sessions.create({ parentID: prepared.childSessionID, agent: input.agent, model: input.model })
     const jobs = yield* Job.Service
-    yield* SubagentCompletion.deliver(sessions, jobs, { status: "completed", output: "descendant result", resume: false,
+    yield* SubagentCompletion.deliver(sessions, jobs, { status: "completed", output: "descendant result",
       recovery: { kind: "subagent", parentSessionID: prepared.childSessionID, childSessionID: descendant.id, agent: input.agent, description: "descendant" } })
     const fallback = yield* llm.gate()
     yield* Effect.addFinalizer(() => fallback.release)
