@@ -20,7 +20,7 @@ export const make = (
     metadata?: Record<string, unknown>
     delivery?: SessionInbox.Delivery
     resume?: boolean
-  }) {
+  }, origin?: "subagent-report") {
     const sessionID = input.sessionID
     const get = store
       .get(sessionID)
@@ -38,6 +38,7 @@ export const make = (
             text: input.text,
             description: input.description,
             metadata: input.metadata,
+            ...(origin ? { origin } : {}),
           }),
         },
       })

@@ -322,6 +322,8 @@ export const make = Effect.fn("Session.make")(function* () {
   const admitSynthetic = SessionSynthetic.make(store, admission, execution.wake)
   const synthetic = (sessionID: SessionSchema.ID, input: Omit<Parameters<typeof admitSynthetic>[0], "sessionID">) =>
     admitSynthetic({ ...input, sessionID })
+  const report = (sessionID: SessionSchema.ID, input: Omit<Parameters<typeof admitSynthetic>[0], "sessionID">) =>
+    admitSynthetic({ ...input, sessionID }, "subagent-report")
   const interrupt = Effect.fn("Session.interrupt")(
     (sessionID: SessionSchema.ID, options?: { readonly resume?: boolean }) =>
       Effect.uninterruptible(execution.interrupt(sessionID, options)),
@@ -367,6 +369,7 @@ export const make = Effect.fn("Session.make")(function* () {
     inbox,
     prompt,
     synthetic,
+    report,
     shell,
     skill,
     acceptSkills,
@@ -394,6 +397,7 @@ export const make = Effect.fn("Session.make")(function* () {
     const inbox = operations.inbox.bind(undefined, sessionID)
     const prompt = operations.prompt.bind(undefined, sessionID)
     const synthetic = operations.synthetic.bind(undefined, sessionID)
+    const report = operations.report.bind(undefined, sessionID)
     const shell = operations.shell.bind(undefined, sessionID)
     const skill = operations.skill.bind(undefined, sessionID)
     const acceptSkills = operations.acceptSkills.bind(undefined, sessionID)
@@ -424,6 +428,7 @@ export const make = Effect.fn("Session.make")(function* () {
       inbox,
       prompt,
       synthetic,
+      report,
       shell,
       skill,
       acceptSkills,
