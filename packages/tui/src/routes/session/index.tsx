@@ -335,22 +335,31 @@ export function Session(props: {
     ),
   )
 
+  // Descendant requests can start once the root session is ready, without waiting for older history.
   createEffect(
-    on([descendantSessionIDs, () => client.connection.status()], ([sessionIDs, status]) => {
-      if (status !== "connected") return
-      void Promise.allSettled(
-        sessionIDs.flatMap((sessionID) => [data.session.permission.sync(sessionID), data.session.form.sync(sessionID)]),
-      )
-    }),
+    on(
+      [descendantSessionIDs, () => client.connection.status(), synced],
+      ([sessionIDs, status, ready]) => {
+        if (status !== "connected" || !ready) return
+        void Promise.allSettled(
+          sessionIDs.flatMap((sessionID) => [
+            data.session.permission.sync(sessionID),
+            data.session.form.sync(sessionID),
+          ]),
+        )
+      },
+    ),
   )
 
   createEffect(() => {
     if (client.connection.status() !== "connected") return
     setSynced(false)
     const sessionID = route.sessionID
+    // Listing a large family is slow; it fills descendantSessionIDs without delaying the transcript.
+    void data.session.sync(sessionID, { children: true }).catch(() => undefined)
     void (async () => {
       await Promise.all([
-        data.session.sync(sessionID, { children: true }),
+        data.session.sync(sessionID),
         data.session.permission.sync(sessionID).catch(() => undefined),
         data.session.form.sync(sessionID).catch(() => undefined),
       ])
