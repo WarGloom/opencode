@@ -2013,6 +2013,9 @@ export function createData(config: CreateDataInput) {
             const started = deletionEpoch
             const list = await api().permission.list({ sessionID }).catch(evictMissing)
             if ((deletedAt.get(sessionID) ?? 0) > started) return
+            // Opening a session reads every family member. An empty answer with nothing stored must not
+            // add a store key, or each member re-runs every reader that walks the whole family.
+            if (list.length === 0 && !store.session.permission[sessionID]?.length) return
             setStore("session", "permission", sessionID, list)
           })
         },
@@ -2063,6 +2066,7 @@ export function createData(config: CreateDataInput) {
             const started = deletionEpoch
             const list = await api().session.form.list({ sessionID }).catch(evictMissing)
             if ((deletedAt.get(sessionID) ?? 0) > started) return
+            if (list.length === 0 && !store.session.form[sessionID]?.length) return
             setStore("session", "form", sessionID, list)
           })
         },
