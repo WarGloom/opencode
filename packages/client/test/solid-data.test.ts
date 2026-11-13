@@ -28,7 +28,7 @@ test.each(["form.replied", "form.cancelled"] as const)(
     }
     try {
       await setup.data.session.form.sync(form.sessionID)
-      expect(setup.data.session.form.list(form.sessionID)).toEqual([])
+      expect(setup.data.session.form.list(form.sessionID)).toBeUndefined()
 
       const created: OpenCodeEvent = { type: "form.created", data: { form } }
       setup.emit(created)
@@ -98,6 +98,34 @@ function formFixture() {
     dispose,
   }))
 }
+
+test("writes no store key for an empty request snapshot when nothing is stored", async () => {
+  const setup = formFixture()
+  try {
+    await Promise.all([setup.data.session.permission.sync("ses_child"), setup.data.session.form.sync("ses_child")])
+    expect(setup.data.session.permission.list("ses_child")).toBeUndefined()
+    expect(setup.data.session.form.list("ses_child")).toBeUndefined()
+  } finally {
+    setup.dispose()
+  }
+})
+
+test("clears stored requests when the request snapshot comes back empty", async () => {
+  const setup = formFixture()
+  const permission = { id: "per_stale", sessionID: "ses_child", action: "read", resources: ["/project"] }
+  const form: FormInfo = { id: "frm_stale", sessionID: "ses_child", title: "Question", fields: [] }
+  try {
+    setup.emit({ id: "evt_stale_permission", created: 2, type: "permission.asked", data: permission })
+    setup.emit({ type: "form.created", data: { form } })
+    expect(setup.data.session.permission.list("ses_child")).toEqual([permission])
+    expect(setup.data.session.form.list("ses_child")).toEqual([form])
+    await Promise.all([setup.data.session.permission.sync("ses_child"), setup.data.session.form.sync("ses_child")])
+    expect(setup.data.session.permission.list("ses_child")).toEqual([])
+    expect(setup.data.session.form.list("ses_child")).toEqual([])
+  } finally {
+    setup.dispose()
+  }
+})
 
 test("uses the configured initial window and retains normal cursor page sizes", async () => {
   const requests: { limit: string | null; cursor: string | null }[] = []
