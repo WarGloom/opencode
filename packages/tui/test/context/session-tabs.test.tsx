@@ -4,6 +4,7 @@ import type { OpenCodeEvent } from "@opencode/client"
 import { testRender } from "@opentui/solid"
 import { mkdirSync, watch } from "fs"
 import path from "path"
+import { createComputed, createRoot } from "solid-js"
 import { ConfigProvider, useConfig } from "../../src/config"
 import { ClientProvider, useClient } from "../../src/context/client"
 import { DataProvider, useData } from "../../src/context/data"
@@ -227,6 +228,23 @@ function admitted(sessionID: string, inboxID: string): OpenCodeEvent {
       item: { type: "user", payload: { text: inboxID }, delivery: "steer" },
     },
   }
+}
+
+function observe(condition: () => boolean) {
+  return new Promise<void>((resolve, reject) => {
+    createRoot((dispose) => {
+      const timer = setTimeout(() => {
+        dispose()
+        reject(new Error("Timed out waiting for session state"))
+      }, 2_000)
+      createComputed(() => {
+        if (!condition()) return
+        clearTimeout(timer)
+        queueMicrotask(dispose)
+        resolve()
+      })
+    })
+  })
 }
 
 test("loads persisted tab metadata concurrently on connect", async () => {
@@ -758,6 +776,47 @@ test("closing a session whose tab another TUI closed selects its former neighbou
     expect(second.tabs.tabs().map((tab) => tab.sessionID)).toEqual(["one", "two", "four", "five"])
   } finally {
     await Promise.allSettled(clients.map((client) => client.destroy()))
+  }
+})
+
+test("tab busy state ignores parked descendant prompts but counts running descendants and root prompts", async () => {
+  const setup = await renderSessionTabs("root", { persisted: ["root"], sessionParents: { child: "root" } })
+
+  try {
+    await observe(() => setup.data.session.get("child") !== undefined)
+    const childPending = observe(() => setup.data.session.pending.list("child").some((item) => item.id === "msg_1"))
+    setup.emit(admitted("child", "msg_1"))
+    await childPending
+    expect(setup.tabs.status("root").busy).toBe(false)
+
+    const childRunning = observe(() => setup.data.session.status("child") === "running")
+    setup.emit({
+      id: "evt_child_started",
+      created: 0,
+      type: "session.execution.started",
+      durable: { aggregateID: "child", seq: 2, version: 1 },
+      data: { sessionID: "child" },
+    })
+    await childRunning
+    expect(setup.tabs.status("root").busy).toBe(true)
+
+    const childIdle = observe(() => setup.data.session.status("child") === "idle")
+    setup.emit({
+      id: "evt_child_finished",
+      created: 0,
+      type: "session.execution.succeeded",
+      durable: { aggregateID: "child", seq: 3, version: 1 },
+      data: { sessionID: "child" },
+    })
+    await childIdle
+    expect(setup.tabs.status("root").busy).toBe(false)
+
+    const rootPending = observe(() => setup.data.session.pending.list("root").some((item) => item.id === "msg_4"))
+    setup.emit(admitted("root", "msg_4"))
+    await rootPending
+    expect(setup.tabs.status("root").busy).toBe(true)
+  } finally {
+    await setup.destroy()
   }
 })
 
