@@ -34,6 +34,14 @@ export function text(message: SessionMessage.Info | undefined) {
 
 const clean = (value: string) => value.replace(/\s+/g, " ").trim()
 
+/** Tells the sender which admitted prompts the child never read, so it can send them again. */
+export function undelivered(prompts: ReadonlyArray<{ readonly id: string; readonly text: string }>): string {
+  return [
+    `Not delivered: the subagent ended before it read ${prompts.length === 1 ? "this prompt" : "these prompts"}. Send again if still needed.`,
+    ...prompts.map((prompt) => `- ${prompt.id}: ${clean(prompt.text).slice(0, 160)}`),
+  ].join("\n")
+}
+
 const STILL_RUNNING = "\n\nBackground work still running:\n"
 
 export function formatBody(

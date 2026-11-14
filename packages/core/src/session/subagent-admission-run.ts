@@ -43,7 +43,8 @@ export const make: Effect.Effect<Interface, never, SubagentAdmissionStore.Servic
     const background = pending.find((item) => item.recovery.kind === "subagent" &&
       item.recovery.pluginID === entry.pluginID && item.recovery.generation === entry.generation)
     if (background === undefined || background.status === "running") return entry
-    const updated = { ...entry, status: background.status, output: background.output, error: background.error }
+    const outcome = yield* subagents.settle({ generation: entry.generation, status: background.status, output: background.output, error: background.error })
+    const updated = { ...entry, status: outcome.status, output: outcome.output, error: outcome.error }
     yield* admissions.put(updated)
     return updated
   })
@@ -84,7 +85,7 @@ export const make: Effect.Effect<Interface, never, SubagentAdmissionStore.Servic
       generation: entry.generation,
       completion: start.completion,
     }
-    const info = yield* subagents.start(recovery)
+    const info = yield* subagents.start(recovery, start.promptID)
     if (info.generation !== entry.generation)
       return yield* new SubagentAdmissionStore.Conflict({ admissionID: entry.admissionID, reason: "Child generation changed" })
     const running = { ...entry, status: "running" as const }
@@ -98,13 +99,14 @@ export const make: Effect.Effect<Interface, never, SubagentAdmissionStore.Servic
     const entry = yield* requireEntry(pluginID, { run: input.run })
     if (entry.status !== "running") return { receipt: SubagentAdmission.receipt(entry), timedOut: entry.status === "accepted" }
     const result = yield* jobs.wait({ id: input.run.childSessionID, generation: input.run.generation, timeout: input.timeout })
+    const info = result.info && (yield* subagents.settle(result.info))
     return yield* admissions.serialized(Effect.gen(function* () {
       // An owner cancellation stamps the durable entry and consumes the Job, so the stored terminal entry wins
       // over whatever the Job wait saw, and is never overwritten with a pre-cancel copy.
       const current = (yield* find(pluginID, { run: input.run })) ?? entry
       if (terminal(current.status)) return { receipt: SubagentAdmission.receipt(current), timedOut: false }
-      if (result.info === undefined) return { receipt: SubagentAdmission.receipt(current), timedOut: true }
-      const updated = { ...current, status: result.info.status, output: result.info.output, error: result.info.error }
+      if (info === undefined) return { receipt: SubagentAdmission.receipt(current), timedOut: true }
+      const updated = { ...current, status: info.status, output: info.output, error: info.error }
       if (!result.timedOut) yield* admissions.put(updated)
       return { receipt: SubagentAdmission.receipt(updated), timedOut: result.timedOut }
     }))
@@ -149,7 +151,9 @@ export const make: Effect.Effect<Interface, never, SubagentAdmissionStore.Servic
       const background = pending.find((item) => item.recovery.kind === "subagent" &&
         item.recovery.pluginID === pluginID && item.recovery.generation === input.run.generation)
       if (background !== undefined && background.status !== "running" && background.recovery.kind === "subagent") {
-        yield* SubagentCompletion.deliver(sessions, jobs, { ...background, recovery: background.recovery })
+        // The notification ID is shared with notify, so the report that wins must already carry the undelivered note.
+        const outcome = yield* subagents.settle({ generation: input.run.generation, status: background.status, output: background.output, error: background.error })
+        yield* SubagentCompletion.deliver(sessions, jobs, { ...background, ...outcome, recovery: background.recovery })
         return SubagentAdmission.receipt(entry)
       }
       if (entry.status !== "accepted" && entry.status !== "running")

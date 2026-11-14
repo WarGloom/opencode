@@ -15,6 +15,7 @@ import { Plugin } from "@opencode/core/plugin"
 import type { SubagentDomain } from "@opencode/plugin/effect/subagent"
 import { SubagentAdmission } from "@opencode/core/session/subagent-admission"
 import { SubagentAdmissionRun } from "@opencode/core/session/subagent-admission-run"
+import { SubagentJob } from "@opencode/core/session/subagent-job"
 import { SessionInbox } from "@opencode/core/session/inbox"
 import { SessionProjector } from "@opencode/core/session/projector"
 import { SessionMessage } from "@opencode/core/session/message"
@@ -46,7 +47,7 @@ const llmLayer = TestLLM.testLayer({ fallback: TestLLM.text("Review complete", "
 const it = testEffect(
   Layer.merge(
     llmLayer,
-    AppNodeBuilder.build(LayerNode.group([Session.node, Job.node, Bus.node, Database.node, KV.node, SessionStore.node, SessionInbox.node, Instance.node, LocationServiceMap.node, SubagentAdmissionStore.node, SessionRestart.node, SessionExecution.node]), [
+    AppNodeBuilder.build(LayerNode.group([Session.node, Job.node, Bus.node, Database.node, KV.node, SessionStore.node, SessionInbox.node, Instance.node, LocationServiceMap.node, SubagentAdmissionStore.node, SubagentJob.node, SessionRestart.node, SessionExecution.node]), [
       Global.node.replace(tempGlobalLayer),
       offlineModels,
       Watcher.node.replace(Watcher.configured({ enabled: false })),
@@ -800,5 +801,157 @@ describe("subagent admission lifecycle", () => {
       expect(yield* sessions.skillActivations({ sessionID: prepared.childSessionID })).toEqual(accepted)
     }),
   )
+
+
+  describe("admitted prompts", () => {
+    const steering = Effect.fn(function* (name: string, completion: "parent" | "none") {
+      const fixture = yield* admissionFixture
+      const { sessions, host, input, parent, llm, bus } = fixture
+      yield* sessions.setPermissions({ sessionID: parent.id, permissions: [{ action: "subagent", resource: "reviewer", effect: "allow" }] })
+      const reported = yield* Deferred.make<string>()
+      const reports: string[] = []
+      yield* bus.listen((event) => {
+        if (event.type !== SessionEvent.InboxEnqueued.type || event.durable?.aggregateID !== parent.id) return Effect.void
+        const data = event.data as { item: { type: string; payload: { text: string } } }
+        if (data.item.type !== "synthetic") return Effect.void
+        reports.push(data.item.payload.text)
+        return Deferred.succeed(reported, data.item.payload.text).pipe(Effect.asVoid)
+      })
+      const first = yield* host.experimental.subagent.prepare({ ...input, admissionID: `${name}-first`, target: { kind: "create" } })
+      const gate = yield* llm.gate()
+      yield* Effect.addFinalizer(() => gate.release)
+      const started = yield* host.experimental.subagent.start({ admissionID: first.admissionID, prompt: { text: "first" }, delivery: "queue", mode: "background", completion })
+      if (started.run === undefined) throw new Error("Native start omitted its run")
+      yield* gate.started.pipe(Effect.timeout("2 seconds"))
+      const second = yield* host.experimental.subagent.prepare({ ...input, admissionID: `${name}-steer`, target: { kind: "existing", sessionID: first.childSessionID } })
+      const steered = yield* host.experimental.subagent.start({ admissionID: second.admissionID, prompt: { text: "steer me" }, delivery: "steer", mode: "background", completion })
+      expect(steered.run).toEqual(started.run)
+      return { ...fixture, run: started.run, steer: second, reported, reports }
+    })
+    const userRows = (sessions: Session.Interface, sessionID: Session.ID) =>
+      sessions.inbox(sessionID).pipe(Effect.map((items) => items.filter((item) => item.type === "user")))
+
+    it.live("cancels steering the child never read when its run is interrupted and reports it to the parent", () =>
+      Effect.gen(function* () {
+        const { sessions, host, run, steer, reported, reports, parent } = yield* steering("interrupt", "parent")
+        yield* sessions.interrupt(run.childSessionID)
+        const report = yield* Deferred.await(reported).pipe(Effect.timeout("2 seconds"))
+        // One report per outcome: the note rides on it, and its state is the job's status.
+        yield* sessions.wait(parent.id).pipe(Effect.timeout("2 seconds"))
+        expect(reports).toEqual([report])
+        expect(report).toContain('state="cancelled"')
+        expect(report).toContain("Not delivered")
+        expect(report).toContain("steer me")
+        expect(yield* userRows(sessions, run.childSessionID)).toEqual([])
+        expect((yield* host.experimental.subagent.get({ admissionID: steer.admissionID }))?.error).toContain("Not delivered")
+      }),
+    )
+
+    it.live("cancels steering the child never read when recovery is declined and tells the sender through the receipt", () =>
+      Effect.gen(function* () {
+        const { sessions, host, run } = yield* steering("decline", "none")
+        yield* sessions.recover({ sessionID: run.childSessionID, owner: { pluginID: "lifetime-owner", lifetime: "undelivered-decline" } }, () => Effect.succeed(false))
+        const final = yield* host.experimental.subagent.wait({ run }).pipe(Effect.timeout("2 seconds"))
+        expect(final.receipt.status).toBe("error")
+        expect(final.receipt.error).toContain("Not delivered")
+        expect(final.receipt.error).toContain("steer me")
+        expect(yield* userRows(sessions, run.childSessionID)).toEqual([])
+      }),
+    )
+
+    it.live("still cancels and reports the unread prompts when the first caller of close is interrupted", () =>
+      Effect.gen(function* () {
+        const { sessions, run, reported } = yield* steering("close-abort", "parent")
+        const subagents = yield* SubagentJob.Service
+        const entered = yield* Deferred.make<void>()
+        const release = yield* Deferred.make<void>()
+        yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined))
+        const cancelInbox = sessions.cancelInbox
+        const spy = spyOn(sessions, "cancelInbox").mockImplementation((request) =>
+          Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)), Effect.andThen(cancelInbox(request))))
+        yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()))
+        // The first caller claims the generation's prompts while the job still runs, then is interrupted mid-cancel.
+        const first = yield* subagents.settle({ generation: run.generation, status: "cancelled" }).pipe(Effect.forkChild({ startImmediately: true }))
+        yield* Deferred.await(entered).pipe(Effect.timeout("2 seconds"))
+        const interrupting = yield* Fiber.interrupt(first).pipe(Effect.forkChild({ startImmediately: true }))
+        yield* Deferred.succeed(release, undefined)
+        yield* Fiber.join(interrupting).pipe(Effect.timeout("2 seconds"))
+        spy.mockRestore()
+        // The job's own observer later asks for the same note and must still get it.
+        yield* sessions.interrupt(run.childSessionID)
+        const report = yield* Deferred.await(reported).pipe(Effect.timeout("2 seconds"))
+        expect(report).toContain("Not delivered")
+        expect(report).toContain("steer me")
+        expect(yield* userRows(sessions, run.childSessionID)).toEqual([])
+      }),
+    )
+
+    it.live("reports a native follow-up that joined a plugin generation only through the plugin owner's outcome", () =>
+      Effect.gen(function* () {
+        const { sessions, host, run, steer, parent, reported, reports } = yield* steering("native-join", "parent")
+        const subagents = yield* SubagentJob.Service
+        const nativeID = SessionMessage.ID.make("msg_subagent_native_join")
+        yield* sessions.prompt({ id: nativeID, sessionID: run.childSessionID, text: "native follow-up" })
+        const joined = yield* subagents.start({
+          kind: "subagent",
+          parentSessionID: parent.id,
+          childSessionID: run.childSessionID,
+          agent: "reviewer",
+          description: "native join",
+        }, nativeID)
+        expect(joined.generation).toBe(run.generation)
+        yield* sessions.interrupt(run.childSessionID)
+        const report = yield* Deferred.await(reported).pipe(Effect.timeout("2 seconds"))
+        yield* host.experimental.subagent.wait({ run }).pipe(Effect.timeout("2 seconds"))
+        yield* sessions.wait(parent.id).pipe(Effect.timeout("2 seconds"))
+        // One report, from the plugin owner's path, naming both unread prompts; the native join adds none.
+        expect(reports).toEqual([report])
+        expect(report).toContain("steer me")
+        expect(report).toContain("native follow-up")
+        expect((yield* host.experimental.subagent.get({ admissionID: steer.admissionID }))?.error).toContain("native follow-up")
+        expect(yield* userRows(sessions, run.childSessionID)).toEqual([])
+      }),
+    )
+
+    it.live("starts the next run for a queued prompt whose wake an interrupt claimed during final settlement", () =>
+      Effect.gen(function* () {
+        const { sessions, host, input, bus, parent, llm } = yield* admissionFixture
+        yield* sessions.setPermissions({ sessionID: parent.id, permissions: [{ action: "subagent", resource: "reviewer", effect: "allow" }] })
+        const finishing = yield* Deferred.make<void>()
+        const finishRelease = yield* Deferred.make<void>()
+        yield* Effect.addFinalizer(() => Deferred.succeed(finishRelease, undefined))
+        let hold = true
+        const publish = bus.publish
+        const pauseAfterCommit: Bus.Interface["publish"] = (definition, data, options) => publish(definition, data, options).pipe(Effect.tap((event) => {
+          if (!hold || event.type !== SessionEvent.Execution.Succeeded.type) return Effect.void
+          hold = false
+          return Deferred.succeed(finishing, undefined).pipe(Effect.andThen(Deferred.await(finishRelease)))
+        }))
+        const publication = spyOn(bus, "publish").mockImplementation(pauseAfterCommit)
+        yield* Effect.addFinalizer(() => Effect.sync(() => publication.mockRestore()))
+        const first = yield* host.experimental.subagent.prepare({ ...input, admissionID: "settling-first", target: { kind: "create" } })
+        const gate = yield* llm.gate()
+        yield* Effect.addFinalizer(() => gate.release)
+        const started = yield* host.experimental.subagent.start({ admissionID: first.admissionID, prompt: { text: "first" }, delivery: "queue", mode: "background", completion: "none" })
+        if (started.run === undefined) throw new Error("Native start omitted its run")
+        yield* gate.started.pipe(Effect.timeout("2 seconds"))
+        yield* gate.release
+        yield* Deferred.await(finishing).pipe(Effect.timeoutOrElse({ duration: "2 seconds", orElse: () => Effect.fail(new Error("Child did not reach durable final settlement")) }))
+        const second = yield* host.experimental.subagent.prepare({ ...input, admissionID: "settling-queued", target: { kind: "existing", sessionID: first.childSessionID } })
+        const queuedGate = yield* llm.gate()
+        yield* Effect.addFinalizer(() => queuedGate.release)
+        const queued = yield* host.experimental.subagent.start({ admissionID: second.admissionID, prompt: { text: "queued" }, delivery: "queue", mode: "background", completion: "none" })
+        expect(queued.run).toEqual(started.run)
+        // The interrupt lands in the settlement window and claims the wake that admission just rang.
+        yield* sessions.interrupt(first.childSessionID)
+        yield* Deferred.succeed(finishRelease, undefined)
+        yield* queuedGate.started.pipe(Effect.timeoutOrElse({ duration: "2 seconds", orElse: () => Effect.fail(new Error("Queued prompt did not start the next run")) }))
+        yield* queuedGate.release
+        const completed = yield* host.experimental.subagent.wait({ run: started.run }).pipe(Effect.timeout("2 seconds"))
+        expect(completed.receipt.status).toBe("completed")
+        expect(yield* userRows(sessions, first.childSessionID)).toEqual([])
+      }),
+    )
+  })
 
 })

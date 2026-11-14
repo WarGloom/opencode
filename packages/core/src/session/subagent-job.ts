@@ -16,9 +16,20 @@ import { SessionEvent } from "./event.js"
 import { Event } from "@opencode/schema/event"
 
 type Recovery = Extract<Job.Recovery, { kind: "subagent" }>
+type Admitted = { readonly sessionID: Session.ID; readonly ids: Set<SessionMessage.ID> }
+type Outcome = Pick<Job.Info, "generation" | "status" | "output" | "error">
+
+// The sender reads a closed generation's outcome, so what was not delivered goes where its result or error text goes.
+const annotate = <T extends Outcome>(info: T, note: string): T =>
+  info.status === "completed"
+    ? { ...info, output: `${info.output ?? SubagentCompletion.NO_TEXT}\n\n${note}` }
+    : { ...info, error: `${info.error ?? (info.status === "error" ? "Subagent failed" : "Subagent cancelled")}\n\n${note}` }
 
 export interface Interface {
-  readonly start: (recovery: Recovery) => Effect.Effect<Job.Info>
+  /** `promptID` names the child prompt admitted for the started or joined generation; closing the generation cancels it if unread. */
+  readonly start: (recovery: Recovery, promptID?: SessionMessage.ID) => Effect.Effect<Job.Info>
+  /** Cancels the admitted prompts a closed generation never read and appends what was not delivered to its outcome. */
+  readonly settle: <T extends Outcome>(info: T) => Effect.Effect<T>
   background: (recovery: Recovery) => Effect.Effect<void>
   notify: (recovery: Recovery, startedAt: number) => Effect.Effect<void>
   current: (childSessionID: Session.ID) => Effect.Effect<Job.Info | undefined>
@@ -64,6 +75,12 @@ const make = Effect.gen(function* () {
   // Jobs and their completion observers outlive the plugin that launched them.
   // Fork with the global context too, rather than retaining the caller's location.
   const context = yield* Effect.context<never>()
+  // Child prompts admitted for a running generation, by generation. Closing the generation cancels the unread ones.
+  const admitted = new Map<string, Admitted>()
+  // Generations whose prompts are closed, with the note on what was left undelivered, until their observer is done.
+  const closing = new Map<string, Deferred.Deferred<string | undefined>>()
+  // Native generations that already have an observer in this process, whether they started here or joined a job resumed at restart.
+  const watched = new Set<string>()
   // One observer per job generation, including continuations of the same child.
   const notifications = new Set<string>()
   const ending = new Set<string>()
@@ -80,12 +97,92 @@ const make = Effect.gen(function* () {
     return undefined
   })
 
+  const unread = (entry: Admitted) =>
+    sessions.inbox(entry.sessionID).pipe(
+      Effect.catchTag("Session.NotFoundError", () => Effect.succeed([])),
+      Effect.map((items) => items.flatMap((item) => (item.type === "user" && entry.ids.has(item.id) ? [item] : []))),
+    )
+
+  // Cancels the entry's unread prompts and words what was left undelivered.
+  const cancelUnread = (entry: Admitted): Effect.Effect<string | undefined> =>
+    unread(entry).pipe(
+      Effect.flatMap((items) =>
+        Effect.forEach(items, (item) =>
+          sessions.cancelInbox({ sessionID: entry.sessionID, inboxID: item.id }).pipe(
+            Effect.as([{ id: item.id, text: item.payload.text }]),
+            // The child consumed it meanwhile, or the session is gone: nothing is left to cancel.
+            Effect.catchTag(["Session.InboxConflictError", "Session.NotFoundError"], () => Effect.succeed([])),
+          ),
+        ),
+      ),
+      Effect.map((cancelled) => {
+        const prompts = cancelled.flat()
+        return prompts.length === 0 ? undefined : SubagentCompletion.undelivered(prompts)
+      }),
+      Effect.catchCauseIf(
+        (cause) => !Cause.hasInterrupts(cause),
+        (cause) => Effect.logError("Failed to cancel unread subagent prompts", { sessionID: entry.sessionID, cause }).pipe(Effect.as(undefined)),
+      ),
+    )
+
+  // The first caller closes a generation's admitted prompts and shares its note with later callers. The claim is
+  // taken before the cancel runs, so an interrupted caller must not abandon it: the cancel runs to completion.
+  const close = (generation: string): Effect.Effect<string | undefined> =>
+    Effect.uninterruptibleMask((restore) =>
+      Effect.suspend(() => {
+        const closed = closing.get(generation)
+        if (closed !== undefined) return restore(Deferred.await(closed))
+        const entry = admitted.get(generation)
+        if (entry === undefined) return Effect.succeed(undefined)
+        admitted.delete(generation)
+        const done = Deferred.makeUnsafe<string | undefined>()
+        closing.set(generation, done)
+        // Whatever the cancel's exit, the waiters get an answer: an interrupt cause never reaches them.
+        return cancelUnread(entry).pipe(
+          Effect.onExit((exit) => Deferred.succeed(done, Exit.isSuccess(exit) ? exit.value : undefined)),
+        )
+      }),
+    )
+
+  // Registers a prompt for its generation. A generation that closed without the admissions lock (a cancel) never saw
+  // it, so the prompt is cancelled and reported at once, the way the generation's observer would have.
+  const register = Effect.fnUntraced(function* (recovery: Recovery, info: Job.Info, promptID: SessionMessage.ID) {
+    const entry = admitted.get(info.generation)
+    if (entry === undefined) admitted.set(info.generation, { sessionID: recovery.childSessionID, ids: new Set([promptID]) })
+    else entry.ids.add(promptID)
+    const live = yield* jobs.get(recovery.childSessionID)
+    if (!closing.has(info.generation) && live?.generation === info.generation && live.status === "running") return
+    const registered = admitted.get(info.generation)
+    registered?.ids.delete(promptID)
+    if (registered?.ids.size === 0) admitted.delete(info.generation)
+    const note = yield* cancelUnread({ sessionID: recovery.childSessionID, ids: new Set([promptID]) })
+    if (note === undefined) return
+    const status = live?.generation === info.generation && live.status !== "running" ? live.status : "cancelled"
+    // The start that registered this prompt must not fail over its report: a parent deleted meanwhile has nobody to tell.
+    yield* SubagentCompletion.deliver(sessions, jobs, { status, output: note, error: note, recovery }).pipe(
+      Effect.ignoreCause({ log: "Error", message: "Failed to report an unread subagent prompt" }),
+    )
+  })
+
+  const settle = <T extends Outcome>(info: T): Effect.Effect<T> =>
+    info.status === "running"
+      ? Effect.succeed(info)
+      : close(info.generation).pipe(Effect.map((note) => (note === undefined ? info : annotate(info, note))))
+
+  // A native generation reports its outcome from the child's settlement, so the undelivered prompts follow as their own report.
+  const reportUndelivered = Effect.fnUntraced(function* (recovery: Recovery, info: Job.Info) {
+    const note = yield* close(info.generation)
+    closing.delete(info.generation)
+    if (note !== undefined) yield* SubagentCompletion.deliver(sessions, jobs, { status: info.status, output: note, error: note, recovery })
+  })
+
   const notify = Effect.fn("SubagentJob.notify")(function* (recovery: Recovery, startedAt: number) {
     const key = `${recovery.childSessionID}:${recovery.generation ?? startedAt}`
     if (notifications.has(key)) return
     notifications.add(key)
     yield* Effect.gen(function* () {
-      const info = (yield* jobs.wait({ id: recovery.childSessionID, generation: recovery.generation })).info
+      const waited = (yield* jobs.wait({ id: recovery.childSessionID, generation: recovery.generation })).info
+      const info = waited && (yield* settle(waited))
       if (info) {
         ending.delete(info.generation)
         // The owning plugin's cancel marks its admissions before it stops the job. That caller already has the
@@ -103,7 +200,10 @@ const make = Effect.gen(function* () {
         if (!ownerCancelled) yield* SubagentCompletion.deliver(sessions, jobs, { ...info, recovery })
       }
     }).pipe(
-      Effect.ensuring(Effect.sync(() => notifications.delete(key))),
+      Effect.ensuring(Effect.sync(() => {
+        notifications.delete(key)
+        if (recovery.generation !== undefined) closing.delete(recovery.generation)
+      })),
       // The global context drops the caller's span annotations; delivery is the parent session's work.
       Effect.annotateSpans("session.id", recovery.parentSessionID),
       Effect.forkIn(scope, { startImmediately: true }),
@@ -111,7 +211,7 @@ const make = Effect.gen(function* () {
     )
   })
 
-  const startGeneration = Effect.fn(function* (recovery: Recovery) {
+  const startGeneration = Effect.fn(function* (recovery: Recovery, promptID?: SessionMessage.ID) {
     const active = yield* current(recovery.childSessionID)
     if (active !== undefined) revisions.set(active.generation, (revisions.get(active.generation) ?? 0) + 1)
     return yield* jobs.start({
@@ -141,6 +241,8 @@ const make = Effect.gen(function* () {
               ? Exit.fail(abandoned.failure)
               : yield* sessions.resume(recovery.childSessionID).pipe(Effect.exit)
             let recovered = abandoned._tag === "Success" && abandoned.success === "committed"
+            // Prompts already woken once for a finished run: a second unread outcome is final, not another wake.
+            const rewoken = new Set<SessionMessage.ID>()
             while (true) {
               const started = yield* Deferred.make<void>()
               const unsubscribe = yield* bus.listen((event) =>
@@ -164,10 +266,23 @@ const make = Effect.gen(function* () {
                   recovered = true
                 }
                 const info = yield* jobs.get(recovery.childSessionID)
-                if (info !== undefined) ending.add(info.generation)
-                if (!recovered && Exit.isFailure(resumed) && (generation === undefined || (revisions.get(generation) ?? 0) === revision))
-                  return Exit.failCause(resumed.cause)
                 const child = yield* sessions.get(recovery.childSessionID)
+                const resumeFailed = !recovered && Exit.isFailure(resumed) && (generation === undefined || (revisions.get(generation) ?? 0) === revision)
+                // A plugin generation is still open, so a prompt admitted for it that the finished run left unread had
+                // its wake lost: start the next run for it. A native generation already reported at the child's
+                // settlement, so a later run's answer would reach nobody; its unread prompts are cancelled when it closes.
+                const entry = recovery.pluginID === undefined || info === undefined ? undefined : admitted.get(info.generation)
+                if (entry !== undefined && info !== undefined && !resumeFailed && child.outcome !== "failed" && child.outcome !== "interrupted") {
+                  const stranded = (yield* unread(entry)).filter((item) => !rewoken.has(item.id))
+                  if (stranded.length > 0) {
+                    stranded.forEach((item) => rewoken.add(item.id))
+                    // Every execution publishes Started before its first drain, so this resolves even if the row is cancelled meanwhile.
+                    yield* execution.wake(recovery.childSessionID)
+                    return "await-start" as const
+                  }
+                }
+                if (info !== undefined) ending.add(info.generation)
+                if (resumeFailed) return Exit.failCause(resumed.cause)
                 if (child.outcome === "failed" || child.outcome === "interrupted")
                   return Exit.fail(assistant?.error ?? new Error(`Subagent execution ${child.outcome}`))
                 if (recovery.pluginID !== undefined) {
@@ -206,19 +321,30 @@ const make = Effect.gen(function* () {
             if (info !== undefined) ending.add(info.generation)
           }))),
         }).pipe(
+          Effect.tap((info) => promptID === undefined ? Effect.void : register(recovery, info, promptID)),
           Effect.tap((info) => recovery.pluginID === undefined ? Effect.void : execution.bindJob(recovery.childSessionID, info.generation)),
           Effect.tap(() => recovery.pluginID === undefined ? Effect.void : execution.wake(recovery.childSessionID)),
-          Effect.tap((info) => jobs.wait({ id: info.id, generation: info.generation }).pipe(
-            Effect.tap(() => Effect.sync(() => {
-              ending.delete(info.generation)
-              revisions.delete(info.generation)
-            })),
-            Effect.forkIn(scope, { startImmediately: true }),
-          )),
+          Effect.tap((info) => {
+            // A plugin generation reports through notify. A native one reports at the child's settlement, so its
+            // first start in this process also forks the observer that closes it. A plugin start claims its generation
+            // too, so a native follow-up that joins it leaves the closing to notify.
+            const closes = recovery.pluginID === undefined && !watched.has(info.generation)
+            watched.add(info.generation)
+            return jobs.wait({ id: info.id, generation: info.generation }).pipe(
+              Effect.tap((waited) => (closes && waited.info !== undefined ? reportUndelivered(recovery, waited.info) : Effect.void)),
+              Effect.tap(() => Effect.sync(() => {
+                ending.delete(info.generation)
+                revisions.delete(info.generation)
+                watched.delete(info.generation)
+              })),
+              Effect.forkIn(scope, { startImmediately: true }),
+            )
+          }),
         )
   })
   return Service.of({
-    start: (recovery) => (recovery.pluginID === undefined ? admissions.serialized(startGeneration(recovery)) : startGeneration(recovery)).pipe(Effect.setContext(context)),
+    start: (recovery, promptID) => (recovery.pluginID === undefined ? admissions.serialized(startGeneration(recovery, promptID)) : startGeneration(recovery, promptID)).pipe(Effect.setContext(context)),
+    settle,
     current,
     background: Effect.fn("SubagentJob.background")(function* (recovery: Recovery) {
       const info = yield* jobs.background(recovery.childSessionID)
