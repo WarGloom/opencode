@@ -581,6 +581,61 @@ describe("provider error classification", () => {
 })
 
 describe("provider error rawBody classification", () => {
+  test("ignores unrelated metadata when classifying 429 quota", () => {
+    const message = "Rate limit exceeded. Try again later."
+    const data = { error: { type: "rate_limit_error", message }, metadata: { note: "weekly limit", detail: "usage limit" } }
+    const rawBody = JSON.stringify(data)
+    for (const input of [{ message, rawBody }, { message, rawBody, data }, { message: rawBody }, { message, data }]) {
+      const reason = classifyProviderFailure({ ...input, status: 429, retryAfterMs: 4000 })
+      expect(reason).toMatchObject({ _tag: "RateLimit", retryAfterMs: 4000 })
+      expect(reason.message).toBe(message)
+      if ("rawBody" in input || input.message === rawBody) expect(reason.body).toBe(rawBody)
+    }
+  })
+
+  test("keeps a code-only JSON error and unrelated quota metadata out of the message", () => {
+    const message = JSON.stringify({ error: { type: "rate_limit_error" }, metadata: { detail: "usage limit" } })
+    const rawBody = '{"diagnostic":"original body"}'
+    const reason = classifyProviderFailure({ message, rawBody, status: 429 })
+
+    expect(reason._tag).toBe("RateLimit")
+    expect(reason.message).not.toContain("usage limit")
+    expect(reason.message).not.toContain("metadata")
+    expect(reason.body).toBe(rawBody)
+    expect(reason.cause).toContain(message)
+
+    const cause = new Error("original cause")
+    const withCause = classifyProviderFailure({ message, rawBody, cause, status: 429 })
+    expect(withCause.cause).toBeInstanceOf(Error)
+    expect(withCause.cause).toMatchObject({ message, cause })
+  })
+
+  test("uses a factual fallback for JSON errors without a message or code", () => {
+    const message = JSON.stringify({ error: { code: 123 }, metadata: { detail: "usage limit" } })
+    const withStatus = classifyProviderFailure({ message, status: 429 })
+    const withoutStatus = classifyProviderFailure({ message })
+
+    expect(withStatus).toMatchObject({ _tag: "RateLimit", message: "Provider request failed (HTTP 429)", body: message })
+    expect(withoutStatus).toMatchObject({ _tag: "UnknownProvider", message: "Provider request failed", body: message })
+  })
+
+  test("classifies quota explanations in provider payloads", () => {
+    const message = "Request failed"
+    const quota = "Usage limit reached"
+    const bodies = [
+      JSON.stringify({ error: { message: quota } }),
+      JSON.stringify({ response: { error: { message: quota } } }),
+      JSON.stringify({ exception: { details: { message: quota } } }),
+      quota,
+    ]
+    for (const rawBody of bodies) {
+      expect(classifyProviderFailure({ message, status: 429, rawBody })._tag).toBe("QuotaExceeded")
+    }
+    expect(classifyProviderFailure({ message, status: 429, data: { error: { message: quota } } })._tag).toBe(
+      "QuotaExceeded",
+    )
+  })
+
   test("classifies provider envelopes without separate code inputs", () => {
     const cases = [
       ['{"type":"error","error":{"type":"overloaded_error","message":"Try again"}}', "ProviderInternal"],
