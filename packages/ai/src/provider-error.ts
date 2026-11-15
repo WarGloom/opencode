@@ -11,7 +11,7 @@ import {
   type HttpContext,
   type HttpRateLimitDetails,
 } from "./schema/index.js"
-import { awsErrorType, providerCodes } from "./utils/provider-codes.js"
+import { awsErrorType, providerCodes, providerPayload } from "./utils/provider-codes.js"
 
 const patterns = [
   /prompt is too long/i,
@@ -174,24 +174,27 @@ const messageAt = <Fields extends Schema.Struct.Fields>(
 // Common error body layouts that carry a human-readable message, in priority order.
 // Provider-specific layouts belong in their protocol.
 const decodeMessage = Schema.decodeUnknownOption(
-  Schema.fromJsonString(
-    Schema.Union([
-      messageAt({ error: Schema.Struct({ message: Message }) }, (body) => body.error.message),
-      messageAt({ error: Message }, (body) => body.error),
-      messageAt({ message: Message }, (body) => body.message),
-      // AWS services
-      messageAt({ Message: Message }, (body) => body.Message),
-      // RFC 9457 problem details
-      messageAt({ detail: Message }, (body) => body.detail),
-      messageAt(
-        { errors: Schema.NonEmptyArray(Schema.Struct({ message: Message })) },
-        (body) => body.errors[0].message,
-      ),
-    ]),
-  ),
+  Schema.Union([
+    messageAt({ error: Schema.Struct({ message: Message }) }, (body) => body.error.message),
+    messageAt({ error: Message }, (body) => body.error),
+    messageAt(
+      { response: Schema.Struct({ error: Schema.Struct({ message: Message }) }) },
+      (body) => body.response.error.message,
+    ),
+    messageAt(
+      { exception: Schema.Struct({ details: Schema.Struct({ message: Message }) }) },
+      (body) => body.exception.details.message,
+    ),
+    messageAt({ message: Message }, (body) => body.message),
+    // AWS services
+    messageAt({ Message: Message }, (body) => body.Message),
+    // RFC 9457 problem details
+    messageAt({ detail: Message }, (body) => body.detail),
+    messageAt({ errors: Schema.NonEmptyArray(Schema.Struct({ message: Message })) }, (body) => body.errors[0].message),
+  ]),
 )
 
-export const providerErrorMessage = (body: string) => Option.getOrUndefined(decodeMessage(body))
+export const providerErrorMessage = (body: string) => Option.getOrUndefined(decodeMessage(providerPayload(body)))
 
 export interface ProviderFailure {
   readonly message: string
@@ -214,7 +217,23 @@ export interface ProviderFailure {
 // unpredictable shapes while deterministic rejections almost always carry a
 // status or known code.
 export function classifyProviderFailure(input: ProviderFailure): AIError["reason"] {
-  const details = { message: input.message, body: input.rawBody, http: input.http, cause: input.cause }
+  const payload = providerPayload(input.message)
+  const serialized = typeof payload !== "string"
+  const details = {
+    message: serialized
+      ? (providerErrorMessage(input.message) ??
+        providerCodes(payload)[0] ??
+        (input.status === undefined ? "Provider request failed" : `Provider request failed (HTTP ${input.status})`))
+      : input.message,
+    body: input.rawBody ?? (serialized ? input.message : undefined),
+    http: input.http,
+    cause:
+      serialized && input.rawBody !== undefined && input.rawBody !== input.message
+        ? input.cause === undefined
+          ? input.message
+          : new Error(input.message, { cause: input.cause })
+        : input.cause,
+  }
   const body = input.rawBody ?? ""
   const codes = [
     ...providerCodes(input.data),
@@ -226,6 +245,10 @@ export function classifyProviderFailure(input: ProviderFailure): AIError["reason
   // Scan the raw payload too so signals missing from the summary message
   // (e.g. overflow phrases nested in a JSON error body) still classify.
   const text = [input.message, body].filter((value) => value.length > 0).join("\n")
+  const quotaText = [input.message, input.rawBody, input.data]
+    .map(providerPayload)
+    .map((value) => (typeof value === "string" ? value : Option.getOrUndefined(decodeMessage(value)) ?? ""))
+    .join("\n")
   const clientScoped = input.status === undefined || (input.status >= 400 && input.status < 500)
 
   if (
@@ -245,7 +268,7 @@ export function classifyProviderFailure(input: ProviderFailure): AIError["reason
   if (
     input.status === 402 ||
     codes.some((code) => QUOTA_CODES.has(code)) ||
-    (input.status === 429 && QUOTA_TEXT.test(text))
+    (input.status === 429 && QUOTA_TEXT.test(quotaText))
   )
     return new QuotaExceededError({ ...details, retryAfterMs: input.retryAfterMs })
   if (
