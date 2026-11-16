@@ -1011,6 +1011,25 @@ Nested agent prompt`,
   }),
 )
 
+it.instance("records only project agents without other config contributions", () =>
+  Effect.gen(function* () {
+    const test = yield* TestInstance
+    const dir = path.join(test.directory, ".opencode", "agents")
+    for (const name of ["pure", "mixed", "replaced"]) {
+      yield* FSUtil.use.writeWithDirs(path.join(dir, `${name}.md`), "---\nmode: subagent\n---\nWorker")
+    }
+    yield* FSUtil.use.writeWithDirs(path.join(dir, "filename.md"), "---\nname: alias\nmode: subagent\n---\nWorker")
+    yield* writeConfigEffect(test.directory, { agent: { mixed: { description: "extra" } } })
+    yield* writeManagedSettingsEffect({ agent: { replaced: { prompt: "Worker" } } })
+    const config = yield* Config.use.get()
+    const metadata = Object.getOwnPropertyDescriptor(config, Symbol.for("opencode.agent-origins.v1"))
+    expect(metadata?.enumerable).toBe(false)
+    expect(metadata?.value).toEqual({ pure: path.join(dir, "pure.md"), alias: path.join(dir, "filename.md") })
+    expect(config.agent?.mixed?.description).toBe("extra")
+    expect(config.agent?.replaced?.prompt).toBe("Worker")
+  }),
+)
+
 it.instance("loads commands from .opencode/command (singular)", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance

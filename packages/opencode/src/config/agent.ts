@@ -8,7 +8,7 @@ import { configEntryNameFromPath } from "./entry-name"
 import * as ConfigMarkdown from "./markdown"
 import { ConfigParse } from "./parse"
 
-export async function load(dir: string) {
+export async function load(dir: string, onSource?: (name: string, file: string) => void) {
   const result: Record<string, ConfigAgentV1.Info> = {}
   for (const item of await Glob.scan("{agent,agents}/**/*.md", {
     cwd: dir,
@@ -27,6 +27,7 @@ export async function load(dir: string) {
       prompt: md.content.trim(),
     }
     result[config.name] = ConfigParse.schema(ConfigAgentV1.Info, config, item)
+    onSource?.(config.name, item)
   }
   return result
 }

@@ -330,6 +330,10 @@ const layer = Layer.effect(
         const auth = yield* authSvc.all().pipe(Effect.orDie)
 
         let result: Info = {}
+        const agentOrigins = new Map<string, string | null>()
+        const markConfigAgents = (agents: Info["agent"]) => {
+          for (const name of Object.keys(agents ?? {})) agentOrigins.set(name, null)
+        }
         const authEnv: Record<string, string> = {}
         const consoleManagedProviders = new Set<string>()
         let activeOrgName: string | undefined
@@ -363,6 +367,7 @@ const layer = Layer.effect(
         })
 
         const merge = (source: string, next: Info, kind?: ConfigPlugin.Scope) => {
+          markConfigAgents(next.agent)
           result = mergeConfigConcatArrays(result, next)
           return mergePluginOrigins(source, next.plugin, kind)
         }
@@ -471,8 +476,18 @@ const layer = Layer.effect(
           deps.push(dep)
 
           result.command = mergeDeep(result.command ?? {}, yield* Effect.promise(() => ConfigCommand.load(dir)))
-          result.agent = mergeDeep(result.agent ?? {}, yield* Effect.promise(() => ConfigAgent.load(dir)))
-          result.agent = mergeDeep(result.agent ?? {}, yield* Effect.promise(() => ConfigAgent.loadMode(dir)))
+          const agents = yield* Effect.promise(() =>
+            ConfigAgent.load(dir, (name, file) => {
+              const source = path.resolve(file)
+              const relative = path.relative(path.resolve(ctx.directory, ".opencode", "agents"), source)
+              const local = relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
+              agentOrigins.set(name, !agentOrigins.has(name) && local ? source : null)
+            }),
+          )
+          result.agent = mergeDeep(result.agent ?? {}, agents)
+          const modes = yield* Effect.promise(() => ConfigAgent.loadMode(dir))
+          markConfigAgents(modes)
+          result.agent = mergeDeep(result.agent ?? {}, modes)
           // Auto-discovered plugins under `.opencode/plugin(s)` are already local files, so ConfigPlugin.load
           // returns normalized Specs and we only need to attach origin metadata here.
           const list = yield* Effect.promise(() => ConfigPlugin.load(dir))
@@ -538,16 +553,16 @@ const layer = Layer.effect(
         // macOS managed preferences (.mobileconfig deployed via MDM) override everything
         const managed = yield* Effect.promise(() => ConfigManaged.readManagedPreferences())
         if (managed) {
-          result = mergeConfigConcatArrays(
-            result,
-            yield* loadConfig(managed.text, {
-              dir: path.dirname(managed.source),
-              source: managed.source,
-            }),
-          )
+          const next = yield* loadConfig(managed.text, {
+            dir: path.dirname(managed.source),
+            source: managed.source,
+          })
+          markConfigAgents(next.agent)
+          result = mergeConfigConcatArrays(result, next)
         }
 
         for (const [name, mode] of Object.entries(result.mode ?? {})) {
+          agentOrigins.set(name, null)
           result.agent = mergeDeep(result.agent ?? {}, {
             [name]: {
               ...mode,
@@ -597,6 +612,9 @@ const layer = Layer.effect(
           result.compaction = { ...result.compaction, prune: false }
         }
 
+        Object.defineProperty(result, Symbol.for("opencode.agent-origins.v1"), {
+          value: Object.freeze(Object.fromEntries([...agentOrigins].filter(([, source]) => source !== null))),
+        })
         return {
           config: result,
           directories,
