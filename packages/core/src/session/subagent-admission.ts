@@ -1,6 +1,6 @@
 export * as SubagentAdmission from "./subagent-admission.js"
 
-import type { PrepareInput, Receipt } from "@opencode/plugin/subagent"
+import type { PrepareInput, Receipt, SteerInput } from "@opencode/plugin/subagent"
 import { Context, Effect, Exit, Layer, Schema } from "effect"
 import { isDeepStrictEqual } from "node:util"
 import { Node } from "@opencode/util/effect/app-node"
@@ -19,6 +19,7 @@ import type { LayerNode } from "@opencode/util/effect/layer-node"
 export interface Interface {
   readonly prepare: (pluginID: string, input: PrepareInput) => Effect.Effect<Receipt, unknown>
   readonly check: (entry: SubagentAdmissionStore.Entry, phase?: "start" | "resume") => Effect.Effect<void, Permission.BlockedError | Session.NotFoundError | SubagentAdmissionStore.Conflict>
+  readonly steer: (entry: SubagentAdmissionStore.Entry, invocation: SteerInput["invocation"], interactive: boolean) => Effect.Effect<void, unknown>
 }
 
 export function receipt(entry: SubagentAdmissionStore.Entry): Receipt {
@@ -97,6 +98,31 @@ export const make: Effect.Effect<Interface, never, Session.Service | SessionInbo
         { sessionID: entry.childSessionID, agent: entry.agent },
       ], (actor) => permission.assertNotDenied({ ...actor, action: "skill", resources: [selection.skill] }), { discard: true }),
       { discard: true })
+  })
+
+  const steer = Effect.fn(function* (entry: SubagentAdmissionStore.Entry, invocation: SteerInput["invocation"], interactive: boolean) {
+    if (entry.revoked === true)
+      return yield* new SubagentAdmissionStore.Conflict({ admissionID: entry.admissionID, reason: "Provisioning anchor revoked" })
+    if (entry.invocation.kind === "tool" && entry.invocation.messageID === invocation.messageID && entry.invocation.toolCallID === invocation.toolCallID)
+      return yield* new SubagentAdmissionStore.Conflict({ admissionID: entry.admissionID, reason: "Steer requires a fresh tool invocation" })
+    yield* check(entry, "resume")
+    const parent = yield* sessions.get(entry.parentSessionID)
+    const actor = yield* agents.resolve(parent.agent)
+    if (invocation.agent !== actor?.id)
+      return yield* new SubagentAdmissionStore.Conflict({ admissionID: entry.admissionID, reason: "Invocation agent does not own parent" })
+    const message = (yield* sessions.context(parent.id)).find((item) => item.id === invocation.messageID)
+    const tool = message?.type === "assistant" ? message.content.find((part) => part.type === "tool" && part.id === invocation.toolCallID) : undefined
+    if (tool === undefined)
+      return yield* new SubagentAdmissionStore.Conflict({ admissionID: entry.admissionID, reason: "Unknown tool invocation" })
+    const request = {
+      sessionID: parent.id,
+      agent: invocation.agent,
+      action: entry.permissionAction,
+      resources: [entry.agent],
+      source: { type: "tool" as const, messageID: invocation.messageID, id: invocation.toolCallID },
+      metadata: { pluginID: entry.pluginID, admissionID: entry.admissionID, invocation },
+    }
+    yield* (interactive ? permission.assert({ ...request, save: [entry.agent] }) : permission.assertNotDenied(request))
   })
 
   const prepare = Effect.fn(function* (pluginID: string, input: PrepareInput) {
@@ -226,7 +252,7 @@ export const make: Effect.Effect<Interface, never, Session.Service | SessionInbo
       }))
     }))
   })
-  return { prepare, check }
+  return { prepare, check, steer }
 })
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SubagentAdmission") {}

@@ -1,6 +1,6 @@
-import { describe, expect } from "bun:test"
+import { describe, expect, spyOn } from "bun:test"
 import type { FileSystem } from "@opencode/core/filesystem"
-import { DateTime, Effect, Fiber, Layer, LayerMap, Schema, Stream } from "effect"
+import { Cause, DateTime, Deferred, Effect, Exit, Fiber, Layer, LayerMap, Schema, Stream } from "effect"
 import path from "path"
 import { pathToFileURL } from "url"
 import { eq } from "drizzle-orm"
@@ -487,7 +487,7 @@ describe("Session.prompt", () => {
         Buffer.from(message.payload.files?.[0]?.data ?? "", "base64")
           .toString("utf8")
           .replace(/\r$/, ""),
-      ).toBe('import { describe, expect } from "bun:test"')
+      ).toBe('import { describe, expect, spyOn } from "bun:test"')
     }),
   )
 
@@ -1284,6 +1284,37 @@ describe("Session.prompt", () => {
       yield* session.prompt({ sessionID, text: "Run by default" })
 
       expect(executionCalls).toEqual([])
+      expect(wakeCalls).toEqual([sessionID])
+    }),
+  )
+
+  it.effect("wakes committed input when caller interruption arrives before publication returns", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* Session.Service
+      const bus = yield* Bus.Service
+      const committed = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined))
+      const publish = bus.publish
+      const paused: Bus.Interface["publish"] = (definition, data, options) => publish(definition, data, options).pipe(
+        Effect.tap((event) => event.type === SessionEvent.InboxEnqueued.type && event.durable?.aggregateID === sessionID
+          ? Deferred.succeed(committed, undefined).pipe(Effect.andThen(Deferred.await(release)))
+          : Effect.void),
+      )
+      const spy = spyOn(bus, "publish").mockImplementation(paused)
+      yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()))
+      wakeCalls.length = 0
+      const submission = yield* session.prompt({ sessionID, id: messageID, text: "committed before interruption" }).pipe(
+        Effect.forkChild({ startImmediately: true }),
+      )
+      yield* Deferred.await(committed)
+      const interrupting = yield* Fiber.interrupt(submission).pipe(Effect.forkChild({ startImmediately: true }))
+      yield* Deferred.succeed(release, undefined)
+      yield* Fiber.join(interrupting)
+      const exit = yield* Fiber.await(submission)
+      expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true)
+      expect(yield* admitted(messageID)).toMatchObject({ id: messageID, payload: { text: "committed before interruption" } })
       expect(wakeCalls).toEqual([sessionID])
     }),
   )

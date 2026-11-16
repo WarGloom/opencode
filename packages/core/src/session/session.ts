@@ -16,24 +16,20 @@ import {
   CompactionConflictError,
   InboxConflictError,
   NotFoundError,
-  PromptConflictError,
   SyntheticConflictError,
 } from "./error.js"
 import { SessionEvent } from "./event.js"
 import { SessionExecution } from "./execution.js"
 import { SessionInbox } from "./inbox.js"
 import { SessionMessage } from "./message.js"
-import { SessionPrompt } from "./prompt.js"
+import { SessionPromptAdmission } from "./prompt-admission.js"
 import { SessionRevert } from "./revert.js"
 import { SessionShell } from "./shell.js"
 import { SessionSkill } from "./skill.js"
 import { SessionSchema } from "./schema.js"
 import { SessionStore } from "./store.js"
 
-type PromptRequest = SessionPrompt.Input & {
-  id?: SessionMessage.ID
-  resume?: boolean
-}
+type PromptRequest = SessionPromptAdmission.Request
 
 /**
  * Build once in the host Scope: `const sessions = yield* Session.make()`.
@@ -152,44 +148,13 @@ export const make = Effect.fn("Session.make")(function* () {
     (sessionID: SessionSchema.ID, inboxID: SessionMessage.ID) => mutatePending(sessionID, inboxID, admission.queue),
     Effect.uninterruptible,
   )
+  const withPreparedPrompt = yield* SessionPromptAdmission.make
   const prompt = Effect.fn("Session.prompt")((sessionID: SessionSchema.ID, input: PromptRequest) =>
-    Effect.uninterruptibleMask((restore) =>
-      Effect.gen(function* () {
-        const session = yield* get(sessionID)
-        const messageID = input.id ?? SessionMessage.ID.create()
-        const admitted = yield* Effect.gen(function* () {
-          const existing = yield* admission.reconcile({
-            id: messageID,
-            sessionID: session.id,
-            type: "user",
-            delivery: input.delivery ?? "steer",
-          })
-          if (existing) return existing
-          // Preparation, the staged revert commit and admission share one acquisition of the session's location
-          // services, so projections see its config whoever called prompt.
-          return yield* Effect.gen(function* () {
-            const prepared = yield* restore(SessionPrompt.prepare({ session, messageID, input, instances }))
-            // Commit a staged revert only after preparation succeeds, before admitting new work.
-            if (session.revert) yield* SessionRevert.commit(bus, session)
-            return yield* admission.admit({
-              id: messageID,
-              sessionID: session.id,
-              item: prepared.item,
-              activations: prepared.activations,
-            })
-          }).pipe(
-            instances.provide(session),
-            Effect.provideService(Database.Service, database),
-            Effect.provideService(FSUtil.Service, fs),
-            Effect.provideService(SessionStore.Service, store),
-          )
-        }).pipe(
-          Effect.catchTag("SessionInbox.LifecycleConflict", () => new PromptConflictError({ sessionID, messageID })),
-        )
-        if (input.resume !== false) yield* execution.wake(sessionID)
-        return admitted
-      }),
-    ),
+    withPreparedPrompt({ ...input, sessionID }, (prepared) => Effect.uninterruptible(Effect.gen(function* () {
+      const admitted = yield* prepared.publish()
+      if (input.resume !== false) yield* execution.wake(sessionID)
+      return admitted
+    }))),
   )
   const shell = Effect.fn("Session.shell")(function* (
     sessionID: SessionSchema.ID,
@@ -481,7 +446,7 @@ export const make = Effect.fn("Session.make")(function* () {
       revert,
     }
   }
-  return { forSession }
+  return { forSession, withPreparedPrompt }
 })
 
 export type Handle = ReturnType<Effect.Success<ReturnType<typeof make>>["forSession"]>

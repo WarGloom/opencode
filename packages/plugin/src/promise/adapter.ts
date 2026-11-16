@@ -387,6 +387,7 @@ export function fromPromise(plugin: Plugin) {
               prepare: (input, options) => Effect.runPromiseWith(runtime)(host.experimental.subagent.prepare(input), options),
               acceptSkills: (input, options) => Effect.runPromiseWith(runtime)(host.experimental.subagent.acceptSkills(input), options),
               start: (input, options) => Effect.runPromiseWith(runtime)(host.experimental.subagent.start(input), options),
+              steer: (input, options) => Effect.runPromiseWith(runtime)(host.experimental.subagent.steer(input), options),
               get: (input) => run(host.experimental.subagent.get(input)),
               wait: (input) => run(host.experimental.subagent.wait(input)),
               cancel: (input) => run(host.experimental.subagent.cancel(input)),

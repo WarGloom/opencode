@@ -63,6 +63,7 @@ import { SessionModelTransport } from "./session/model-transport.js"
 import { llmClient } from "./effect/app-node-platform.js"
 import { Snapshot } from "./snapshot.js"
 import { Session } from "./session/session.js"
+import type { SessionPromptAdmission } from "./session/prompt-admission.js"
 import { SessionDiff, TurnRangeError } from "./session/diff.js"
 import { LocationServiceMap } from "./location-service-map.js"
 import { FSUtil } from "@opencode/util/fs-util"
@@ -218,6 +219,8 @@ export interface Interface {
   readonly prompt: (
     input: Parameters<Session.Handle["prompt"]>[0] & { sessionID: SessionSchema.ID },
   ) => ReturnType<Session.Handle["prompt"]>
+  /** Core-only: keeps prompt preparation and conditional publication in one Location lifetime. */
+  readonly withPreparedPrompt: SessionPromptAdmission.WithPreparedPrompt
   /** Generates text from current Session context without admitting input or mutating history. Its usage counts toward the Session's totals. */
   readonly generate: (input: {
     sessionID: SessionSchema.ID
@@ -543,6 +546,7 @@ const layer = Layer.effect(
           ),
         ),
       prompt: (input) => sessions.forSession(input.sessionID).prompt(input),
+      withPreparedPrompt: sessions.withPreparedPrompt,
       generate: Effect.fn("Session.generate")(function* (input) {
         const session = yield* result.get(input.sessionID)
         return yield* SessionGenerate.generate({ session, prompt: input.prompt }).pipe(

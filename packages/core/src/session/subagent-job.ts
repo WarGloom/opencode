@@ -1,6 +1,6 @@
 export * as SubagentJob from "./subagent-job.js"
 
-import { Cause, Context, Deferred, Effect, Exit, Layer, Scope } from "effect"
+import { Cause, Context, Deferred, Effect, Exit, Layer, Option, Scope } from "effect"
 import { Node } from "@opencode/util/effect/app-node"
 import type { LayerNode } from "@opencode/util/effect/layer-node"
 import { Job } from "../job.js"
@@ -11,8 +11,10 @@ import { SessionExecution } from "./execution.js"
 import { SessionStore } from "./store.js"
 import { SubagentCompletion } from "./subagent-completion.js"
 import { SubagentAdmissionStore } from "./subagent-admission-store.js"
+import { SubagentSteerBinding } from "./subagent-steer-binding.js"
 import { SessionMessage } from "./message.js"
 import { SessionEvent } from "./event.js"
+import { SessionInbox } from "./inbox.js"
 import { Event } from "@opencode/schema/event"
 
 type Recovery = Extract<Job.Recovery, { kind: "subagent" }>
@@ -33,6 +35,7 @@ export interface Interface {
   background: (recovery: Recovery) => Effect.Effect<void>
   notify: (recovery: Recovery, startedAt: number) => Effect.Effect<void>
   current: (childSessionID: Session.ID) => Effect.Effect<Job.Info | undefined>
+  readonly join: (recovery: Recovery, promptID: SessionMessage.ID, publish: Effect.Effect<void, unknown>) => Effect.Effect<boolean, unknown>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SubagentJob") {}
@@ -85,6 +88,22 @@ const make = Effect.gen(function* () {
   const notifications = new Set<string>()
   const ending = new Set<string>()
   const revisions = new Map<string, number>()
+  const restorePrompts = Effect.fnUntraced(function* (recovery: Pick<Recovery, "pluginID" | "generation" | "parentSessionID" | "childSessionID">) {
+    if (recovery.pluginID === undefined || recovery.generation === undefined || closing.has(recovery.generation)) return
+    const pending = yield* SessionInbox.list(db, recovery.childSessionID)
+    for (const item of pending) {
+      if (item.type !== "user") continue
+      const binding = SubagentSteerBinding.decode(item.payload.metadata?.opencodeSubagentSteer)
+      if (Option.isNone(binding) || binding.value.pluginID !== recovery.pluginID ||
+        binding.value.parentSessionID !== recovery.parentSessionID || binding.value.generation !== recovery.generation ||
+        item.id !== SubagentSteerBinding.promptID(binding.value)) continue
+      const owner = yield* admissions.get(recovery.pluginID, binding.value.admissionID)
+      if (owner?.childSessionID !== recovery.childSessionID || owner.generation !== recovery.generation || owner.parentSessionID !== recovery.parentSessionID) continue
+      const entry = admitted.get(recovery.generation)
+      if (entry) entry.ids.add(item.id)
+      else admitted.set(recovery.generation, { sessionID: recovery.childSessionID, ids: new Set([item.id]) })
+    }
+  })
   const current = Effect.fn(function* (childSessionID: Session.ID) {
     const info = yield* jobs.get(childSessionID)
     if (info === undefined) return undefined
@@ -167,7 +186,12 @@ const make = Effect.gen(function* () {
   const settle = <T extends Outcome>(info: T): Effect.Effect<T> =>
     info.status === "running"
       ? Effect.succeed(info)
-      : close(info.generation).pipe(Effect.map((note) => (note === undefined ? info : annotate(info, note))))
+      : Effect.gen(function* () {
+        const owners = yield* admissions.list()
+        yield* Effect.forEach(owners.filter((owner) => owner.generation === info.generation), restorePrompts, { discard: true })
+        const note = yield* close(info.generation)
+        return note === undefined ? info : annotate(info, note)
+      })
 
   // A native generation reports its outcome from the child's settlement, so the undelivered prompts follow as their own report.
   const reportUndelivered = Effect.fnUntraced(function* (recovery: Recovery, info: Job.Info) {
@@ -212,6 +236,7 @@ const make = Effect.gen(function* () {
   })
 
   const startGeneration = Effect.fn(function* (recovery: Recovery, promptID?: SessionMessage.ID) {
+    yield* restorePrompts(recovery)
     const active = yield* current(recovery.childSessionID)
     if (active !== undefined) revisions.set(active.generation, (revisions.get(active.generation) ?? 0) + 1)
     return yield* jobs.start({
@@ -256,6 +281,7 @@ const make = Effect.gen(function* () {
                 recovered = (recoveryResult._tag === "Success" && recoveryResult.success === "committed") || recovered
                 const result = yield* admissions.serialized(Effect.gen(function* () {
                 if (yield* execution.isActive(recovery.childSessionID)) return undefined
+                yield* restorePrompts(recovery)
                 const messages = yield* sessions.messages({ sessionID: recovery.childSessionID, order: "desc", limit: 20 })
                 const assistant = messages.find((message) => message.type === "assistant")
                 if (recovery.pluginID !== undefined && recoveryResult._tag === "Failure") return Exit.fail(recoveryResult.failure)
@@ -275,7 +301,7 @@ const make = Effect.gen(function* () {
                 if (entry !== undefined && info !== undefined && !resumeFailed && child.outcome !== "failed" && child.outcome !== "interrupted") {
                   const stranded = (yield* unread(entry)).filter((item) => !rewoken.has(item.id))
                   if (stranded.length > 0) {
-                    stranded.forEach((item) => rewoken.add(item.id))
+                    stranded.forEach((item) => { rewoken.add(item.id) })
                     // Every execution publishes Started before its first drain, so this resolves even if the row is cancelled meanwhile.
                     yield* execution.wake(recovery.childSessionID)
                     return "await-start" as const
@@ -346,6 +372,16 @@ const make = Effect.gen(function* () {
     start: (recovery, promptID) => (recovery.pluginID === undefined ? admissions.serialized(startGeneration(recovery, promptID)) : startGeneration(recovery, promptID)).pipe(Effect.setContext(context)),
     settle,
     current,
+    join: Effect.fn("SubagentJob.join")(function* (recovery, promptID, publish) {
+      const info = yield* jobs.get(recovery.childSessionID)
+      if (info?.status !== "running" || info.generation !== recovery.generation || ending.has(info.generation) || closing.has(info.generation)) return false
+      yield* publish
+      if (admitted.get(info.generation)?.ids.has(promptID)) return true
+      revisions.set(info.generation, (revisions.get(info.generation) ?? 0) + 1)
+      yield* register(recovery, info, promptID)
+      yield* execution.wake(recovery.childSessionID)
+      return true
+    }),
     background: Effect.fn("SubagentJob.background")(function* (recovery: Recovery) {
       const info = yield* jobs.background(recovery.childSessionID)
       if (info) yield* notify(recovery, info.started_at)
