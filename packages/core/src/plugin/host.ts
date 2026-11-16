@@ -376,6 +376,7 @@ export const make = Effect.fn("PluginHost.make")(function* (plugin: Pick<Interfa
         prepare: (input) => subagentAdmission.prepare(pluginID, input),
         acceptSkills: (input) => subagentRuns.acceptSkills(pluginID, input),
         start: (input) => subagentRuns.start(pluginID, input),
+        steer: (input) => subagentRuns.steer(pluginID, input),
         get: (input) => subagentRuns.get(pluginID, input),
         wait: (input) => subagentRuns.wait(pluginID, input),
         cancel: (input) => subagentRuns.cancel(pluginID, input),

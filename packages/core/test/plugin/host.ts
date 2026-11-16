@@ -90,6 +90,7 @@ export function host(overrides: Overrides = {}): Plugin.Context {
         prepare: () => Effect.die("unused subagent.prepare"),
         acceptSkills: () => Effect.die("unused subagent.acceptSkills"),
         start: () => Effect.die("unused subagent.start"),
+        steer: () => Effect.die("unused subagent.steer"),
         get: () => Effect.die("unused subagent.get"),
         wait: () => Effect.die("unused subagent.wait"),
         cancel: () => Effect.die("unused subagent.cancel"),

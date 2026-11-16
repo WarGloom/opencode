@@ -64,6 +64,18 @@ export interface StartInput {
   readonly completion: "parent" | "none"
 }
 
+export interface SteerInput {
+  readonly admissionID: string
+  readonly run: RunRef
+  readonly invocation: Extract<Invocation, { kind: "tool" }>
+  readonly prompt: PromptInput.Prompt
+  readonly metadata?: Readonly<Record<string, unknown>>
+}
+
+export type SteerResult =
+  | { readonly kind: "joined-existing-run"; readonly run: RunRef; readonly promptID: SessionMessage.ID }
+  | { readonly kind: "closed-before-admission" }
+
 /** Accept a whole batch of child skills after prepare and before start. */
 export interface AcceptSkillsInput {
   readonly admissionID: string

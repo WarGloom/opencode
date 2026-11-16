@@ -1,6 +1,6 @@
 export * as SubagentAdmissionRun from "./subagent-admission-run.js"
 
-import type { AcceptSkillsInput, Receipt, RunRef, StartInput, Target, WaitInput, WaitResult } from "@opencode/plugin/subagent"
+import type { AcceptSkillsInput, Receipt, RunRef, StartInput, SteerInput, SteerResult, Target, WaitInput, WaitResult } from "@opencode/plugin/subagent"
 import type { SessionMessage } from "@opencode/schema/session-message"
 import type { LayerNode } from "@opencode/util/effect/layer-node"
 import { Context, Effect, Layer, Schema } from "effect"
@@ -13,10 +13,12 @@ import { SubagentAdmissionSkills } from "./subagent-admission-skills.js"
 import { SubagentAdmissionStore } from "./subagent-admission-store.js"
 import { SubagentJob } from "./subagent-job.js"
 import { SubagentCompletion } from "./subagent-completion.js"
+import { SubagentSteer } from "./subagent-steer.js"
 
 export interface Interface {
   readonly acceptSkills: (pluginID: string, input: AcceptSkillsInput) => Effect.Effect<readonly SessionMessage.SkillActivation[], unknown>
   readonly start: (pluginID: string, input: StartInput) => Effect.Effect<Receipt, unknown>
+  readonly steer: (pluginID: string, input: SteerInput) => Effect.Effect<SteerResult, unknown>
   readonly ready: (pluginID: string, input: { readonly run: RunRef }) => Effect.Effect<Receipt, unknown>
   readonly get: (pluginID: string, input: Target) => Effect.Effect<Receipt | undefined, unknown>
   readonly wait: (pluginID: string, input: WaitInput) => Effect.Effect<WaitResult, unknown>
@@ -27,13 +29,14 @@ export interface Interface {
 const terminal = (status: SubagentAdmissionStore.Entry["status"]) => status === "completed" || status === "error" || status === "cancelled"
 const anchors = (entry: SubagentAdmissionStore.Entry) => entry.invocation.kind === "tool" && entry.invocation.team !== undefined
 
-export const make: Effect.Effect<Interface, never, SubagentAdmissionStore.Service | SubagentAdmission.Service | Session.Service | SessionInbox.Service | Job.Service | SubagentJob.Service> = Effect.gen(function* () {
+export const make = Effect.gen(function* () {
   const admissions = yield* SubagentAdmissionStore.Service
   const authorization = yield* SubagentAdmission.Service
   const sessions = yield* Session.Service
   const inbox = yield* SessionInbox.Service
   const jobs = yield* Job.Service
   const subagents = yield* SubagentJob.Service
+  const steer = yield* SubagentSteer.make
   const acceptSkills = yield* SubagentAdmissionSkills.make
   const resolve = (entry: SubagentAdmissionStore.Entry, outcome: "started" | "cancelled") =>
     inbox.resolveChild({ sessionID: entry.parentSessionID, admissionID: SubagentAdmissionStore.key(entry.pluginID, entry.admissionID), outcome })
@@ -215,6 +218,7 @@ export const make: Effect.Effect<Interface, never, SubagentAdmissionStore.Servic
   return {
     acceptSkills,
     start,
+    steer,
     ready,
     wait,
     cancel,
