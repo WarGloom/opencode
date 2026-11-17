@@ -39,6 +39,7 @@ interface Input {
   readonly model: Model.Ref
   readonly hook: (event: PluginHooks.Domains["session"]["retry"]) => Effect.Effect<void>
   readonly retry: boolean
+  readonly switchModel?: (model: Model.Ref, isOpen: () => boolean) => Effect.Effect<boolean>
   /** Only primary requests offer a connection phase. */
   readonly connection?: Connection
 }
@@ -52,10 +53,40 @@ export interface Decision {
 export const policy = (sessionID: SessionSchema.ID) =>
   Effect.gen(function* () {
     const decide = yield* ModelRetry.policy
+    let lastAttempt = 1
+    let exhaustionOffered = false
     return (input: Input) =>
       Effect.gen(function* () {
         const next = yield* decide(input)
-        if (!next) return { retry: false as const }
+        if (!next) {
+          if (exhaustionOffered || !input.retry || input.cause.reason._tag !== "RateLimit")
+            return { retry: false as const }
+          exhaustionOffered = true
+          let open = true
+          let used = false
+          const switchModel = input.switchModel
+          const event: PluginHooks.Domains["session"]["retry"] = {
+            sessionID,
+            agent: input.agent,
+            model: input.model,
+            error: input.error,
+            attempt: lastAttempt + 1,
+            exhausted: true,
+            switchModel: switchModel ? (model) => Effect.suspend(() => {
+              if (!open || used) return Effect.succeed(false)
+              used = true
+              return switchModel(model, () => open)
+            }) : undefined,
+            decision: { retry: false },
+          }
+          yield* input.hook(event).pipe(Effect.ensuring(Effect.sync(() => { open = false })))
+          if (!event.decision.retry) return event.decision
+          const delay = Number.isFinite(event.decision.delay) && event.decision.delay >= 0
+            ? Math.ceil(event.decision.delay)
+            : 0
+          return { retry: true as const, attempt: event.attempt, delay }
+        }
+        lastAttempt = next.attempt
         // The connection phase runs even when the failure itself is not retryable, such as an exhausted quota.
         if (input.connection && (yield* switchConnection(sessionID, input, input.connection, next.attempt)))
           return { retry: true as const, attempt: next.attempt, delay: 0 }
