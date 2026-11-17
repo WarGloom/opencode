@@ -8,7 +8,7 @@ import { HttpApiEndpoint, HttpApiSchema } from "effect/http-api"
 import { define } from "../effect/plugin.js"
 import type { ToolFailures, ToolHooks } from "../effect/tool.js"
 import type { SessionHooks } from "../effect/session.js"
-import type { SessionIdle, SessionRetryConnection } from "./session.js"
+import type { SessionIdle, SessionRetry, SessionRetryConnection } from "./session.js"
 import { AssertInput } from "../permission.js"
 import type { Plugin } from "./plugin.js"
 import type { Info } from "./tool.js"
@@ -17,7 +17,8 @@ import type { RpcDomain, RpcHandlers } from "./rpc.js"
 type HostRegistration = { readonly dispose: Effect.Effect<void> }
 type Registration = { readonly dispose: () => Promise<void> }
 type PromiseContext = Parameters<Plugin["setup"]>[0]
-type PromiseSessionHooks = Omit<SessionHooks, "experimental.idle" | "experimental.retry.connection"> & {
+type PromiseSessionHooks = Omit<SessionHooks, "retry" | "experimental.idle" | "experimental.retry.connection"> & {
+  readonly retry: SessionRetry
   readonly "experimental.idle": SessionIdle
   readonly "experimental.retry.connection": SessionRetryConnection
 }
@@ -271,7 +272,15 @@ export function fromPromise(plugin: Plugin) {
           "experimental.ws.handshake": (event) => event,
           "experimental.ws.send": (event) => event,
           "experimental.ws.receive": (event) => event,
-          retry: (event) => event,
+          retry: (event) => {
+            const switchModel = event.switchModel
+            return {
+              ...event,
+              switchModel: switchModel ? (model) => run(switchModel(model)) : undefined,
+              get decision() { return event.decision },
+              set decision(value) { event.decision = value },
+            }
+          },
           "experimental.compaction.continue": (event) => event,
           "experimental.idle": (event) => ({ ...event, admit: (input) => run(event.admit(input)) }),
           "experimental.retry.connection": (event) => ({ ...event, switch: (input) => run(event.switch(input)) }),
