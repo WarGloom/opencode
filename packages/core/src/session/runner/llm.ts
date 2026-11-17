@@ -336,6 +336,14 @@ const layer = Layer.effect(
               model: loaded.model.ref,
               hook: prepared.retry,
               retry: proposed,
+              switchModel: (model, isOpen) => SessionInbox.serialized(sessionID, Effect.uninterruptible(Effect.gen(function* () {
+                const session = yield* store.get(sessionID)
+                if (!isOpen() || interruption?.() !== undefined || !session?.model) return false
+                if (session.model.providerID !== loaded.model.ref.providerID || session.model.id !== loaded.model.ref.id ||
+                    (session.model.variant ?? "default") !== (loaded.model.ref.variant ?? "default")) return false
+                yield* bus.publish(SessionEvent.ModelSelected, { sessionID, model, previous: session.model })
+                return true
+              }))),
               connection: {
                 served: loaded.model.connectionKey,
                 outputStarted,

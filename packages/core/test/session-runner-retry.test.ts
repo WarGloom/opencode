@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { AIError, ProviderInternalError, RateLimitError, TransportError } from "@opencode/ai/effect"
 import { Credential } from "@opencode/core/credential"
-import type { SessionRetryConnection } from "@opencode/plugin/effect/session"
+import type { SessionRetry, SessionRetryConnection } from "@opencode/plugin/effect/session"
 import { ModelRetry } from "@opencode/core/model-retry"
 import { Agent } from "@opencode/schema/agent"
 import { Model } from "@opencode/schema/model"
@@ -54,6 +54,65 @@ const decisions = (cause: AIError, count: number) =>
   })
 
 describe("SessionRunnerRetry.policy", () => {
+  it.effect("offers one exhausted retry hook only after the host retry budget", () =>
+    Effect.gen(function* () {
+      const policy = yield* SessionRunnerRetry.policy(SessionSchema.ID.make("ses_retry"))
+      const cause = new AIError({ reason: new RateLimitError({ message: "limited" }) })
+      const exhausted: boolean[] = []
+      const request = {
+        ...input(cause),
+        hook: (event: { decision: { retry: false } | { retry: true; delay: number } }) => Effect.sync(() => {
+          exhausted.push(Reflect.get(event, "exhausted") === true)
+          if (Reflect.get(event, "exhausted") === true) event.decision = { retry: true, delay: 0 }
+        }),
+      }
+      for (let i = 0; i < 10; i++) expect((yield* policy(request)).retry).toBe(true)
+      expect(yield* policy(request)).toMatchObject({ retry: true, delay: 0 })
+      expect((yield* policy(request)).retry).toBe(false)
+      expect(exhausted).toEqual([...Array(10).fill(false), true])
+    }),
+  )
+
+  it.effect("does not offer exhaustion when retry is declined", () =>
+    Effect.gen(function* () {
+      const policy = yield* SessionRunnerRetry.policy(SessionSchema.ID.make("ses_retry"))
+      const cause = new AIError({ reason: new RateLimitError({ message: "limited" }) })
+      for (let i = 0; i < 10; i++) yield* policy(input(cause))
+      let called = false
+      const result = yield* policy({
+        ...input(cause),
+        retry: false,
+        hook: () => Effect.sync(() => { called = true }),
+      })
+      expect(result).toEqual({ retry: false })
+      expect(called).toBe(false)
+    }),
+  )
+
+  it.effect("limits exhausted model selection to one call during the retry hook", () =>
+    Effect.gen(function* () {
+      const policy = yield* SessionRunnerRetry.policy(SessionSchema.ID.make("ses_retry"))
+      const cause = new AIError({ reason: new RateLimitError({ message: "limited" }) })
+      const request = input(cause)
+      for (let i = 0; i < 10; i++) yield* policy(request)
+      let saved: SessionRetry["switchModel"]
+      let calls = 0
+      yield* policy({
+        ...request,
+        switchModel: (_model, isOpen) => Effect.sync(() => { calls++; return isOpen() }),
+        hook: (event) => Effect.gen(function* () {
+          saved = event.switchModel
+          if (!saved) throw new Error("Missing scoped selection")
+          expect(yield* saved(request.model)).toBe(true)
+          expect(yield* saved(request.model)).toBe(false)
+        }),
+      })
+      if (!saved) throw new Error("Missing saved selection")
+      expect(yield* saved(request.model)).toBe(false)
+      expect(calls).toBe(1)
+    }),
+  )
+
   it.effect("stops retrying transport timeouts after three attempts", () =>
     Effect.gen(function* () {
       expect(yield* decisions(timeout, 4)).toEqual([true, true, true, false])
