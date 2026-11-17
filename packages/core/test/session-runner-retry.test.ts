@@ -61,9 +61,9 @@ describe("SessionRunnerRetry.policy", () => {
       const exhausted: boolean[] = []
       const request = {
         ...input(cause),
-        hook: (event: { decision: { retry: false } | { retry: true; delay: number } }) => Effect.sync(() => {
-          exhausted.push(Reflect.get(event, "exhausted") === true)
-          if (Reflect.get(event, "exhausted") === true) event.decision = { retry: true, delay: 0 }
+        hook: (event: SessionRetry) => Effect.sync(() => {
+          exhausted.push(event.exhausted === true)
+          if (event.exhausted === true) event.decision = { retry: true, delay: 0 }
         }),
       }
       for (let i = 0; i < 10; i++) expect((yield* policy(request)).retry).toBe(true)
