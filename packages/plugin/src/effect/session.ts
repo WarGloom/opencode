@@ -164,6 +164,9 @@ export interface SessionRetry {
   readonly kind?: SessionRequestKind
   readonly error: SessionError.Error
   readonly attempt: number
+  /** True only when the host's retry schedule has been exhausted. */
+  readonly exhausted?: boolean
+  readonly switchModel?: (model: Model.Ref) => Effect.Effect<boolean>
   decision: SessionRetryDecision
 }
 
