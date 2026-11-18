@@ -23,6 +23,37 @@ import { PluginTestLayer } from "./plugin/fixture"
 
 const it = testEffect(PluginTestLayer)
 
+it.effect("reports readiness only after every hold releases and notifies the settled snapshot", () =>
+  Effect.gen(function* () {
+    const plugins = yield* Plugin.Service
+    const bus = yield* Bus.Service
+    yield* plugins.awaitActivation
+    const reports: boolean[] = []
+    yield* Effect.acquireRelease(
+      bus.listen((event) =>
+        event.type === Plugin.Event.Updated.type
+          ? plugins.ready.pipe(
+              Effect.tap((value) => Effect.sync(() => void reports.push(value))),
+              Effect.asVoid,
+            )
+          : Effect.void,
+      ),
+      (unsubscribe) => unsubscribe,
+    )
+    const first = yield* Effect.acquireRelease(plugins.hold(), (release) => release)
+    const second = yield* Effect.acquireRelease(plugins.hold(), (release) => release)
+    expect(yield* plugins.ready).toBe(false)
+    yield* first
+    expect(yield* plugins.ready).toBe(false)
+    expect(reports).toEqual([])
+    yield* second
+    expect(yield* plugins.ready).toBe(true)
+    expect(reports).toEqual([true])
+    yield* second
+    expect(reports).toEqual([true])
+  }),
+)
+
 for (const scenario of [
   {
     name: "starts only the appended plugin",
@@ -164,7 +195,7 @@ it.live("serves a local plugin's GUI bundle, and reloads it alone when only the 
 
     expect(edited.revision).toBe(first.revision)
     expect((yield* plugins.gui(id))?.revision).not.toBe(served?.revision)
-    expect(updates.length).toBe(published + 1)
+    expect(updates.length).toBe(published + 2)
     expect(yield* Effect.promise(() => Bun.file(starts).text())).toBe("x")
   }).pipe(Effect.scoped),
 )

@@ -506,9 +506,13 @@
                       "items": {
                         "$ref": "#/components/schemas/Plugin.Info"
                       }
+                    },
+                    "ready": {
+                      "type": "boolean",
+                      "description": "Whether announced plugin updates and activation have settled. Listing never waits for readiness."
                     }
                   },
-                  "required": ["location", "data"],
+                  "required": ["location", "data", "ready"],
                   "additionalProperties": false
                 }
               }
@@ -26107,6 +26111,10 @@
           },
           "metadata": {
             "type": "object"
+          },
+          "origin": {
+            "type": "string",
+            "enum": ["subagent-report"]
           }
         },
         "required": ["text"],
@@ -27364,6 +27372,10 @@
           },
           "message": {
             "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": ["primary", "compaction", "title", "generate"]
           },
           "status": {
             "type": "integer",

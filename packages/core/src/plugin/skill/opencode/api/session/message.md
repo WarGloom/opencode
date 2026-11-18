@@ -42,6 +42,6 @@ Returns: `SessionMessagesResponse`
 - `Session.Message.Synthetic`: `{ id: string; metadata?: Record<string, unknown>; time: { created }; text: string; description?: string; type: "synthetic" }`
 - `Session.Message.System`: `{ id: string; metadata?: Record<string, unknown>; time: { created }; type: "system"; text: string; description?: string }`
 - `Session.Message.User`: `{ id: string; metadata?: Record<string, unknown>; time: { created }; text: string; files?: Prompt.FileAttachment[]; agents?: Prompt.AgentAttachment[]; skills?: Prompt.SkillAttachment[]; type: "user" }`
-- `Session.StructuredError`: `{ type: string; message: string; status?: number; response?: { body }; retryAfterMs?: number }`
+- `Session.StructuredError`: `{ type: string; message: string; kind?: "primary" | "compaction" | "title" | "generate"; status?: number; response?: { body }; retryAfterMs?: number }`
 - `SessionMessagesResponse`: `{ data: Session.Message.Info[]; cursor: { previous, next } }`
 - `TokenUsage.Info`: `{ input: number; output: number; reasoning: number; cache: { read, write } }`

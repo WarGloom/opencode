@@ -9,7 +9,13 @@ export const PluginGroup = HttpApiGroup.make("server.plugin")
   .add(
     HttpApiEndpoint.get("plugin.list", "/api/plugin", {
       query: LocationQuery,
-      success: Location.response(Schema.Array(Plugin.Info)),
+      success: Schema.Struct({
+        ...Location.response(Schema.Array(Plugin.Info)).fields,
+        ready: Schema.Boolean.annotate({
+          description:
+            "Whether announced plugin updates and activation have settled. Listing never waits for readiness.",
+        }),
+      }),
     })
       .annotateMerge(locationQueryOpenApi)
       .annotateMerge(

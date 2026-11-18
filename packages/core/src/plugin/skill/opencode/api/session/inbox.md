@@ -34,6 +34,6 @@ Returns: nothing
 - `Session.Inbox.Move`: `{ id: string; sessionID: string; time: { created }; type: "move"; delivery: "steer" | "queue"; payload: Session.Inbox.MovePayload }`
 - `Session.Inbox.MovePayload`: `{ projectID: string; subpath?: string; location: Location.PublicRef }`
 - `Session.Inbox.Synthetic`: `{ id: string; sessionID: string; time: { created }; type: "synthetic"; payload: Session.Inbox.SyntheticPayload; delivery: "steer" | "queue" }`
-- `Session.Inbox.SyntheticPayload`: `{ text: string; description?: string; metadata?: Record<string, unknown> }`
+- `Session.Inbox.SyntheticPayload`: `{ text: string; description?: string; metadata?: Record<string, unknown>; origin?: "subagent-report" }`
 - `Session.Inbox.User`: `{ id: string; sessionID: string; time: { created }; type: "user"; payload: Session.Inbox.UserPayload; delivery: "steer" | "queue" }`
 - `Session.Inbox.UserPayload`: `{ text: string; files?: Prompt.FileAttachment[]; agents?: Prompt.AgentAttachment[]; skills?: Prompt.SkillAttachment[]; metadata?: Record<string, unknown> }`
