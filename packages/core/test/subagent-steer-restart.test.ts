@@ -43,6 +43,7 @@ describe("subagent steer restart", () => {
         Watcher.node.replace(Watcher.configured({ enabled: false })),
         LayerNodePlatform.llmClient.replace(Layer.succeed(LLMClient.Service, llm)),
         SessionRunnerModel.node.replace(Layer.succeed(SessionRunnerModel.Service, {
+      select: (session) => Effect.fail(new SessionRunnerModel.ModelNotSelectedError({ sessionID: session.id })),
           resolve: () => Effect.succeed(SessionRunnerModel.resolved(
             LanguageModel.make({ id: "review", provider: "test", route: OpenAIChat.route }),
             { capabilities: { tools: true, input: ["text"], output: ["text"] }, cost: [], limit: { context: 200_000, output: 32_000 } },

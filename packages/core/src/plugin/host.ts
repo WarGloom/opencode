@@ -17,6 +17,7 @@ import { Environment } from "../environment/index.js"
 import { Config } from "../config.js"
 import { ConfigProviderPlugin } from "../config/plugin/provider.js"
 import { Formatter } from "../formatter.js"
+import { FileAccess } from "../file-access.js"
 import { Variant } from "../variant.js"
 import { Bus } from "../bus.js"
 import { Integration } from "../integration.js"
@@ -322,7 +323,8 @@ export const make = Effect.fn("PluginHost.make")(function* (plugin: Pick<Interfa
             const permission = yield* Permission.Service
             yield* permission.assertNotDenied({ sessionID: session.id, action: "edit", resources: [input.filepath] })
             const formatter = yield* Formatter.Service
-            return yield* formatter.file(input.filepath)
+            const access = yield* FileAccess.Service
+            return yield* formatter.file(yield* access.resolve({ path: input.filepath }))
           }).pipe(Effect.provide(locations.get(session.location)))
         }),
       },
