@@ -49,6 +49,12 @@ export interface Interface {
   ) => Effect.Effect<boolean>
   /** Resolves once this process owns no active execution for the Session. Returns immediately when idle and never starts work. */
   readonly awaitIdle: (sessionID: SessionSchema.ID) => Effect.Effect<void>
+  /**
+   * Interrupts the Session's active execution, then runs `callback` with the interrupted boundary so the plugin can
+   * admit a continuation. A recovery that does not commit one never leaves an interactive Session interrupted: the
+   * host admits a same-model continuation itself, unless the user stopped it or newer input moved the boundary.
+   * A delegated generation instead ends in failure so its parent is told.
+   */
   readonly recover: (input: { readonly sessionID: SessionSchema.ID; readonly owner: SessionInterruptJournal.Owner }, callback: (boundaryID: SessionMessage.ID) => Effect.Effect<boolean, unknown>) => Effect.Effect<boolean, unknown>
   readonly closeRecovery: (owner: SessionInterruptJournal.Owner) => Effect.Effect<void>
   readonly recovery: (sessionID: SessionSchema.ID, generation?: string) => Effect.Effect<"committed" | undefined, Error>
@@ -59,6 +65,9 @@ export interface Interface {
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionExecution") {}
 
 type InterruptReason = "user" | "shutdown" | `recovery:${string}`
+
+const RECOVERY_RESUME_TEXT =
+  "The previous model request was interrupted for recovery and no recovery continued it. Continue the task from the current state. Tool calls that already completed are in the transcript; do not repeat them unless a result is missing."
 
 export function terminal(exit: Exit.Exit<void, SessionRunner.RunError>, reason?: InterruptReason) {
   if (Exit.isSuccess(exit)) return { type: "succeeded" as const }
@@ -230,6 +239,29 @@ export const layer = Layer.effect(
       }
       yield* journal.finish(attempt, "failed", error)
     }))
+    // A delegated generation ends with its recovery so its parent is told; only an interactive Session resumes itself.
+    const resumeRecovery = (attempt: SessionInterruptJournal.Attempt) => Effect.gen(function* () {
+      const { boundaryID, generation } = attempt.record
+      if (attempt.record.phase !== "held" || generation !== null || boundaryID === null) return false
+      const sessionID = SessionSchema.ID.make(attempt.record.sessionID)
+      const outcome = yield* inbox.admitAfter({
+        sessionID,
+        boundaryID: SessionMessage.ID.make(boundaryID),
+        id: SessionMessage.ID.create(),
+        text: RECOVERY_RESUME_TEXT,
+        outcomes: ["interrupted"],
+        pending: "prior-reports",
+        authority: Effect.sync(() => attempt.record.phase === "held"),
+        commit: () => journal.commit(attempt).pipe(Effect.andThen(store.claim(sessionID))),
+        admitted: Effect.gen(function* () {
+          if (!(yield* store.get(sessionID))?.revert) yield* wake(sessionID)
+          yield* journal.committed(attempt)
+        }),
+      })
+      return outcome === "admitted"
+    })
+    const settleRecovery = (attempt: SessionInterruptJournal.Attempt, error: string) =>
+      resumeRecovery(attempt).pipe(Effect.flatMap((resumed) => (resumed ? Effect.void : failRecovery(attempt, error))))
 
     return Service.of({
       active: reconcile.pipe(Effect.andThen(coordinator.active)),
@@ -315,15 +347,17 @@ export const layer = Layer.effect(
             return settled.id
           }))
           if (!boundary) return false
-          yield* callback(boundary)
+          const exit = yield* Effect.exit(callback(boundary))
+          yield* resumeRecovery(captured.attempt)
+          if (Exit.isFailure(exit)) return yield* Effect.failCause(exit.cause)
           return captured.attempt.record.phase === "committed"
         }),
-        (captured, exit) => captured ? captured.settled.pipe(Effect.andThen(failRecovery(captured.attempt, Exit.isFailure(exit)
+        (captured, exit) => captured ? captured.settled.pipe(Effect.andThen(settleRecovery(captured.attempt, Exit.isFailure(exit)
           ? `Recovery failed: ${Cause.pretty(exit.cause)}` : "Recovery declined without an admitted continuation"))) : Effect.void,
       ),
       closeRecovery: (owner) => Effect.forEach(
         journal.all().filter((attempt) => attempt.record.pluginID === owner.pluginID && attempt.record.lifetime === owner.lifetime),
-        (attempt) => failRecovery(attempt, "Recovery abandoned by plugin disposal"), { discard: true }),
+        (attempt) => settleRecovery(attempt, "Recovery abandoned by plugin disposal"), { discard: true }),
       recovery: (sessionID, generation) => reconcile.pipe(Effect.andThen(journal.wait(sessionID, generation))),
       recoveryAdmission: (sessionID, boundaryID, owner) => Effect.sync(() => {
         const attempt = journal.get(sessionID)
