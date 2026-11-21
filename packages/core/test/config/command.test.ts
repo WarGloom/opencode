@@ -563,6 +563,7 @@ function runMarkdownCommand(frontmatter: string) {
       host({
         command: {
           list: () => Effect.die("unused command.list"),
+          hook: () => Effect.die("unused command.hook"),
           transform: command.transform,
           reload: command.reload,
         },
@@ -584,7 +585,13 @@ function runMarkdownCommand(frontmatter: string) {
     ).pipe(Effect.provide(Config.testLayer([directoryEntry(tmp.path)])))
     yield* command.execute({
       name: "probe",
-      invocation: { sessionID: Session.ID.make("ses_test"), prompt: { text: "" }, delivery: "steer" },
+      invocation: {
+        invocationID: Command.InvocationID.create(),
+        agent: Agent.ID.make("build"),
+        sessionID: Session.ID.make("ses_test"),
+        prompt: { text: "" },
+        delivery: "steer",
+      },
     })
     return models
   })

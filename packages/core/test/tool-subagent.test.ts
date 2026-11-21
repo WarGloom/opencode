@@ -695,7 +695,7 @@ describe("SubagentTool", () => {
           yield* sessions.interrupt(childID)
 
           const report = yield* Deferred.await(undelivered).pipe(Effect.timeout("2 seconds"))
-          expect(report).toContain(`<subagent sessionID="${childID}" state="cancelled"`)
+          expect(report).toContain(`<background-result kind="subagent" sessionID="${childID}" state="cancelled"`)
           expect(report).toContain("call-steer")
           expect((yield* sessions.inbox(childID)).filter((item) => item.type === "user")).toEqual([])
         }),
@@ -769,7 +769,7 @@ describe("SubagentTool", () => {
 
           const report = yield* Deferred.await(undelivered).pipe(Effect.timeout("2 seconds"))
           yield* sessions.wait(parent.id).pipe(Effect.timeout("2 seconds"))
-          expect(report).toContain(`<subagent sessionID="${childID}" state="completed"`)
+          expect(report).toContain(`<background-result kind="subagent" sessionID="${childID}" state="completed"`)
           expect(report).toContain("call-late")
           expect(reports.filter((text) => text.includes("Not delivered"))).toHaveLength(1)
           expect((yield* sessions.inbox(childID)).filter((item) => item.type === "user")).toEqual([])
@@ -1251,7 +1251,7 @@ describe("SubagentTool reporting", () => {
       yield* fixture.sessions.wait(fixture.parent.id)
       const reports = (yield* fixture.notices).filter((notice) => notice.metadata?.["source"] === "subagent")
       expect(reports).toHaveLength(1)
-      expect(reports[0]?.text).toContain(`<subagent sessionID="${child.id}" state="completed"`)
+      expect(reports[0]?.text).toContain(`<background-result kind="subagent" sessionID="${child.id}" state="completed"`)
       expect(reports[0]?.text).toContain(childText)
     }),
   )
