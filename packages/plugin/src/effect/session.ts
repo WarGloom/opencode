@@ -1,3 +1,4 @@
+import type { Tool } from "@opencode/schema/tool"
 import type { ExperimentalSessionApi, SessionApi } from "@opencode/client/effect/api"
 import type { GenerationOptionsFields, Message, SystemPart } from "@opencode/ai/effect"
 import type { Agent } from "@opencode/schema/agent"
@@ -254,7 +255,17 @@ export interface SessionCompactionContinue {
   enabled: boolean
 }
 
+export interface NativeSubagentAdmitted {
+  readonly parentSessionID: Session.ID
+  readonly childSessionID: Session.ID
+  readonly messageID: SessionMessage.ID
+  readonly toolCallID: Tool.CallID
+  readonly agent: Agent.ID
+  readonly model?: Model.Ref
+}
+
 export interface SessionHooks {
+  readonly "experimental.subagent.admitted": NativeSubagentAdmitted
   readonly fork: { readonly sessionID: Session.ID }
   readonly prompt: SessionPrompt
   readonly context: SessionContext

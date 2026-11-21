@@ -264,6 +264,7 @@ export function fromPromise(plugin: Plugin) {
           compaction: (event) => event,
           generate: (event) => event,
           title: (event) => event,
+          "experimental.subagent.admitted": (event) => event,
           "experimental.model.resolve": (event) => event,
           "model.request": (event) => event,
           "http.request": (event) => event,
@@ -741,6 +742,7 @@ export function fromPromise(plugin: Plugin) {
               ),
           },
           session: {
+            supportsNativeSubagentAdmission: true,
             hook: (name, callback, options) =>
               register(
                 host.session.hook(name, (event) => Effect.promise(() => Promise.resolve(callback(sessionHook[name](event)))), options),
