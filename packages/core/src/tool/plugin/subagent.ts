@@ -8,6 +8,7 @@ import { Agent } from "../../agent.js"
 import { Config } from "../../config.js"
 import { Job } from "../../job.js"
 import { Model } from "../../model.js"
+import { PluginHooks } from "../../plugin/hooks.js"
 import { Permission } from "../../permission.js"
 import { Session } from "../../session.js"
 import { SessionSchema } from "../../session/schema.js"
@@ -39,6 +40,9 @@ export const Input = Schema.Struct({
     description:
       'NEVER set this unless the user explicitly asks for a particular model or variant. It must be a chat model; image and decision models can\'t run subagents. The value is written as "providerID/modelID", or "providerID/modelID#variant" to include a variant. Do not guess the ID: look the model up with the models tool, filtering to your own provider first.',
   }),
+  model_routing: Schema.optionalKey(Schema.Literal(false)).annotate({
+    description: "Set false to bypass optional plugin model routing for a new subagent.",
+  }),
   sessionID: Schema.optionalKey(SessionSchema.ID).annotate({
     description: "Send a follow-up to an existing subagent, running or finished. Omit to start a new one.",
   }),
@@ -66,6 +70,7 @@ export const Plugin = {
     const config = yield* Config.Service
     const permission = yield* Permission.Service
     const models = yield* Model.Service
+    const hooks = yield* PluginHooks.Service
     const subagents = yield* SubagentJob.Service
 
     const resolveModel = (input: string) => resolveModelRef(models, input)
@@ -155,6 +160,17 @@ export const Plugin = {
                       (error) => new ToolFailure({ message: `Parent session not found: ${context.sessionID}`, error }),
                     ),
                   ))
+
+              if (existing === undefined) {
+                yield* hooks.trigger("session", "experimental.subagent.admitted", {
+                  parentSessionID: context.sessionID,
+                  childSessionID: child.id,
+                  messageID: context.messageID,
+                  toolCallID: context.id,
+                  agent: agent.id,
+                  model,
+                })
+              }
 
               // A child that is not draining yet must be admitted without waking: the job's resume
               // owns the start, so the period cannot run before its boundary is registered.

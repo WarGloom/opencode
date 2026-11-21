@@ -228,6 +228,64 @@ const withSubagent = (location: Location.Ref) =>
   })
 
 describe("SubagentTool", () => {
+  it.live("delivers the admitted child identity before the first prompt and emits nothing for an invalid target", () =>
+    tmpdirScoped().pipe(
+      Effect.flatMap((dir) =>
+        Effect.gen(function* () {
+          const sessions = yield* Session.Service
+          const parent = yield* sessions.create({
+            location: Location.Ref.make({ directory: AbsolutePath.make(dir.path) }),
+            model: parentModel,
+          })
+          yield* withSubagent(parent.location)
+          const locations = yield* LocationServiceMap.Service
+          const registry = yield* Tool.Service.pipe(Effect.provide(locations.get(parent.location)))
+          const hooks = yield* PluginHooks.Service.pipe(Effect.provide(locations.get(parent.location)))
+          const admitted: Session.ID[] = []
+          yield* hooks.register("session", "experimental.subagent.admitted", (event) =>
+            Effect.gen(function* () {
+              expect(event.parentSessionID).toBe(parent.id)
+              expect(String(event.toolCallID)).toBe("call-admitted")
+              expect(event.agent).toBe(Agent.ID.make("reviewer"))
+              expect((yield* sessions.get(event.childSessionID).pipe(Effect.orDie)).model).toEqual(overrideModel)
+              expect(yield* sessions.context(event.childSessionID).pipe(Effect.orDie)).toEqual([])
+              admitted.push(event.childSessionID)
+            }),
+          )
+          const rejected = yield* executeTool(registry, {
+            sessionID: parent.id,
+            ...toolIdentity,
+            call: {
+              type: "tool-call",
+              id: "call-rejected",
+              name: SubagentTool.name,
+              input: { agent: "primary", description: "Reject primary", prompt: "No child" },
+            },
+          })
+          expect(rejected.status).toBe("error")
+          const result = yield* executeTool(registry, {
+            sessionID: parent.id,
+            ...toolIdentity,
+            call: {
+              type: "tool-call",
+              id: "call-admitted",
+              name: SubagentTool.name,
+              input: {
+                agent: "reviewer",
+                description: "Read brief",
+                prompt: "Hello",
+                model: "test/override#fast",
+                model_routing: false,
+              },
+            },
+          })
+          if (result.status !== "completed") throw new Error("Subagent did not start")
+          expect(admitted).toEqual([outputSessionID(result.output)])
+        }),
+      ),
+    ),
+  )
+
   completionIt.live("admits one durable completion across live delivery and restart replay", () =>
     tmpdirScoped().pipe(
       Effect.flatMap((dir) =>

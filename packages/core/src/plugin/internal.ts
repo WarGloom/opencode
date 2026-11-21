@@ -1,3 +1,4 @@
+import { PluginHooks } from "./hooks.js"
 export * as PluginInternal from "./internal.js"
 
 import type { Plugin } from "@opencode/plugin/effect/plugin"
@@ -175,6 +176,7 @@ const nodes = [
   ModelsDev.node,
   Mcp.node,
   Npm.node,
+  PluginHooks.node,
   Permission.node,
   Form.node,
   Reference.node,
