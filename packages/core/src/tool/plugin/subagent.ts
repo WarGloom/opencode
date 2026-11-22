@@ -50,6 +50,12 @@ export const Input = Schema.Struct({
   model_routing: Schema.optionalKey(Schema.Literal(false)).annotate({
     description: "Set false to bypass optional plugin model routing for a new subagent.",
   }),
+  replaces_session_id: Schema.optionalKey(
+    SessionSchema.ID.annotate({
+      description:
+        "Use when a new worker takes over the same work from an earlier child; this does not stop the earlier child.",
+    }),
+  ),
   sessionID: Schema.optionalKey(SessionSchema.ID).annotate({
     description: "Send a follow-up to an existing subagent, running or finished. Omit to start a new one.",
   }),
@@ -136,6 +142,14 @@ export const Plugin = {
                 return yield* new ToolFailure({
                   message: `Session ${existing.id} is not a child of the current session`,
                 })
+              if (input.replaces_session_id !== undefined) {
+                if (existing) return yield* new ToolFailure({ message: "A replacement must dispatch a new child." })
+                const replaced = yield* sessions.get(input.replaces_session_id).pipe(Effect.option)
+                if (replaced._tag === "None" || replaced.value.parentID !== context.sessionID)
+                  return yield* new ToolFailure({
+                    message: "The replaced session must be a child of the current session.",
+                  })
+              }
               const override = input.model === undefined ? undefined : yield* resolveModel(input.model)
               // Continuing with a different agent switches the child, mirroring create semantics
               // where an explicit model wins over the agent's configured model, which wins over the inherited one.

@@ -558,7 +558,8 @@ describe("SubagentTool", () => {
           // prompts, so what was admitted is read from the admission events.
           const admitted: string[] = []
           yield* (yield* Bus.Service).listen((event) => {
-            if (event.type !== SessionEvent.InboxEnqueued.type || event.durable?.aggregateID === parent.id) return Effect.void
+            if (event.type !== SessionEvent.InboxEnqueued.type || event.durable?.aggregateID === parent.id)
+              return Effect.void
             const data = event.data as { item: { type: string; payload: { text: string } } }
             if (data.item.type === "user") admitted.push(data.item.payload.text)
             return Effect.void
@@ -713,52 +714,55 @@ describe("SubagentTool", () => {
     ),
   )
 
-  completionIt.live("cancels a follow-up the child never read when its run is interrupted and reports it to the parent", () =>
-    tmpdirScoped().pipe(
-      Effect.flatMap((dir) =>
-        Effect.gen(function* () {
-          const location = Location.Ref.make({ directory: AbsolutePath.make(dir.path) })
-          const sessions = yield* Session.Service
-          const parent = yield* sessions.create({ location, model: parentModel })
-          yield* withSubagent(parent.location)
-          const locations = yield* LocationServiceMap.Service
-          const registry = yield* Tool.Service.pipe(Effect.provide(locations.get(parent.location)))
-          const bus = yield* Bus.Service
-          const llm = yield* TestLLM.Test
-          const gate = yield* llm.gate()
-          yield* Effect.addFinalizer(() => gate.release)
-          const undelivered = yield* Deferred.make<string>()
-          yield* bus.listen((event) => {
-            if (event.type !== SessionEvent.InboxEnqueued.type || event.durable?.aggregateID !== parent.id) return Effect.void
-            const data = event.data as { item: { type: string; payload: { text: string } } }
-            return data.item.type === "synthetic" && data.item.payload.text.includes("Not delivered")
-              ? Deferred.succeed(undelivered, data.item.payload.text).pipe(Effect.asVoid)
-              : Effect.void
-          })
-          const call = (id: string, input: { sessionID?: Session.ID }) =>
-            executeTool(registry, {
-              sessionID: parent.id,
-              ...toolIdentity,
-              call: {
-                type: "tool-call",
-                id,
-                name: SubagentTool.name,
-                input: { agent: "reviewer", description: "review", prompt: id, ...input },
-              },
-            }).pipe(Effect.timeout("2 seconds"))
+  completionIt.live(
+    "cancels a follow-up the child never read when its run is interrupted and reports it to the parent",
+    () =>
+      tmpdirScoped().pipe(
+        Effect.flatMap((dir) =>
+          Effect.gen(function* () {
+            const location = Location.Ref.make({ directory: AbsolutePath.make(dir.path) })
+            const sessions = yield* Session.Service
+            const parent = yield* sessions.create({ location, model: parentModel })
+            yield* withSubagent(parent.location)
+            const locations = yield* LocationServiceMap.Service
+            const registry = yield* Tool.Service.pipe(Effect.provide(locations.get(parent.location)))
+            const bus = yield* Bus.Service
+            const llm = yield* TestLLM.Test
+            const gate = yield* llm.gate()
+            yield* Effect.addFinalizer(() => gate.release)
+            const undelivered = yield* Deferred.make<string>()
+            yield* bus.listen((event) => {
+              if (event.type !== SessionEvent.InboxEnqueued.type || event.durable?.aggregateID !== parent.id)
+                return Effect.void
+              const data = event.data as { item: { type: string; payload: { text: string } } }
+              return data.item.type === "synthetic" && data.item.payload.text.includes("Not delivered")
+                ? Deferred.succeed(undelivered, data.item.payload.text).pipe(Effect.asVoid)
+                : Effect.void
+            })
+            const call = (id: string, input: { sessionID?: Session.ID }) =>
+              executeTool(registry, {
+                sessionID: parent.id,
+                ...toolIdentity,
+                call: {
+                  type: "tool-call",
+                  id,
+                  name: SubagentTool.name,
+                  input: { agent: "reviewer", description: "review", prompt: id, ...input },
+                },
+              }).pipe(Effect.timeout("2 seconds"))
 
-          const childID = outputSessionID((yield* call("call-launch", {})).metadata)
-          yield* gate.started
-          yield* call("call-steer", { sessionID: childID })
-          yield* sessions.interrupt(childID)
+            const childID = outputSessionID((yield* call("call-launch", {})).metadata)
+            yield* gate.started
+            yield* call("call-steer", { sessionID: childID })
+            yield* sessions.interrupt(childID)
 
-          const report = yield* Deferred.await(undelivered).pipe(Effect.timeout("2 seconds"))
-          expect(report).toContain(`<background-result kind="subagent" sessionID="${childID}" state="cancelled"`)
-          expect(report).toContain("call-steer")
-          expect((yield* sessions.inbox(childID)).filter((item) => item.type === "user")).toEqual([])
-        }),
+            const report = yield* Deferred.await(undelivered).pipe(Effect.timeout("2 seconds"))
+            expect(report).toContain(`<background-result kind="subagent" sessionID="${childID}" state="cancelled"`)
+            expect(report).toContain("call-steer")
+            expect((yield* sessions.inbox(childID)).filter((item) => item.type === "user")).toEqual([])
+          }),
+        ),
       ),
-    ),
   )
 
   completionIt.live("closes a native follow-up admitted during final settlement without a second run", () =>
@@ -778,7 +782,8 @@ describe("SubagentTool", () => {
           const undelivered = yield* Deferred.make<string>()
           const reports: string[] = []
           yield* bus.listen((event) => {
-            if (event.type !== SessionEvent.InboxEnqueued.type || event.durable?.aggregateID !== parent.id) return Effect.void
+            if (event.type !== SessionEvent.InboxEnqueued.type || event.durable?.aggregateID !== parent.id)
+              return Effect.void
             const data = event.data as { item: { type: string; payload: { text: string } } }
             if (data.item.type !== "synthetic") return Effect.void
             reports.push(data.item.payload.text)
@@ -795,7 +800,11 @@ describe("SubagentTool", () => {
           const pauseAfterCommit: Bus.Interface["publish"] = (definition, data, options) =>
             publish(definition, data, options).pipe(
               Effect.tap((event) => {
-                if (!hold || event.type !== SessionEvent.Execution.Succeeded.type || event.durable?.aggregateID !== childID)
+                if (
+                  !hold ||
+                  event.type !== SessionEvent.Execution.Succeeded.type ||
+                  event.durable?.aggregateID !== childID
+                )
                   return Effect.void
                 hold = false
                 return Deferred.succeed(finishing, undefined).pipe(Effect.andThen(Deferred.await(finishRelease)))
@@ -832,7 +841,11 @@ describe("SubagentTool", () => {
           expect(reports.filter((text) => text.includes("Not delivered"))).toHaveLength(1)
           expect((yield* sessions.inbox(childID)).filter((item) => item.type === "user")).toEqual([])
           // No second run executed it: the cancelled prompt never became a message.
-          expect((yield* sessions.context(childID)).some((message) => message.type === "user" && message.text === "call-late")).toBe(false)
+          expect(
+            (yield* sessions.context(childID)).some(
+              (message) => message.type === "user" && message.text === "call-late",
+            ),
+          ).toBe(false)
         }),
       ),
     ),
@@ -909,6 +922,29 @@ describe("SubagentTool", () => {
               message: `Session ${unrelated.id} is not a child of the current session`,
             },
           })
+          const replace = (replaces_session_id: Session.ID, id: string) =>
+            executeTool(registry, {
+              sessionID: parent.id,
+              ...toolIdentity,
+              call: {
+                type: "tool-call",
+                id,
+                name: SubagentTool.name,
+                input: {
+                  agent: "reviewer",
+                  description: "replacement",
+                  prompt: "Take over the same work",
+                  replaces_session_id,
+                },
+              },
+            })
+          expect(yield* replace(unrelated.id, "call-replace-unrelated")).toMatchObject({
+            status: "error",
+            error: { message: "The replaced session must be a child of the current session." },
+          })
+          const replacement = yield* replace(switched.id, "call-replace-child")
+          expect(replacement).toMatchObject({ status: "completed", output: { status: "running" } })
+          expect(replacement.metadata?.sessionID).not.toBe(switched.id)
           expect(yield* call(switched.id, "call-switched-child")).toMatchObject({
             status: "completed",
             output: { status: "running" },
@@ -1115,7 +1151,12 @@ describe("SubagentTool reporting", () => {
       const fixture = yield* reportingFixture()
       const llm = yield* TestLLM.Test
       const bus = yield* Bus.Service
-      const child = yield* fixture.sessions.create({ parentID: fixture.parent.id, title: "review", agent: Agent.ID.make("reviewer"), model: childModel })
+      const child = yield* fixture.sessions.create({
+        parentID: fixture.parent.id,
+        title: "review",
+        agent: Agent.ID.make("reviewer"),
+        model: childModel,
+      })
       const gate = yield* llm.gate()
       yield* Effect.addFinalizer(() => gate.release)
       yield* fixture.sessions.prompt({ sessionID: child.id, text: "original" })
@@ -1125,17 +1166,26 @@ describe("SubagentTool reporting", () => {
       yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined))
       const publish = bus.publish
       let hold = true
-      const pause: Bus.Interface["publish"] = (definition, data, options) => publish(definition, data, options).pipe(Effect.tap((event) => {
-        if (!hold || event.type !== SessionEvent.Execution.Interrupted.type || event.durable?.aggregateID !== child.id) return Effect.void
-        hold = false
-        return Deferred.succeed(settling, undefined).pipe(Effect.andThen(Deferred.await(release)))
-      }))
+      const pause: Bus.Interface["publish"] = (definition, data, options) =>
+        publish(definition, data, options).pipe(
+          Effect.tap((event) => {
+            if (
+              !hold ||
+              event.type !== SessionEvent.Execution.Interrupted.type ||
+              event.durable?.aggregateID !== child.id
+            )
+              return Effect.void
+            hold = false
+            return Deferred.succeed(settling, undefined).pipe(Effect.andThen(Deferred.await(release)))
+          }),
+        )
       const spy = spyOn(bus, "publish").mockImplementation(pause)
       yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()))
-      const recovering = yield* fixture.sessions.recover(
-        { sessionID: child.id, owner: { pluginID: "test", lifetime: "early-cancel" } },
-        () => Effect.succeed(false),
-      ).pipe(Effect.forkScoped({ startImmediately: true }))
+      const recovering = yield* fixture.sessions
+        .recover({ sessionID: child.id, owner: { pluginID: "test", lifetime: "early-cancel" } }, () =>
+          Effect.succeed(false),
+        )
+        .pipe(Effect.forkScoped({ startImmediately: true }))
       yield* Deferred.await(settling).pipe(Effect.timeout("2 seconds"))
       const cancelling = yield* fixture.sessions.interrupt(child.id).pipe(Effect.forkScoped({ startImmediately: true }))
       yield* Deferred.succeed(release, undefined)
@@ -1163,18 +1213,24 @@ describe("SubagentTool reporting", () => {
       const held = yield* Deferred.make<void>()
       const releaseRecovery = yield* Deferred.make<void>()
       yield* Effect.addFinalizer(() => Deferred.succeed(releaseRecovery, undefined))
-      const recovering = yield* fixture.sessions.recover(
-        { sessionID: child.id, owner: { pluginID: "test", lifetime: "successor-order" } },
-        () => Deferred.succeed(held, undefined).pipe(Effect.andThen(Deferred.await(releaseRecovery)), Effect.as(false)),
-      ).pipe(Effect.forkScoped({ startImmediately: true }))
+      const recovering = yield* fixture.sessions
+        .recover({ sessionID: child.id, owner: { pluginID: "test", lifetime: "successor-order" } }, () =>
+          Deferred.succeed(held, undefined).pipe(Effect.andThen(Deferred.await(releaseRecovery)), Effect.as(false)),
+        )
+        .pipe(Effect.forkScoped({ startImmediately: true }))
       yield* Deferred.await(held).pipe(Effect.timeout("2 seconds"))
       const cancelEntered = yield* Deferred.make<void>()
       const releaseCancel = yield* Deferred.make<void>()
       yield* Effect.addFinalizer(() => Deferred.succeed(releaseCancel, undefined))
       const cancel = jobs.cancel
-      const spy = spyOn(jobs, "cancel").mockImplementation((id, generation, options) => id === child.id
-        ? Deferred.succeed(cancelEntered, undefined).pipe(Effect.andThen(Deferred.await(releaseCancel)), Effect.andThen(cancel(id, generation, options)))
-        : cancel(id, generation, options))
+      const spy = spyOn(jobs, "cancel").mockImplementation((id, generation, options) =>
+        id === child.id
+          ? Deferred.succeed(cancelEntered, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseCancel)),
+              Effect.andThen(cancel(id, generation, options)),
+            )
+          : cancel(id, generation, options),
+      )
       yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()))
       const notified = yield* Deferred.make<void>()
       const successorStarted = yield* Deferred.make<void>()
@@ -1194,9 +1250,19 @@ describe("SubagentTool reporting", () => {
       yield* successor.started.pipe(Effect.timeout("2 seconds"))
       yield* Deferred.succeed(releaseCancel, undefined)
       yield* Fiber.join(cancelling).pipe(Effect.timeout("2 seconds"))
-      yield* Deferred.await(notified).pipe(Effect.timeoutOrElse({ duration: "2 seconds", orElse: () => Effect.fail(new Error("Cancellation report waited for the successor")) }))
+      yield* Deferred.await(notified).pipe(
+        Effect.timeoutOrElse({
+          duration: "2 seconds",
+          orElse: () => Effect.fail(new Error("Cancellation report waited for the successor")),
+        }),
+      )
       expect((yield* fixture.sessions.active).has(child.id)).toBe(true)
-      const claim = yield* database.db.select({ suspended: SessionTable.time_suspended }).from(SessionTable).where(eq(SessionTable.id, child.id)).get().pipe(Effect.orDie)
+      const claim = yield* database.db
+        .select({ suspended: SessionTable.time_suspended })
+        .from(SessionTable)
+        .where(eq(SessionTable.id, child.id))
+        .get()
+        .pipe(Effect.orDie)
       expect(claim?.suspended).not.toBeNull()
       const reports = (yield* fixture.notices).filter((notice) => notice.metadata?.["childID"] === child.id)
       expect(reports).toHaveLength(1)
@@ -1210,37 +1276,53 @@ describe("SubagentTool reporting", () => {
   )
 
   for (const background of [false, true]) {
-    completionIt.live(`reports cancellation during held recovery for ${background ? "background" : "untracked"} child work`, () =>
-      Effect.gen(function* () {
-        const fixture = yield* reportingFixture()
-        const llm = yield* TestLLM.Test
-        const bus = yield* Bus.Service
-        const notification = yield* Deferred.make<void>()
-        yield* bus.listen((event) => event.type === SessionEvent.InboxEnqueued.type && event.durable?.aggregateID === fixture.parent.id
-          ? Deferred.succeed(notification, undefined).pipe(Effect.asVoid) : Effect.void)
-        const gate = yield* llm.gate()
-        yield* Effect.addFinalizer(() => gate.release)
-        const childID = background
-          ? outputSessionID((yield* fixture.call("held-recovery-background")).metadata)
-          : (yield* fixture.sessions.create({ parentID: fixture.parent.id, title: "review", agent: Agent.ID.make("reviewer"), model: childModel })).id
-        if (!background) yield* fixture.sessions.prompt({ sessionID: childID, text: "review" })
-        yield* gate.started.pipe(Effect.timeout("2 seconds"))
-        const held = yield* Deferred.make<void>()
-        const release = yield* Deferred.make<void>()
-        yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined))
-        const recovering = yield* fixture.sessions.recover(
-          { sessionID: childID, owner: { pluginID: "test", lifetime: "held-cancel" } },
-          () => Deferred.succeed(held, undefined).pipe(Effect.andThen(Deferred.await(release)), Effect.as(false)),
-        ).pipe(Effect.forkScoped({ startImmediately: true }))
-        yield* Deferred.await(held).pipe(Effect.timeout("2 seconds"))
-        yield* fixture.sessions.interrupt(childID)
-        yield* Deferred.await(notification).pipe(Effect.timeoutOrElse({ duration: "2 seconds", orElse: () => Effect.fail(new Error("Held recovery cancellation did not notify the parent")) }))
-        yield* Deferred.succeed(release, undefined)
-        yield* Fiber.join(recovering).pipe(Effect.timeout("2 seconds"))
-        const reports = (yield* fixture.notices).filter((notice) => notice.metadata?.["childID"] === childID)
-        expect(reports).toHaveLength(1)
-        expect(reports[0]?.text).toContain('state="cancelled"')
-      }),
+    completionIt.live(
+      `reports cancellation during held recovery for ${background ? "background" : "untracked"} child work`,
+      () =>
+        Effect.gen(function* () {
+          const fixture = yield* reportingFixture()
+          const llm = yield* TestLLM.Test
+          const bus = yield* Bus.Service
+          const notification = yield* Deferred.make<void>()
+          yield* bus.listen((event) =>
+            event.type === SessionEvent.InboxEnqueued.type && event.durable?.aggregateID === fixture.parent.id
+              ? Deferred.succeed(notification, undefined).pipe(Effect.asVoid)
+              : Effect.void,
+          )
+          const gate = yield* llm.gate()
+          yield* Effect.addFinalizer(() => gate.release)
+          const childID = background
+            ? outputSessionID((yield* fixture.call("held-recovery-background")).metadata)
+            : (yield* fixture.sessions.create({
+                parentID: fixture.parent.id,
+                title: "review",
+                agent: Agent.ID.make("reviewer"),
+                model: childModel,
+              })).id
+          if (!background) yield* fixture.sessions.prompt({ sessionID: childID, text: "review" })
+          yield* gate.started.pipe(Effect.timeout("2 seconds"))
+          const held = yield* Deferred.make<void>()
+          const release = yield* Deferred.make<void>()
+          yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined))
+          const recovering = yield* fixture.sessions
+            .recover({ sessionID: childID, owner: { pluginID: "test", lifetime: "held-cancel" } }, () =>
+              Deferred.succeed(held, undefined).pipe(Effect.andThen(Deferred.await(release)), Effect.as(false)),
+            )
+            .pipe(Effect.forkScoped({ startImmediately: true }))
+          yield* Deferred.await(held).pipe(Effect.timeout("2 seconds"))
+          yield* fixture.sessions.interrupt(childID)
+          yield* Deferred.await(notification).pipe(
+            Effect.timeoutOrElse({
+              duration: "2 seconds",
+              orElse: () => Effect.fail(new Error("Held recovery cancellation did not notify the parent")),
+            }),
+          )
+          yield* Deferred.succeed(release, undefined)
+          yield* Fiber.join(recovering).pipe(Effect.timeout("2 seconds"))
+          const reports = (yield* fixture.notices).filter((notice) => notice.metadata?.["childID"] === childID)
+          expect(reports).toHaveLength(1)
+          expect(reports[0]?.text).toContain('state="cancelled"')
+        }),
     )
   }
 
@@ -1418,11 +1500,16 @@ describe("SubagentJob cancellation", () => {
           Layer.provide(Layer.succeed(Job.Service, jobs)),
           Layer.provide(Layer.succeed(Bus.Service, bus)),
           Layer.provide(Layer.succeed(SubagentAdmissionStore.Service, admissions)),
-          Layer.provide(Layer.succeed(Session.Service, Session.Service.of({
-            ...sessions,
-            resume: execution.resume,
-            wait: execution.awaitIdle,
-          }))),
+          Layer.provide(
+            Layer.succeed(
+              Session.Service,
+              Session.Service.of({
+                ...sessions,
+                resume: execution.resume,
+                wait: execution.awaitIdle,
+              }),
+            ),
+          ),
         ),
         scope,
       )
