@@ -404,6 +404,105 @@ describe("Code Mode session jobs", () => {
 })
 
 describe("subagent idle reports end to end", () => {
+  for (const early of [false, true]) {
+    e2e.live(
+      early
+        ? "delivers ready group members during an unrelated parent turn"
+        : "wakes once and promotes separate group reports in dispatch order",
+      () =>
+        Effect.gen(function* () {
+          const h = yield* harness()
+          yield* h.llm.serve(
+            script({
+              reviewer: [TestLLM.text("first member", "first"), TestLLM.text("follow-up member", "follow-up")],
+              fallback: [TestLLM.text("second member", "second")],
+              build: [TestLLM.text("parent ack", "parent-1"), TestLLM.text("parent ack", "parent-2")],
+            }),
+          )
+          const gate = yield* h.llm.gate()
+          const launched = yield* h.call("call-first", { completion_group: "review" })
+          const first = outputSessionID(launched.metadata)
+          yield* gate.started
+          const secondGate = yield* h.llm.gate()
+          const secondCall = yield* h.call("call-second", { agent: "fallback", completion_group: "review" })
+          const second = outputSessionID(secondCall.metadata)
+          yield* secondGate.started
+          yield* secondGate.release
+          yield* h.sessions.wait(second)
+          const queued = yield* h.sessions.inbox(h.parent.id)
+          expect(queued).toHaveLength(1)
+          expect((yield* h.llm.requests()).filter((request) => request.model.id === "build")).toHaveLength(0)
+          if (early) {
+            yield* h.sessions.prompt({ sessionID: h.parent.id, text: "Unrelated turn" })
+            yield* waitForReports(h, h.parent.id, 1)
+            expect((yield* deliveredReports(h, h.parent.id)).map((report) => report.metadata?.childID)).toEqual([
+              second,
+            ])
+          }
+          yield* gate.release
+          yield* waitForReports(h, h.parent.id, 2)
+          const reports = yield* deliveredReports(h, h.parent.id)
+          expect(reports.map((report) => report.metadata?.childID)).toEqual(early ? [second, first] : [first, second])
+          expect(new Set(reports.map((report) => report.id)).size).toBe(2)
+          expect((yield* h.llm.requests()).filter((request) => request.model.id === "build")).toHaveLength(
+            early ? 2 : 1,
+          )
+          yield* h.call("call-reopen", { sessionID: first, prompt: "One follow-up" })
+          yield* waitForReports(h, h.parent.id, 3)
+          expect((yield* deliveredReports(h, h.parent.id))[2]?.text).toContain("follow-up member")
+        }),
+      30_000,
+    )
+  }
+
+  e2e.live(
+    "a grouped cancellation wakes immediately and remaining members report independently",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* harness()
+        yield* h.llm.serve(
+          script({
+            reviewer: [
+              TestLLM.text("cancelled member", "a"),
+              TestLLM.text("third member", "c"),
+              TestLLM.text("ready before failure", "d"),
+            ],
+            fallback: [TestLLM.text("second member", "b")],
+            build: [TestLLM.text("ack", "parent-1"), TestLLM.text("ack", "parent-2"), TestLLM.text("ack", "parent-3")],
+          }),
+        )
+        const one = yield* h.llm.gate()
+        const first = outputSessionID((yield* h.call("call-one", { completion_group: "audit" })).metadata)
+        yield* one.started
+        const two = yield* h.llm.gate()
+        const second = outputSessionID(
+          (yield* h.call("call-two", { agent: "fallback", completion_group: "audit" })).metadata,
+        )
+        yield* two.started
+        const three = yield* h.llm.gate()
+        const third = outputSessionID((yield* h.call("call-three", { completion_group: "audit" })).metadata)
+        yield* three.started
+        const four = yield* h.llm.gate()
+        const fourth = outputSessionID((yield* h.call("call-four", { completion_group: "audit" })).metadata)
+        yield* four.started
+        yield* four.release
+        yield* h.sessions.wait(fourth)
+        expect(yield* deliveredReports(h, h.parent.id)).toEqual([])
+        yield* h.jobs.cancel(first)
+        yield* waitForReports(h, h.parent.id, 2)
+        const reports = yield* deliveredReports(h, h.parent.id)
+        expect(reports[0]?.metadata).toMatchObject({ childID: first, state: "cancelled" })
+        expect(reports[1]?.metadata?.childID).toBe(fourth)
+        yield* three.release
+        yield* waitForReports(h, h.parent.id, 3)
+        expect((yield* deliveredReports(h, h.parent.id))[2]?.metadata?.childID).toBe(third)
+        yield* two.release
+        yield* waitForReports(h, h.parent.id, 4)
+        expect((yield* deliveredReports(h, h.parent.id))[3]?.metadata?.childID).toBe(second)
+      }),
+    30_000,
+  )
+
   for (const promptParent of [false, true])
     e2e.live(
       `queues the running report until ${promptParent ? "a parent prompt" : "the terminal report"}`,
@@ -677,7 +776,7 @@ describe("subagent idle reports end to end", () => {
   )
 
   e2e.live(
-    "resumes a background child killed mid-turn and reports exactly once",
+    "keeps queued group reports across restart and delivers once in dispatch order",
     () =>
       Effect.gen(function* () {
         const base = yield* setup()
@@ -698,6 +797,7 @@ describe("subagent idle reports end to end", () => {
         yield* base.llm.serve(
           script({
             reviewer: [TestLLM.text("interrupted answer", "turn-1"), TestLLM.text("recovered answer", "turn-2")],
+            fallback: [TestLLM.text("queued before restart", "queued")],
             build: [TestLLM.text("parent ack", "parent-1")],
           }),
         )
@@ -709,13 +809,41 @@ describe("subagent idle reports end to end", () => {
             type: "tool-call",
             id: "call-launch",
             name: SubagentTool.name,
-            input: { agent: "reviewer", description: "restart review", prompt: "review this" },
+            input: {
+              agent: "reviewer",
+              description: "restart review",
+              prompt: "review this",
+              completion_group: "restart",
+            },
           },
         })
         const childID = outputSessionID(launched.metadata)
         yield* gate.started
         expect(yield* first.jobs.pendingBackground).toMatchObject([{ id: childID, status: "running" }])
         expect((yield* claims(first))[childID]).toBe(true)
+
+        const readyGate = yield* base.llm.gate()
+        const ready = yield* executeTool(registry, {
+          sessionID: parent.id,
+          ...toolIdentity,
+          call: {
+            type: "tool-call",
+            id: "call-ready",
+            name: SubagentTool.name,
+            input: {
+              agent: "fallback",
+              description: "ready review",
+              prompt: "review this",
+              completion_group: "restart",
+            },
+          },
+        })
+        const readyID = outputSessionID(ready.metadata)
+        yield* readyGate.started
+        yield* readyGate.release
+        yield* first.sessions.wait(readyID)
+        expect(yield* first.sessions.inbox(parent.id)).toHaveLength(1)
+        expect(yield* deliveredReports(first, parent.id)).toEqual([])
 
         // Crash the first process mid-turn: the claim and running outbox row survive.
         yield* Scope.close(firstScope, Exit.void)
@@ -732,11 +860,13 @@ describe("subagent idle reports end to end", () => {
         expect((yield* claims(second))[childID]).toBe(true)
         expect(yield* second.jobs.pendingBackground).toMatchObject([{ id: childID, status: "running" }])
         expect((yield* second.sessions.get(childID)).parentID).toBe(parent.id)
+        expect(yield* second.sessions.inbox(parent.id)).toHaveLength(1)
         yield* second.restart.resumeSuspendedSessions
 
-        yield* waitForReports(second, parent.id, 1)
+        yield* waitForReports(second, parent.id, 2)
         const reports = yield* deliveredReports(second, parent.id)
-        expect(reports).toHaveLength(1)
+        expect(reports.map((item) => item.metadata?.childID)).toEqual([childID, readyID])
+        expect(reports[1]?.text).toContain("queued before restart")
         expect(reports[0]!.text).toContain("recovered answer")
         expect(reports[0]!.text).not.toContain("interrupted answer")
         expect(yield* second.jobs.pendingBackground).toEqual([])
@@ -745,7 +875,7 @@ describe("subagent idle reports end to end", () => {
         expect(reviewerRequests).toHaveLength(2)
 
         yield* second.restart.resumeSuspendedSessions
-        expect(yield* deliveredReports(second, parent.id)).toHaveLength(1)
+        expect(yield* deliveredReports(second, parent.id)).toHaveLength(2)
       }),
     30_000,
   )

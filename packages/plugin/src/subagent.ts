@@ -62,6 +62,7 @@ export interface StartInput {
   readonly delivery: SessionInbox.Delivery
   readonly mode: "foreground" | "background"
   readonly completion: "parent" | "none"
+  readonly completionGroup?: string
 }
 
 export interface SteerInput {

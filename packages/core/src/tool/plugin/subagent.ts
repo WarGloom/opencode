@@ -15,6 +15,7 @@ import { SessionSchema } from "../../session/schema.js"
 import { SubagentDepth } from "../../session/subagent-depth.js"
 import { SubagentJob } from "../../session/subagent-job.js"
 import { SessionMessage } from "../../session/message.js"
+import { Name as CompletionGroupName } from "../../session/subagent-completion-group.js"
 
 export const name = "subagent"
 
@@ -35,6 +36,12 @@ export const Input = Schema.Struct({
       "The type of specialized agent to use for this task. If the user asks for a subagent by a name that is not one of the available subagents, they most likely mean a model: pick a suitable agent and pass the name through the model parameter instead.",
   }),
   description: Schema.String.annotate({ description: "A short 3-5 word label for the task, displayed to the user" }),
+  completion_group: Schema.optionalKey(
+    CompletionGroupName.annotate({
+      description:
+        "Use the same name for several reviewers or checks whose results are judged together. Ready reports arrive in dispatch order within one delivery; a failure wakes the parent immediately.",
+    }),
+  ),
   prompt: Schema.String.annotate({ description: "The task for the subagent to perform" }),
   model: Schema.optionalKey(Schema.String).annotate({
     description:
@@ -202,6 +209,7 @@ export const Plugin = {
                 childSessionID: child.id,
                 agent: agent.name,
                 description: input.description,
+                completionGroup: input.completion_group,
               }
               yield* subagents.start(recovery, promptID)
               return backgroundResult(child.id)

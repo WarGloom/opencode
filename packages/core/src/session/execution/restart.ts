@@ -49,7 +49,11 @@ export interface Options {
 
 const DEFAULT_MAX_ATTEMPTS = 10
 
-type Notices = Pick<Session.Interface, "synthetic" | "report">
+type Notices = Pick<Session.Interface, "synthetic"> & {
+  report: (
+    input: Parameters<Session.Interface["report"]>[0] & { grouped?: boolean },
+  ) => ReturnType<Session.Interface["report"]>
+}
 
 export interface Interface {
   /**
@@ -429,9 +433,11 @@ export const layer = (options?: Options) =>
 
       return Service.of({
         resumeSuspendedSessions: Effect.gen(function* () {
-          const owned = new Set((yield* admissions.list())
-            .filter((entry) => entry.status === "accepted" || entry.status === "running")
-            .map((entry) => entry.childSessionID))
+          const owned = new Set(
+            (yield* admissions.list())
+              .filter((entry) => entry.status === "accepted" || entry.status === "running")
+              .map((entry) => entry.childSessionID),
+          )
           const active = yield* execution.active
           const pending = yield* jobs.pendingBackground
           const children = new Set(
@@ -480,7 +486,7 @@ export const layer = (options?: Options) =>
               ),
             report: (input) =>
               sessions.report({ ...input, resume: false }).pipe(
-                Effect.tap(() => noticeWake(input.sessionID)),
+                Effect.tap(() => (input.grouped && input.resume === false ? Effect.void : noticeWake(input.sessionID))),
                 Effect.uninterruptible,
               ),
           }

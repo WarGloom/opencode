@@ -223,55 +223,56 @@ export const make = Effect.fn("SessionInbox.make")(function* () {
     const existing = yield* reconcile({ ...request, type: request.item.type, delivery: request.item.delivery })
     if (existing !== undefined) return existing
     const [first, ...rest] = request.activations ?? []
-    const admitted = yield* (first
-      ? bus
-          .publishAll([
-            [
-              SessionEvent.Skill.Activated,
-              first,
-              { id: Event.ID.make(first.activationID.replace(/^ska_/, "evt_")) },
-            ] as const,
-            ...rest.map(
-              (activation) =>
-                [
-                  SessionEvent.Skill.Activated,
-                  activation,
-                  { id: Event.ID.make(activation.activationID.replace(/^ska_/, "evt_")) },
-                ] as const,
-            ),
-            [
-              SessionEvent.InboxEnqueued,
-              { inboxID: request.id, sessionID: request.sessionID, item: request.item },
-              { expectedSequence: request.expectedSequence, commit: request.commit },
-            ] as const,
-          ])
-          .pipe(Effect.map((events) => events[events.length - 1]))
-      : bus.publish(
-          SessionEvent.InboxEnqueued,
-          {
-            inboxID: request.id,
-            sessionID: request.sessionID,
-            item: request.item,
-          },
-          { expectedSequence: request.expectedSequence, commit: request.commit },
-        ))
-      .pipe(
-        Effect.map((event) =>
-          Info.make({
-            id: request.id,
-            sessionID: request.sessionID,
-            time: { created: DateTime.makeUnsafe(event.created) },
-            ...request.item,
-          }),
-        ),
-        Effect.catchDefect((defect) =>
-          defect instanceof LifecycleConflict
-            ? find(db, request.id).pipe(
-                Effect.flatMap((stored) => (stored === undefined ? Effect.fail(defect) : Effect.succeed(stored))),
-              )
-            : Effect.die(defect),
-        ),
-      )
+    const admitted = yield* (
+      first
+        ? bus
+            .publishAll([
+              [
+                SessionEvent.Skill.Activated,
+                first,
+                { id: Event.ID.make(first.activationID.replace(/^ska_/, "evt_")) },
+              ] as const,
+              ...rest.map(
+                (activation) =>
+                  [
+                    SessionEvent.Skill.Activated,
+                    activation,
+                    { id: Event.ID.make(activation.activationID.replace(/^ska_/, "evt_")) },
+                  ] as const,
+              ),
+              [
+                SessionEvent.InboxEnqueued,
+                { inboxID: request.id, sessionID: request.sessionID, item: request.item },
+                { expectedSequence: request.expectedSequence, commit: request.commit },
+              ] as const,
+            ])
+            .pipe(Effect.map((events) => events[events.length - 1]))
+        : bus.publish(
+            SessionEvent.InboxEnqueued,
+            {
+              inboxID: request.id,
+              sessionID: request.sessionID,
+              item: request.item,
+            },
+            { expectedSequence: request.expectedSequence, commit: request.commit },
+          )
+    ).pipe(
+      Effect.map((event) =>
+        Info.make({
+          id: request.id,
+          sessionID: request.sessionID,
+          time: { created: DateTime.makeUnsafe(event.created) },
+          ...request.item,
+        }),
+      ),
+      Effect.catchDefect((defect) =>
+        defect instanceof LifecycleConflict
+          ? find(db, request.id).pipe(
+              Effect.flatMap((stored) => (stored === undefined ? Effect.fail(defect) : Effect.succeed(stored))),
+            )
+          : Effect.die(defect),
+      ),
+    )
     if (!matches(admitted, { ...request, type: request.item.type }))
       return yield* new LifecycleConflict({ id: request.id })
     return admitted
@@ -393,13 +394,30 @@ export const make = Effect.fn("SessionInbox.make")(function* () {
             () =>
               Effect.gen(function* () {
                 if (input.authority && !(yield* input.authority)) return undefined
-                const boundary = yield* continuationBoundary(db, input.sessionID, input.boundaryID, input.outcomes ?? ["failed"])
+                const boundary = yield* continuationBoundary(
+                  db,
+                  input.sessionID,
+                  input.boundaryID,
+                  input.outcomes ?? ["failed"],
+                )
                 if (boundary === undefined) return undefined
                 if (input.pending === "prior-reports") {
-                  const pending = yield* db.select().from(SessionInboxTable)
-                    .where(eq(SessionInboxTable.session_id, input.sessionID)).all().pipe(Effect.orDie)
-                  if (pending.some((row) => row.type !== "synthetic" || row.delivery !== "steer" ||
-                    row.enqueued_seq >= boundary || decodeSynthetic(row.payload).origin !== "subagent-report")) return undefined
+                  const pending = yield* db
+                    .select()
+                    .from(SessionInboxTable)
+                    .where(eq(SessionInboxTable.session_id, input.sessionID))
+                    .all()
+                    .pipe(Effect.orDie)
+                  if (
+                    pending.some(
+                      (row) =>
+                        row.type !== "synthetic" ||
+                        row.delivery !== "steer" ||
+                        row.enqueued_seq >= boundary ||
+                        decodeSynthetic(row.payload).origin !== "subagent-report",
+                    )
+                  )
+                    return undefined
                 } else if (yield* has(db, input.sessionID, "input")) return undefined
                 const session = yield* db
                   .select({ model: SessionTable.model, revert: SessionTable.revert })
@@ -442,7 +460,8 @@ export const make = Effect.fn("SessionInbox.make")(function* () {
         ] as const
         const publish: Effect.Effect<void> =
           input.model && !sameModel(input.model, captured.previous)
-            ? bus.publishAll([
+            ? bus
+                .publishAll([
                   [
                     SessionEvent.ModelSelected,
                     { sessionID: input.sessionID, model: input.model, previous: captured.previous },
@@ -457,7 +476,9 @@ export const make = Effect.fn("SessionInbox.make")(function* () {
           Effect.as("admitted" as const),
           Effect.catchDefect((defect) => {
             if (!(defect instanceof Bus.StaleAggregateError)) return Effect.die(defect)
-            return reconcile(request).pipe(Effect.map((existing) => (existing ? ("duplicate" as const) : ("stale" as const))))
+            return reconcile(request).pipe(
+              Effect.map((existing) => (existing ? ("duplicate" as const) : ("stale" as const))),
+            )
           }),
         )
       }),
@@ -814,10 +835,7 @@ const hasPreparedChild = (db: DatabaseService, sessionID: SessionSchema.ID) =>
     .select({ id: SessionChildPreparationTable.admission_id })
     .from(SessionChildPreparationTable)
     .where(
-      and(
-        eq(SessionChildPreparationTable.session_id, sessionID),
-        eq(SessionChildPreparationTable.status, "prepared"),
-      ),
+      and(eq(SessionChildPreparationTable.session_id, sessionID), eq(SessionChildPreparationTable.status, "prepared")),
     )
     .limit(1)
     .get()
@@ -898,7 +916,26 @@ const isControl = (row: typeof SessionInboxTable.$inferSelect) => row.type === "
 
 const beforeControl = (rows: Array<typeof SessionInboxTable.$inferSelect>) => {
   const control = rows.findIndex(isControl)
-  return control === -1 ? rows : rows.slice(0, control)
+  const ready = control === -1 ? rows : rows.slice(0, control)
+  const groups = new Map<string, { index: number; order: number }[]>()
+  for (const [index, row] of ready.entries()) {
+    if (row.type !== "synthetic") continue
+    const payload = decodeSynthetic(row.payload)
+    if (payload.origin !== "subagent-report") continue
+    const name = payload.metadata?.completionGroup
+    const order = payload.metadata?.completionOrder
+    if (typeof name !== "string" || typeof order !== "number") continue
+    const items = groups.get(name) ?? []
+    items.push({ index, order })
+    groups.set(name, items)
+  }
+  if (groups.size === 0) return ready
+  const sorted = [...ready]
+  for (const items of groups.values()) {
+    const ordered = items.toSorted((a, b) => a.order - b.order)
+    for (const [i, item] of items.entries()) sorted[item.index] = ready[ordered[i].index]
+  }
+  return sorted
 }
 
 const firstQueued = (db: DatabaseService, sessionID: SessionSchema.ID) =>

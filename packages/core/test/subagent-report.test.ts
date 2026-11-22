@@ -527,9 +527,27 @@ describe("SubagentReport outbox", () => {
         const parent = sessionID("ses_outbox_parent")
         const child = sessionID("ses_outbox_child")
         const grandchild = sessionID("ses_outbox_grandchild")
+        const peer = sessionID("ses_outbox_peer")
         yield* seedSessions(database, [parent])
         yield* seedSessions(database, [child], { parent_id: parent, agent: "explore", title: "Outbox audit" })
         yield* seedSessions(database, [grandchild], { parent_id: child, agent: "explore", title: "Check logs" })
+        if (outcome.type !== "succeeded") {
+          yield* seedSessions(database, [peer], { parent_id: parent })
+          yield* jobs.start({
+            id: peer,
+            type: "subagent",
+            recovery: {
+              kind: "subagent",
+              parentSessionID: parent,
+              childSessionID: peer,
+              agent: "explore",
+              description: "Still running",
+              completionGroup: "outbox",
+            },
+            background: true,
+            run: Effect.never,
+          })
+        }
         yield* seedAssistant(database, child, 100, "Outbox report")
         yield* store.claim(child)
 
@@ -550,6 +568,7 @@ describe("SubagentReport outbox", () => {
             childSessionID: child,
             agent: "explore",
             description: "Outbox audit",
+            ...(outcome.type !== "succeeded" ? { completionGroup: "outbox" } : {}),
           },
           background: true,
           run: Effect.never,
@@ -571,7 +590,9 @@ describe("SubagentReport outbox", () => {
         yield* settlement.commit()
         expect(yield* claimValue(database, child)).toBeNull()
         expect(yield* SessionInbox.list(database.db, parent)).toEqual([])
-        expect(yield* database.db.select().from(JobTable).all().pipe(Effect.orDie)).toMatchObject([
+        expect(
+          yield* database.db.select().from(JobTable).where(eq(JobTable.id, child)).all().pipe(Effect.orDie),
+        ).toMatchObject([
           {
             notification_id: job.notificationID,
             id: child,
@@ -597,7 +618,7 @@ describe("SubagentReport outbox", () => {
         expect(yield* SessionInbox.list(database.db, parent)).toMatchObject([
           { type: "synthetic", payload: { text: expect.stringContaining(body), metadata: { state: status } } },
         ])
-        expect(yield* jobs.pendingBackground).toEqual([])
+        expect((yield* jobs.pendingBackground).map((row) => row.id)).toEqual(outcome.type === "succeeded" ? [] : [peer])
 
         // A staged revert admits the notice but never wakes the parent.
         const revertChild = sessionID("ses_outbox_revert_child")
@@ -627,7 +648,7 @@ describe("SubagentReport outbox", () => {
         yield* revertSettlement.deliver
         expect(yield* SessionInbox.list(database.db, parent)).toHaveLength(2)
         expect(wakes).toEqual(expectedWakes)
-        expect(yield* jobs.pendingBackground).toEqual([])
+        expect((yield* jobs.pendingBackground).map((row) => row.id)).toEqual(outcome.type === "succeeded" ? [] : [peer])
         expect(revertJob.notificationID).toBeDefined()
       }),
     )

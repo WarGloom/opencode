@@ -20,6 +20,7 @@ export interface SyntheticSession<E = never> {
     readonly description?: string
     readonly metadata?: SessionSchema.Metadata
     readonly resume?: boolean
+    readonly grouped?: boolean
   }) => Effect.Effect<unknown, E>
 }
 
@@ -74,7 +75,8 @@ export function line(item: RunningBackgroundItem, owner: SessionSchema.ID) {
 
 export const deliver = Effect.fnUntraced(function* <E>(
   sessions: SyntheticSession<E>,
-  jobs: Pick<Job.Interface, "completeBackground">,
+  jobs: Pick<Job.Interface, "completeBackground"> &
+    Partial<Pick<Job.Interface, "finishCompletionMember" | "completionMember">>,
   input: Pick<Job.Info, "status" | "output" | "error" | "notificationID"> & {
     recovery: Extract<Job.Recovery, { kind: "subagent" }>
   },
@@ -94,17 +96,38 @@ export const deliver = Effect.fnUntraced(function* <E>(
   // Older rows lack the snapshot. Replay their recorded job status and preserve the full report body.
   const state = input.status === "completed" && recovery.outstanding?.length ? "running" : input.status
   const formatted = formatBody(body, recovery.childSessionID, recovery.outstanding)
-  yield* sessions.report({
+  const run = recovery.completionMember?.run ?? input.notificationID
+  const group =
+    (run && jobs.completionMember
+      ? yield* jobs.completionMember(recovery.parentSessionID, recovery.childSessionID, run)
+      : undefined) ?? recovery.completionMember
+  const notice = {
     ...(input.notificationID ? { id: input.notificationID } : {}),
     sessionID: recovery.parentSessionID,
     description: recovery.description,
-    ...(state === "running" ? { resume: false } : {}),
+    ...(state === "running" || group ? { resume: false } : {}),
+    ...(group ? { grouped: true } : {}),
     text: BackgroundResult.render(
       `kind="subagent" sessionID="${recovery.childSessionID}" state="${state}" description="${recovery.description}"`,
       formatted,
     ),
-    metadata: { source: "subagent", childID: recovery.childSessionID, agent: recovery.agent, state: input.status },
-  })
+    metadata: {
+      source: "subagent",
+      childID: recovery.childSessionID,
+      agent: recovery.agent,
+      state: input.status,
+      ...(group && !group.bypass && state !== "running"
+        ? { completionGroup: group.name, completionOrder: group.order }
+        : {}),
+    },
+  }
+  yield* sessions.report(notice)
+  const wake =
+    state !== "running" &&
+    (!group ||
+      (yield* jobs.finishCompletionMember?.(recovery.parentSessionID, group, state !== "completed") ??
+        Effect.succeed(true)))
+  if (wake && group) yield* sessions.report({ ...notice, resume: true })
   if (input.notificationID) yield* jobs.completeBackground(input.notificationID)
-  return state !== "running"
+  return wake
 })

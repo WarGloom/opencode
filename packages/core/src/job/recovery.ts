@@ -1,6 +1,10 @@
 import { VideoID } from "@opencode/schema/generate"
 import { Schema } from "effect"
 import { SessionSchema } from "../session/schema.js"
+import {
+  Name as CompletionGroupName,
+  Reference as CompletionGroupReference,
+} from "../session/subagent-completion-group.js"
 
 const Shell = Schema.Struct({
   kind: Schema.Literal("shell"),
@@ -49,6 +53,8 @@ export const RecoverySchema = Schema.Union([
     admissionID: Schema.optionalKey(Schema.String),
     generation: Schema.optionalKey(Schema.String),
     completion: Schema.optionalKey(Schema.Literals(["parent", "none"])),
+    completionGroup: Schema.optionalKey(CompletionGroupName),
+    completionMember: Schema.optionalKey(CompletionGroupReference),
   }),
 ])
 

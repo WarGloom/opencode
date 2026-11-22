@@ -190,7 +190,14 @@ export const make = (deps: Deps) => {
           }
           return
         }
-        const resolved = yield* resolveBody(sessionID, outcome, period?.startedSeq, jobState.mode)
+        const member =
+          jobState.mode === "none" ? yield* deps.jobs.completionMember(child.parentID, child.id) : undefined
+        const resolved = yield* resolveBody(
+          sessionID,
+          outcome,
+          period?.startedSeq,
+          member ? "background" : jobState.mode,
+        )
         if (!resolved) return
         const recovery =
           jobState.mode === "background"
@@ -201,6 +208,7 @@ export const make = (deps: Deps) => {
                 childSessionID: child.id,
                 agent: child.agent ?? "subagent",
                 description: child.title ?? "Subagent",
+                ...(member ? { completionMember: member } : {}),
               }
         const report: Job.SubagentOutboxReport = {
           notificationID: jobState.mode === "background" ? jobState.notificationID : SessionMessage.ID.create(),
