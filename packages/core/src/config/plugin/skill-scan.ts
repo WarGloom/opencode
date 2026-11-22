@@ -8,8 +8,19 @@ const MAX_DEPTH = 6
 
 export const ignore = [...FSUtil.ignoreGlobs, "**/.*", "**/.*/**"]
 
+export function hiddenWithin(root: string, file: string) {
+  return (
+    FSUtil.contains(root, file) &&
+    path
+      .relative(root, file)
+      .split(path.sep)
+      .some((segment) => segment.startsWith("."))
+  )
+}
+
 export const scan = Effect.fn("SkillScan.scan")(function* (root: string) {
   const fs = yield* FSUtil.Service
+  const canonicalRoot = yield* fs.realPath(root).pipe(Effect.orElseSucceed(() => root))
   const files: string[] = []
   const queue = [{ directory: root, depth: 0 }]
   for (const item of queue) {
@@ -19,8 +30,11 @@ export const scan = Effect.fn("SkillScan.scan")(function* (root: string) {
       (entry) => {
         const target = path.join(item.directory, entry.name)
         if (entry.type !== "SymbolicLink") return Effect.succeed({ name: entry.name, path: target, type: entry.type })
-        return fs.stat(target).pipe(
-          Effect.map((info) => info.type),
+        return fs.realPath(target).pipe(
+          Effect.flatMap((resolved) =>
+            hiddenWithin(canonicalRoot, resolved) ? Effect.succeed(undefined) : fs.stat(resolved),
+          ),
+          Effect.map((info) => info?.type ?? "Unknown"),
           Effect.orElseSucceed(() => "Unknown" as const),
           Effect.map((type) => ({ name: entry.name, path: target, type })),
         )

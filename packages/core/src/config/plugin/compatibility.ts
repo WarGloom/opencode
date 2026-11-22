@@ -7,6 +7,7 @@ import { Effect, FiberMap, PubSub, Semaphore, Stream } from "effect"
 import { Config } from "../../config.js"
 import { Watcher } from "../../filesystem/watcher.js"
 import { Skill } from "../../skill.js"
+import { AbsolutePath } from "../../schema.js"
 import { SkillFile } from "./skill-file.js"
 import { SkillScan } from "./skill-scan.js"
 
@@ -23,10 +24,7 @@ export const Plugin = define({
     const compatibility = () =>
       config.compatibility ? config.compatibility() : Effect.succeed({ claude: [], agents: [] })
 
-    const watch = Effect.fn("ConfigCompatibilityPlugin.watch")(function* (
-      target: string,
-      type: "file" | "directory",
-    ) {
+    const watch = Effect.fn("ConfigCompatibilityPlugin.watch")(function* (target: string, type: "file" | "directory") {
       const updates = yield* watcher.subscribe(
         type === "directory" ? { path: target, type, ignore: SkillScan.ignore } : { path: target, type },
       )
@@ -43,7 +41,7 @@ export const Plugin = define({
         yield* FiberMap.clear(watches)
         const roots = yield* compatibility()
         const directories = [...roots.claude, ...roots.agents].map((root) => path.join(root, "skills"))
-        const loaded = new Map<Skill.ID, Skill.Info>()
+        const loaded: Skill.Info[] = []
         for (const directory of directories) {
           const resolved = yield* fs.realPath(directory).pipe(Effect.orElseSucceed(() => undefined))
           if (!resolved) continue
@@ -52,10 +50,13 @@ export const Plugin = define({
             const content = yield* fs.readFileStringSafe(filepath).pipe(Effect.orElseSucceed(() => undefined))
             if (!content) continue
             const parsed = SkillFile.parse(resolved, filepath, content)
-            if (parsed._tag === "Parsed") loaded.set(parsed.skill.id, parsed.skill)
+            if (parsed._tag === "Parsed") {
+              const canonical = yield* fs.realPath(filepath).pipe(Effect.orElseSucceed(() => filepath))
+              loaded.push({ ...parsed.skill, path: AbsolutePath.make(canonical) })
+            }
           }
         }
-        skills.splice(0, skills.length, ...loaded.values())
+        skills.splice(0, skills.length, ...SkillFile.preferLater(loaded))
       },
       (effect) => lock.withPermit(effect),
     )
@@ -76,7 +77,7 @@ export const Plugin = define({
     )
     yield* refresh()
     yield* ctx.skill.transform((editor) => {
-      for (const skill of skills) editor.add(skill)
+      SkillFile.register(editor, skills)
     })
   }),
 })

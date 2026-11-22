@@ -138,7 +138,7 @@ export const Plugin = define({
             })
             continue
           }
-          skills.push(parsed.skill)
+          skills.push({ ...parsed.skill, path: AbsolutePath.make(resolved) })
         }
       }
       yield* Effect.logDebug("skill source loaded", {
@@ -161,12 +161,12 @@ export const Plugin = define({
         }
         yield* FiberMap.clear(watches)
         loaded.complete = true
-        const skills = new Map<Skill.ID, Skill.Info>()
+        const skills: Skill.Info[] = []
         const current = loaded.sources
         for (const source of current) {
-          for (const skill of yield* load(source)) skills.set(skill.id, skill)
+          skills.push(...(yield* load(source)))
         }
-        loaded.skills = Array.from(skills.values())
+        loaded.skills = SkillFile.preferLater(skills)
         if (file) {
           yield* Effect.logInfo("skills rescanned", {
             file,
@@ -196,7 +196,7 @@ export const Plugin = define({
     )
     yield* refresh()
     yield* ctx.skill.transform((editor) => {
-      for (const skill of loaded.skills) editor.add(skill)
+      SkillFile.register(editor, loaded.skills)
     })
   }),
 })

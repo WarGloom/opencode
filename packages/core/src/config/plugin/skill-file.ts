@@ -15,6 +15,35 @@ const Frontmatter = Schema.Struct({
 })
 const decodeFrontmatter = SchemaParser.decodeUnknownResult(Frontmatter)
 
+/** Roots are loaded in configuration order; the last root wins, then the last sorted path within that root. */
+export function preferLater(skills: ReadonlyArray<Skill.Info>): Skill.Info[] {
+  const paths = new Set<string>()
+  const names = new Set<string>()
+  const ids = new Set<string>()
+  return skills
+    .toReversed()
+    .filter((skill) => {
+      if (paths.has(skill.path) || names.has(skill.name) || ids.has(skill.id)) return false
+      paths.add(skill.path)
+      names.add(skill.name)
+      ids.add(skill.id)
+      return true
+    })
+    .reverse()
+}
+
+export function register(editor: Skill.Editor, skills: ReadonlyArray<Skill.Info>) {
+  const existing = editor.list().filter((skill) => path.isAbsolute(skill.path))
+  const paths = new Map(existing.map((skill) => [skill.path, skill.id]))
+  const names = new Map(existing.map((skill) => [skill.name, skill.id]))
+  for (const skill of skills) {
+    for (const alias of [paths.get(skill.path), names.get(skill.name)]) {
+      if (alias !== undefined && alias !== skill.id) editor.remove(alias)
+    }
+    editor.add(skill)
+  }
+}
+
 export type ParseResult =
   | { readonly _tag: "Parsed"; readonly skill: Skill.Info }
   | { readonly _tag: "Skipped"; readonly reason: "markdown" }

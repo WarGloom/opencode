@@ -67,9 +67,7 @@ const startEntries = Effect.fnUntraced(function* (
   yield* ConfigCompatibilityPlugin.Plugin.effect(pluginHost).pipe(
     Effect.provide(Config.testLayer(entries, compatibility)),
   )
-  yield* ConfigSkillPlugin.Plugin.effect(
-    pluginHost,
-  ).pipe(
+  yield* ConfigSkillPlugin.Plugin.effect(pluginHost).pipe(
     Effect.provide(Config.testLayer(entries, compatibility)),
     Effect.provideService(SkillDiscovery.Service, discovery),
     Effect.provideService(Global.Service, Global.Service.of({ ...Global.make(), home })),
@@ -133,9 +131,9 @@ describe("SkillFile.parse", () => {
     expect(parse("disable-model-invocation: yes")).toMatchObject({ skill: { autoinvoke: false } })
     expect(parse("disable-model-invocation: false")).not.toMatchObject({ skill: { autoinvoke: expect.anything() } })
     expect(parse("disable-model-invocation: maybe")).not.toMatchObject({ skill: { autoinvoke: expect.anything() } })
-    expect(
-      parse("disable-model-invocation: true\nmetadata:\n  opencode/autoinvoke: true"),
-    ).toMatchObject({ skill: { autoinvoke: true } })
+    expect(parse("disable-model-invocation: true\nmetadata:\n  opencode/autoinvoke: true")).toMatchObject({
+      skill: { autoinvoke: true },
+    })
   })
 
   test("parses root and nested skill ids and metadata flags", () => {
@@ -178,6 +176,43 @@ metadata:
 })
 
 describe("ConfigSkillPlugin.Plugin", () => {
+  it.live("skips hidden copies and keeps the later source for one frontmatter name", () =>
+    Effect.acquireDisposable(Effect.promise(() => tmpdir())).pipe(
+      Effect.flatMap((tmp) =>
+        Effect.gen(function* () {
+          const first = path.join(tmp.path, "first")
+          const second = path.join(tmp.path, "second")
+          yield* Effect.promise(async () => {
+            const paths = [
+              [first, "different-folder", "First"],
+              [path.join(second, "synced", "account"), "review", "Live"],
+              [path.join(second, ".trash"), "review", "Trash"],
+              [path.join(second, ".staging", "x", ".replaced-y"), "review", "Staging"],
+            ] as const
+            for (const [root, folder, description] of paths) {
+              const skill = path.join(root, folder)
+              await fs.mkdir(skill, { recursive: true })
+              await fs.writeFile(
+                path.join(skill, "SKILL.md"),
+                "---\nname: review\ndescription: " + description + "\n---\nReview",
+              )
+            }
+            const staging = path.join(second, ".staging", "x", ".replaced-y", "review")
+            await fs.symlink(
+              staging,
+              path.join(second, "visible-alias"),
+              process.platform === "win32" ? "junction" : undefined,
+            )
+            const live = path.join(second, "synced", "account", "review")
+            await fs.symlink(live, path.join(second, "review"), process.platform === "win32" ? "junction" : undefined)
+          })
+          const skills = yield* start([first, second], tmp.path)
+          expect(yield* skills.list()).toMatchObject([{ id: "review", name: "review", description: "Live" }])
+        }),
+      ),
+    ),
+  )
+
   it.live("maps config entry types to skill directories", () =>
     Effect.acquireDisposable(Effect.promise(() => tmpdir())).pipe(
       Effect.flatMap((tmp) =>
@@ -208,7 +243,9 @@ describe("ConfigSkillPlugin.Plugin", () => {
             { claude: [AbsolutePath.make(claude)], agents: [AbsolutePath.make(agents)] },
           )
           const watcher = yield* Watcher.Test
-          expect(yield* watcher.subscriptions()).toEqual(expected.map((item) => ({ path: item, type: "directory", ignore: SkillScan.ignore.toSorted() })))
+          expect(yield* watcher.subscriptions()).toEqual(
+            expected.map((item) => ({ path: item, type: "directory", ignore: SkillScan.ignore.toSorted() })),
+          )
         }),
       ),
     ),
@@ -592,10 +629,10 @@ describe("ConfigSkillPlugin.Plugin", () => {
           expect((yield* service.list()).find((item) => item.id === "review")?.description).toBe("Review once")
         }).pipe(
           Effect.provide(
-            Config.testLayer(
-              [new Directory({ type: "directory", path: AbsolutePath.make(tmp.path) })],
-              { claude: [AbsolutePath.make(path.join(tmp.path, ".claude"))], agents: [] },
-            ),
+            Config.testLayer([new Directory({ type: "directory", path: AbsolutePath.make(tmp.path) })], {
+              claude: [AbsolutePath.make(path.join(tmp.path, ".claude"))],
+              agents: [],
+            }),
           ),
         ),
       ),
