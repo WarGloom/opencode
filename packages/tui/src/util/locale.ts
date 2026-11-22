@@ -4,16 +4,23 @@ export function titlecase(str: string) {
   return str.replace(/\b\w/g, (c) => c.toUpperCase())
 }
 
-export function time(input: number): string {
+export function time(input: number, twentyFourHour = false): string {
   const date = new Date(input)
-  return date.toLocaleTimeString(undefined, { timeStyle: "short" })
+  return date.toLocaleTimeString(
+    undefined,
+    twentyFourHour ? { hour: "2-digit", minute: "2-digit", hourCycle: "h23" } : { timeStyle: "short" },
+  )
 }
 
-export function datetime(input: number): string {
+export function datetime(input: number, twentyFourHour = false): string {
   const date = new Date(input)
-  const localTime = time(input)
+  const localTime = time(input, twentyFourHour)
   const localDate = date.toLocaleDateString()
   return `${localTime} · ${localDate}`
+}
+
+export function messageTime(input: number, now = Date.now()): string {
+  return new Date(input).toDateString() === new Date(now).toDateString() ? time(input, true) : datetime(input, true)
 }
 
 export function number(num: number): string {

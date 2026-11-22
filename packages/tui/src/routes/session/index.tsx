@@ -2232,6 +2232,9 @@ function AssistantFooter(props: { message: SessionMessageAssistant }) {
           <Show when={interrupted()}>
             <span style={{ fg: theme.text.muted }}> · interrupted</span>
           </Show>
+          <Show when={props.message.time.completed}>
+            {(value) => <span style={{ fg: theme.text.muted }}> · {Locale.messageTime(value())}</span>}
+          </Show>
         </text>
       </box>
     </>

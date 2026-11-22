@@ -30,3 +30,10 @@ test("truncates text in the middle without overflowing small widths", () => {
   expect(Locale.truncateMiddle("abcd", 10)).toBe("abcd")
   expect(Locale.truncateMiddle("a", 1)).toBe("a")
 })
+
+test("message time uses 24-hour local time and dates only earlier days", () => {
+  const today = new Date(2026, 10, 23, 18, 7).getTime()
+  const prior = new Date(2026, 10, 22, 0, 4).getTime()
+  expect(Locale.messageTime(today, today)).toBe("18:07")
+  expect(Locale.messageTime(prior, today)).toBe("00:04 · " + new Date(prior).toLocaleDateString())
+})

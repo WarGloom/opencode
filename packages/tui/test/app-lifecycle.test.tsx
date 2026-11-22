@@ -909,7 +909,10 @@ test("keeps assistant footer metrics current after prepend, refresh, and revert"
     (frame) => frame.includes("Original answer") && frame.includes("40.0 tok/s"),
   )
   expect(initial).toContain("Current input")
-  expect(initial).toContain("4.0s \u00b7 40.0 tok/s")
+  const completion = new Date(5000)
+  const localTime = completion.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
+  const footer = initial.split("\n").find((line) => line.includes("40.0 tok/s"))
+  expect(footer).toContain("4.0s · 40.0 tok/s · " + localTime + " · " + completion.toLocaleDateString())
   expect(initial).not.toContain("ttft")
   expect(initial).not.toContain("Prepended input")
 
