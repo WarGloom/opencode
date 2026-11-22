@@ -88,13 +88,14 @@ describe("SubagentCompletion", () => {
           outstanding: [{ kind: "shell", sessionID: recovery.childSessionID, shellID: "shell_1", command: "bun test" }],
         },
       })
-      yield* SubagentCompletion.deliver(sessions, jobs, { status: "error", error: "boom", recovery })
+      yield* SubagentCompletion.deliver(sessions, jobs, { status: "error", error: "Subagent timed out", recovery })
       yield* SubagentCompletion.deliver(sessions, jobs, { status: "cancelled", recovery })
       // A running job has nothing to report and must not be acknowledged.
       yield* SubagentCompletion.deliver(sessions, jobs, { status: "running", recovery })
       yield* SubagentCompletion.deliver(sessions, jobs, { status: "completed", output: "All done", recovery })
 
       expect(sent).toHaveLength(4)
+      expect(sent.map((report) => report.resume)).toEqual([false, undefined, undefined, undefined])
       expect(sent[0]?.text).toBe(
         [
           '<background-result kind="subagent" sessionID="ses_deliver_child" state="running" description="Deliver report">',
@@ -116,7 +117,7 @@ describe("SubagentCompletion", () => {
       expect(sent[1]?.text).toBe(
         [
           '<background-result kind="subagent" sessionID="ses_deliver_child" state="error" description="Deliver report">',
-          "boom",
+          "Subagent timed out",
           "</background-result>",
         ].join("\n"),
       )

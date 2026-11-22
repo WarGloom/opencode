@@ -94,7 +94,7 @@ export const make = (deps: Deps) => {
       yield* deps.jobs.completeBackground(report.notificationID)
       return
     }
-    const delivered = yield* SubagentCompletion.deliver(
+    const shouldWake = yield* SubagentCompletion.deliver(
       {
         report: (notice) =>
           deps.inbox.admit({
@@ -115,7 +115,6 @@ export const make = (deps: Deps) => {
       deps.jobs,
       report,
     ).pipe(
-      Effect.as(true),
       // Retain the outbox row: the conflict proves the notification ID is already
       // owned elsewhere, so deleting it would lose the report without admitting anything.
       Effect.catchTag("SessionInbox.LifecycleConflict", (conflict) =>
@@ -140,7 +139,7 @@ export const make = (deps: Deps) => {
           ),
       ),
     )
-    if (!delivered) return
+    if (!shouldWake) return
     const parent = yield* deps.store.get(parentID)
     if (parent && !parent.revert) yield* deps.wake(parentID)
   })

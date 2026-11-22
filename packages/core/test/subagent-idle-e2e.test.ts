@@ -404,57 +404,67 @@ describe("Code Mode session jobs", () => {
 })
 
 describe("subagent idle reports end to end", () => {
-  e2e.live(
-    "reports immediately with running background work and again after the shell exits",
-    () =>
-      Effect.gen(function* () {
-        const h = yield* harness()
-        const release = path.join(h.dir.path, "release")
-        const command =
-          process.platform === "win32"
-            ? `while (!(Test-Path -LiteralPath '${release}')) { Start-Sleep -Milliseconds 25 }; Write-Output done`
-            : `while [ ! -e '${release}' ]; do sleep 0.025; done; printf done`
-        yield* h.llm.serve(
-          script({
-            reviewer: [
-              TestLLM.toolCall("call-shell", "shell", { command, background: true }),
-              TestLLM.text("Started tests", "turn-1"),
-              TestLLM.text("Tests green", "turn-2"),
-            ],
-            build: [TestLLM.text("parent ack", "parent-1"), TestLLM.text("parent ack", "parent-2")],
-          }),
-        )
+  for (const promptParent of [false, true])
+    e2e.live(
+      `queues the running report until ${promptParent ? "a parent prompt" : "the terminal report"}`,
+      () =>
+        Effect.gen(function* () {
+          const h = yield* harness()
+          const release = path.join(h.dir.path, "release")
+          const command =
+            process.platform === "win32"
+              ? `while (!(Test-Path -LiteralPath '${release}')) { Start-Sleep -Milliseconds 25 }; Write-Output done`
+              : `while [ ! -e '${release}' ]; do sleep 0.025; done; printf done`
+          yield* h.llm.serve(
+            script({
+              reviewer: [
+                TestLLM.toolCall("call-shell", "shell", { command, background: true }),
+                TestLLM.text("Started tests", "turn-1"),
+                TestLLM.text("Tests green", "turn-2"),
+              ],
+              build: [TestLLM.text("parent ack", "parent-1"), TestLLM.text("parent ack", "parent-2")],
+            }),
+          )
 
-        const launched = yield* h.call("call-launch")
-        expect(launched).toMatchObject({ status: "completed", metadata: { status: "running" } })
+          const launched = yield* h.call("call-launch")
+          expect(launched).toMatchObject({ status: "completed", metadata: { status: "running" } })
 
-        yield* waitForReports(h, h.parent.id, 1)
-        const first = yield* deliveredReports(h, h.parent.id)
-        expect(first).toHaveLength(1)
-        expect(first[0]?.text).toContain(
-          `<background-result kind="subagent" sessionID="${outputSessionID(launched.metadata)}" state="running"`,
-        )
-        expect(first[0]?.metadata?.state).toBe("completed")
-        expect(first[0]!.text).toContain("Started tests")
-        expect(first[0]!.text).toContain("Background work still running:\n- shell (")
-        expect(first[0]!.text).toContain(command)
+          const queued = yield* h.sessions
+            .inbox(h.parent.id)
+            .pipe(Effect.repeat({ until: (items) => items.length > 0, times: 500, schedule: Schedule.spaced(20) }))
+          const first = queued[0]
+          if (first?.type !== "synthetic") throw new Error("Running report not queued")
+          expect(yield* deliveredReports(h, h.parent.id)).toEqual([])
+          expect((yield* h.llm.requests()).filter((request) => request.model.id === "build")).toHaveLength(0)
+          expect(first.payload.text).toContain(
+            `<background-result kind="subagent" sessionID="${outputSessionID(launched.metadata)}" state="running"`,
+          )
+          expect(first.payload.metadata?.state).toBe("completed")
+          expect(first.payload.text).toContain("Started tests")
+          expect(first.payload.text).toContain("Background work still running:\n- shell (")
+          expect(first.payload.text).toContain(command)
+          if (promptParent) {
+            yield* h.sessions.prompt({ sessionID: h.parent.id, text: "Parent follow-up" })
+            yield* waitForReports(h, h.parent.id, 1)
+          }
 
-        yield* Effect.promise(() => Bun.write(release, "go"))
-        yield* waitForReports(h, h.parent.id, 2)
-        const second = yield* deliveredReports(h, h.parent.id)
-        expect(second).toHaveLength(2)
-        expect(second[1]!.id).not.toBe(first[0]!.id)
-        expect(second[1]?.text).toContain(
-          `<background-result kind="subagent" sessionID="${outputSessionID(launched.metadata)}" state="completed"`,
-        )
-        expect(second[1]?.metadata?.state).toBe("completed")
-        expect(second[1]!.text).toContain("Tests green")
-        expect(second[1]!.text).not.toContain("Started tests")
-        expect(second[1]!.text).not.toContain("Background work still running:")
-        expect(yield* h.jobs.pendingBackground).toEqual([])
-      }),
-    30_000,
-  )
+          yield* Effect.promise(() => Bun.write(release, "go"))
+          yield* waitForReports(h, h.parent.id, 2)
+          const second = yield* deliveredReports(h, h.parent.id)
+          expect(second).toHaveLength(2)
+          expect(second[0]?.id).toBe(first.id)
+          expect(second[1]?.id).not.toBe(first.id)
+          expect(second[1]?.text).toContain(
+            `<background-result kind="subagent" sessionID="${outputSessionID(launched.metadata)}" state="completed"`,
+          )
+          expect(second[1]?.metadata?.state).toBe("completed")
+          expect(second[1]!.text).toContain("Tests green")
+          expect(second[1]!.text).not.toContain("Started tests")
+          expect(second[1]!.text).not.toContain("Background work still running:")
+          expect(yield* h.jobs.pendingBackground).toEqual([])
+        }),
+      30_000,
+    )
 
   e2e.live(
     "reports every directly prompted busy period on a finished background child",
@@ -566,8 +576,7 @@ describe("subagent idle reports end to end", () => {
                 prompt: "review the grandchild fixture",
               }),
               TestLLM.text("child launched grandchild", "child-turn-1"),
-              TestLLM.text("child saw first grandchild report", "child-turn-2"),
-              TestLLM.text("child saw grandchild finish", "child-turn-3"),
+              TestLLM.text("child saw grandchild finish", "child-turn-2"),
             ],
             fallback: [
               TestLLM.toolCall("call-grandchild-shell", ShellTool.name, { command, background: true }),
@@ -586,29 +595,19 @@ describe("subagent idle reports end to end", () => {
         const launched = yield* h.call("call-child", { description: "child review" })
         const childID = outputSessionID(launched.metadata)
 
-        yield* waitForReports(h, h.parent.id, 1)
-        const firstRoot = (yield* deliveredReports(h, h.parent.id))[0]!
-        expect(firstRoot.text).toContain("child launched grandchild")
-        expect(firstRoot.text).toContain("Background work still running:")
-        expect(firstRoot.text).toMatch(/- (subagent \(fallback, sessionID: ses_|shell \()/)
-
-        yield* waitForReports(h, childID, 1)
-        const firstChild = (yield* deliveredReports(h, childID))[0]!
-        const grandchildID = Schema.decodeUnknownSync(Session.ID)(firstChild.metadata?.childID)
-        expect(firstChild.text).toContain("grandchild started tests")
-        expect(firstChild.text).toContain("Background work still running:\n- shell (")
-
-        // The child reports the grandchild's still-running shell to the root, attributed to
-        // the grandchild's session rather than skipping a level.
-        yield* waitForReports(h, h.parent.id, 2)
-        const secondRoot = (yield* deliveredReports(h, h.parent.id))[1]!
-        expect(secondRoot.text).toContain("child saw first grandchild report")
-        expect(secondRoot.text).toContain("Background work still running:\n- shell (")
-        expect(secondRoot.text).toContain(`in ${grandchildID})`)
+        const pending = yield* h.sessions.inbox(childID).pipe(
+          Effect.map((items) => items.find((item) => item.type === "synthetic")),
+          Effect.repeat({ until: (item) => item !== undefined, times: 500, schedule: Schedule.spaced(20) }),
+        )
+        const notice = pending
+        if (notice?.type !== "synthetic") throw new Error("Grandchild report not queued")
+        const grandchildID = Schema.decodeUnknownSync(Session.ID)(notice.payload.metadata?.childID)
+        expect(yield* deliveredReports(h, childID)).toEqual([])
+        expect(yield* deliveredReports(h, h.parent.id)).toEqual([])
 
         yield* Effect.promise(() => Bun.write(release, "go"))
         yield* waitForReports(h, childID, 2)
-        yield* waitForReports(h, h.parent.id, 3)
+        yield* waitForReports(h, h.parent.id, 2)
         const childReports = yield* deliveredReports(h, childID)
         const rootReports = yield* deliveredReports(h, h.parent.id)
         expect(childReports[1]!.text).toContain("grandchild finished")

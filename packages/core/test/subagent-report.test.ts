@@ -33,7 +33,15 @@ import { testEffect } from "./lib/effect"
 
 const it = testEffect(
   AppNodeBuilder.build(
-    LayerNode.group([Database.node, Bus.node, SessionStore.node, SessionInbox.node, SessionProjector.node, Job.node, KV.node]),
+    LayerNode.group([
+      Database.node,
+      Bus.node,
+      SessionStore.node,
+      SessionInbox.node,
+      SessionProjector.node,
+      Job.node,
+      KV.node,
+    ]),
   ),
 )
 
@@ -504,105 +512,125 @@ describe("SubagentReport outbox", () => {
     }),
   )
 
-  it.effect("commits the report and release before delivery, then acknowledges and wakes the parent", () =>
-    Effect.gen(function* () {
-      const database = yield* Database.Service
-      const store = yield* SessionStore.Service
-      const jobs = yield* Job.Service
-      const inbox = yield* SessionInbox.Service
-      const parent = sessionID("ses_outbox_parent")
-      const child = sessionID("ses_outbox_child")
-      const grandchild = sessionID("ses_outbox_grandchild")
-      yield* seedSessions(database, [parent])
-      yield* seedSessions(database, [child], { parent_id: parent, agent: "explore", title: "Outbox audit" })
-      yield* seedSessions(database, [grandchild], { parent_id: child, agent: "explore", title: "Check logs" })
-      yield* seedAssistant(database, child, 100, "Outbox report")
-      yield* store.claim(child)
+  for (const outcome of [
+    { type: "succeeded" },
+    { type: "failed", error: { message: "Child failed" } },
+    { type: "failed", error: { message: "Child timed out" } },
+    { type: "interrupted", reason: "user" },
+  ] as const)
+    it.effect(`commits before delivery and wakes only on terminal reports: ${JSON.stringify(outcome)}`, () =>
+      Effect.gen(function* () {
+        const database = yield* Database.Service
+        const store = yield* SessionStore.Service
+        const jobs = yield* Job.Service
+        const inbox = yield* SessionInbox.Service
+        const parent = sessionID("ses_outbox_parent")
+        const child = sessionID("ses_outbox_child")
+        const grandchild = sessionID("ses_outbox_grandchild")
+        yield* seedSessions(database, [parent])
+        yield* seedSessions(database, [child], { parent_id: parent, agent: "explore", title: "Outbox audit" })
+        yield* seedSessions(database, [grandchild], { parent_id: child, agent: "explore", title: "Check logs" })
+        yield* seedAssistant(database, child, 100, "Outbox report")
+        yield* store.claim(child)
 
-      const wakes: SessionID[] = []
-      const report = SubagentReport.make({
-        store,
-        jobs,
-        inbox,
-        draining: Effect.succeed(new Set([grandchild])),
-        wake: (sessionID) => Effect.sync(() => void wakes.push(sessionID)),
-      })
-      const job = yield* jobs.start({
-        id: child,
-        type: "subagent",
-        recovery: {
-          kind: "subagent",
-          parentSessionID: parent,
-          childSessionID: child,
-          agent: "explore",
-          description: "Outbox audit",
-        },
-        background: true,
-        run: Effect.never,
-      })
-      const generation = (yield* jobs.currentGeneration(child))?.generation
-      report.started(child, { startedSeq: 0, boundGeneration: generation })
-      const settlement = yield* report.prepare(child, { type: "succeeded" })
-
-      // Simulated crash right after the terminal publish: the release and outbox row are
-      // already durable, and nothing has been admitted for the parent yet.
-      yield* settlement.commit()
-      expect(yield* claimValue(database, child)).toBeNull()
-      expect(yield* SessionInbox.list(database.db, parent)).toEqual([])
-      expect(yield* database.db.select().from(JobTable).all().pipe(Effect.orDie)).toMatchObject([
-        {
-          notification_id: job.notificationID,
+        const wakes: SessionID[] = []
+        const report = SubagentReport.make({
+          store,
+          jobs,
+          inbox,
+          draining: Effect.succeed(new Set([grandchild])),
+          wake: (sessionID) => Effect.sync(() => void wakes.push(sessionID)),
+        })
+        const job = yield* jobs.start({
           id: child,
-          session_id: parent,
-          status: "completed",
-          output: "Outbox report",
+          type: "subagent",
           recovery: {
-            outstanding: [
-              { kind: "subagent", sessionID: child, childSessionID: grandchild, agent: "explore", description: "Check logs" },
-            ],
+            kind: "subagent",
+            parentSessionID: parent,
+            childSessionID: child,
+            agent: "explore",
+            description: "Outbox audit",
           },
-        },
-      ])
+          background: true,
+          run: Effect.never,
+        })
+        const generation = (yield* jobs.currentGeneration(child))?.generation
+        report.started(child, { startedSeq: 0, boundGeneration: generation })
+        const settlement = yield* report.prepare(child, outcome)
+        const status = outcome.type === "succeeded" ? "completed" : outcome.type === "failed" ? "error" : "cancelled"
+        const body =
+          outcome.type === "succeeded"
+            ? "Outbox report"
+            : outcome.type === "failed"
+              ? outcome.error.message
+              : "Subagent cancelled"
+        const expectedWakes = outcome.type === "succeeded" ? [] : [parent]
 
-      yield* settlement.deliver
-      expect(wakes).toEqual([parent])
-      expect(yield* SessionInbox.list(database.db, parent)).toMatchObject([
-        { type: "synthetic", payload: { text: expect.stringContaining("Outbox report") } },
-      ])
-      expect(yield* jobs.pendingBackground).toEqual([])
+        // Simulated crash right after the terminal publish: the release and outbox row are
+        // already durable, and nothing has been admitted for the parent yet.
+        yield* settlement.commit()
+        expect(yield* claimValue(database, child)).toBeNull()
+        expect(yield* SessionInbox.list(database.db, parent)).toEqual([])
+        expect(yield* database.db.select().from(JobTable).all().pipe(Effect.orDie)).toMatchObject([
+          {
+            notification_id: job.notificationID,
+            id: child,
+            session_id: parent,
+            status,
+            ...(status === "completed" ? { output: body } : { error: body }),
+            recovery: {
+              outstanding: [
+                {
+                  kind: "subagent",
+                  sessionID: child,
+                  childSessionID: grandchild,
+                  agent: "explore",
+                  description: "Check logs",
+                },
+              ],
+            },
+          },
+        ])
 
-      // A staged revert admits the notice but never wakes the parent.
-      const revertChild = sessionID("ses_outbox_revert_child")
-      yield* seedSessions(database, [revertChild], { parent_id: parent, agent: "explore", title: "Reverted audit" })
-      yield* database.db
-        .update(SessionTable)
-        .set({ revert: { messageID: SessionMessage.ID.create() } })
-        .where(eq(SessionTable.id, parent))
-        .run()
-        .pipe(Effect.orDie)
-      yield* seedAssistant(database, revertChild, 100, "Reverted report")
-      const revertJob = yield* jobs.start({
-        id: revertChild,
-        type: "subagent",
-        recovery: {
-          kind: "subagent",
-          parentSessionID: parent,
-          childSessionID: revertChild,
-          agent: "explore",
-          description: "Reverted audit",
-        },
-        background: true,
-        run: Effect.never,
-      })
-      const revertSettlement = yield* report.prepare(revertChild, { type: "succeeded" })
-      yield* revertSettlement.commit()
-      yield* revertSettlement.deliver
-      expect(yield* SessionInbox.list(database.db, parent)).toHaveLength(2)
-      expect(wakes).toEqual([parent])
-      expect(yield* jobs.pendingBackground).toEqual([])
-      expect(revertJob.notificationID).toBeDefined()
-    }),
-  )
+        yield* settlement.deliver
+        expect(wakes).toEqual(expectedWakes)
+        expect(yield* SessionInbox.list(database.db, parent)).toMatchObject([
+          { type: "synthetic", payload: { text: expect.stringContaining(body), metadata: { state: status } } },
+        ])
+        expect(yield* jobs.pendingBackground).toEqual([])
+
+        // A staged revert admits the notice but never wakes the parent.
+        const revertChild = sessionID("ses_outbox_revert_child")
+        yield* seedSessions(database, [revertChild], { parent_id: parent, agent: "explore", title: "Reverted audit" })
+        yield* database.db
+          .update(SessionTable)
+          .set({ revert: { messageID: SessionMessage.ID.create() } })
+          .where(eq(SessionTable.id, parent))
+          .run()
+          .pipe(Effect.orDie)
+        yield* seedAssistant(database, revertChild, 100, "Reverted report")
+        const revertJob = yield* jobs.start({
+          id: revertChild,
+          type: "subagent",
+          recovery: {
+            kind: "subagent",
+            parentSessionID: parent,
+            childSessionID: revertChild,
+            agent: "explore",
+            description: "Reverted audit",
+          },
+          background: true,
+          run: Effect.never,
+        })
+        const revertSettlement = yield* report.prepare(revertChild, { type: "succeeded" })
+        yield* revertSettlement.commit()
+        yield* revertSettlement.deliver
+        expect(yield* SessionInbox.list(database.db, parent)).toHaveLength(2)
+        expect(wakes).toEqual(expectedWakes)
+        expect(yield* jobs.pendingBackground).toEqual([])
+        expect(revertJob.notificationID).toBeDefined()
+      }),
+    )
 
   it.effect("acknowledges a parent deleted before or after commit without crashing", () =>
     Effect.gen(function* () {

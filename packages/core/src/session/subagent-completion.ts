@@ -19,6 +19,7 @@ export interface SyntheticSession<E = never> {
     readonly text: string
     readonly description?: string
     readonly metadata?: SessionSchema.Metadata
+    readonly resume?: boolean
   }) => Effect.Effect<unknown, E>
 }
 
@@ -78,11 +79,11 @@ export const deliver = Effect.fnUntraced(function* <E>(
     recovery: Extract<Job.Recovery, { kind: "subagent" }>
   },
 ) {
-  if (input.status === "running") return
+  if (input.status === "running") return false
   const recovery = input.recovery
   if (recovery.completion === "none") {
     if (input.notificationID) yield* jobs.completeBackground(input.notificationID)
-    return
+    return false
   }
   const body =
     input.status === "completed"
@@ -97,6 +98,7 @@ export const deliver = Effect.fnUntraced(function* <E>(
     ...(input.notificationID ? { id: input.notificationID } : {}),
     sessionID: recovery.parentSessionID,
     description: recovery.description,
+    ...(state === "running" ? { resume: false } : {}),
     text: BackgroundResult.render(
       `kind="subagent" sessionID="${recovery.childSessionID}" state="${state}" description="${recovery.description}"`,
       formatted,
@@ -104,4 +106,5 @@ export const deliver = Effect.fnUntraced(function* <E>(
     metadata: { source: "subagent", childID: recovery.childSessionID, agent: recovery.agent, state: input.status },
   })
   if (input.notificationID) yield* jobs.completeBackground(input.notificationID)
+  return state !== "running"
 })
