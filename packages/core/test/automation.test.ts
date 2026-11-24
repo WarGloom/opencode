@@ -970,6 +970,7 @@ describe("Automation", () => {
           event: { subscribe: () => Stream.never },
           command: {
             list: () => Effect.die("unused command.list"),
+            hook: () => Effect.die("unused command.hook"),
             reload: () => Effect.void,
             transform: () => Effect.succeed({ dispose: Effect.void }),
           },
