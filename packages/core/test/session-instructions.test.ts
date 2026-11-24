@@ -162,7 +162,7 @@ const prepared = (sessionID: Session.ID, permissions: Permission.Ruleset = []) =
     const store = yield* SessionStore.Service
     const bus = yield* Bus.Service
     const { db } = yield* Database.Service
-    const sources = yield* instructions.source({ sessionID, permissions })
+    const sources = yield* instructions.source({ sessionID, policy: Permission.Policy.fromRules(permissions) })
     yield* InstructionState.prepare(db, bus, sources, sessionID)
     const model = SessionRunnerModel.resolved(
       LanguageModel.make({ id: "retention-fake", provider: "fake", route: OpenAIChat.route }),
@@ -457,7 +457,7 @@ describe("SessionInstructions", () => {
         reads = 0
         const source = yield* instructions.source({
           sessionID,
-          permissions: [{ action: "read", resource: "sub/AGENTS.md", effect: "deny" }],
+          policy: Permission.Policy.fromRules([{ action: "read", resource: "sub/AGENTS.md", effect: "deny" }]),
         })
         expect(yield* Instructions.read(source)).toEqual([
           { key: Instructions.Key.make("core/session-instructions"), value: [] },

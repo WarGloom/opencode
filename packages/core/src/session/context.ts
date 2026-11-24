@@ -206,7 +206,7 @@ const layer = Layer.effect(
           mcp: mcpInstructions.load(tools),
           machines: machineInstructions.load(),
           entries: entries.load(sessionID),
-          retained: sessionInstructions.source({ sessionID, permissions }),
+          retained: sessionInstructions.source({ sessionID, policy }),
         },
         { concurrency: "unbounded" },
       )

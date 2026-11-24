@@ -24,7 +24,7 @@ export interface Interface {
   }) => Effect.Effect<void, MessageDecodeError | FSUtil.Error>
   readonly source: (input: {
     readonly sessionID: SessionSchema.ID
-    readonly permissions: Permission.Ruleset
+    readonly policy: Permission.Policy.Policy
   }) => Effect.Effect<Instructions.List>
 }
 
@@ -144,7 +144,7 @@ const layer = Layer.effect(
       const paths = yield* retainedPaths(db, input.sessionID).pipe(Effect.orDie)
       const allowed = (yield* eligible([...paths])).filter(
         (path) =>
-          Permission.evaluate("read", relative(directory, path).replaceAll("\\", "/"), input.permissions).effect !==
+          Permission.Policy.evaluate(input.policy, "read", relative(directory, path).replaceAll("\\", "/")).effect !==
           "deny",
       )
       const active = yield* previouslyInjected(db, input.sessionID).pipe(Effect.orDie)
@@ -188,7 +188,7 @@ const layer = Layer.effect(
               )
                 return
               if (
-                Permission.evaluate("read", relative(directory, canonical).replaceAll("\\", "/"), input.permissions)
+                Permission.Policy.evaluate(input.policy, "read", relative(directory, canonical).replaceAll("\\", "/"))
                   .effect === "deny"
               )
                 return
