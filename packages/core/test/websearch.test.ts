@@ -191,6 +191,55 @@ describe("WebSearch", () => {
     }),
   )
 
+  ;[401, 402, 403].forEach((status) => {
+    it.effect(`fails over on HTTP ${status} with random for one hour`, () =>
+      Effect.gen(function* () {
+        const exa = yield* register("exa")
+        const parallel = yield* register("parallel")
+        const websearch = yield* WebSearch.Service
+        yield* websearch.select("random")
+        const options = { sessionID: firstSession }
+        const first = yield* websearch.query({ query: "first" }, options)
+        const failed = first.providerID === exa.providerID ? exa : parallel
+        const replacement = first.providerID === exa.providerID ? parallel : exa
+        failed.failure.cause = TestWebSearch.httpError(status, "0")
+
+        expect((yield* websearch.query({ query: "retry" }, options)).providerID).toBe(replacement.providerID)
+        expect((yield* websearch.query({ query: "sticky" }, options)).providerID).toBe(replacement.providerID)
+        expect(failed.calls).toEqual([{ query: "first" }, { query: "retry" }])
+        expect(replacement.calls).toEqual([{ query: "retry" }, { query: "sticky" }])
+
+        failed.failure.cause = undefined
+        replacement.failure.cause = TestWebSearch.httpError(429, "0")
+        yield* TestClock.adjust(3_599_999)
+        expect(yield* websearch.query({ query: "early" }, options).pipe(Effect.flip)).toMatchObject({
+          providerID: replacement.providerID,
+        })
+        expect(failed.calls).toHaveLength(2)
+        yield* TestClock.adjust(1)
+        expect((yield* websearch.query({ query: "recovered" }, options)).providerID).toBe(failed.providerID)
+        expect(failed.calls).toHaveLength(3)
+      }),
+    )
+  })
+
+  it.effect("fails immediately on HTTP 402 for a selected provider", () =>
+    Effect.gen(function* () {
+      const exa = yield* register("exa")
+      const parallel = yield* register("parallel")
+      const websearch = yield* WebSearch.Service
+      const cause = TestWebSearch.httpError(402)
+      exa.failure.cause = cause
+      yield* websearch.select(exa.providerID)
+      expect(yield* websearch.query({ query: "fixed" }).pipe(Effect.flip)).toMatchObject({
+        providerID: exa.providerID,
+        cause,
+      })
+      expect(exa.calls).toEqual([{ query: "fixed" }])
+      expect(parallel.calls).toEqual([])
+    }),
+  )
+
   it.effect("reselects when a concurrent query cools down the provider while progress is pending", () =>
     Effect.gen(function* () {
       const exa = yield* register("exa")
@@ -295,7 +344,7 @@ describe("WebSearch", () => {
       const first = yield* websearch.query({ query: "first" })
       const provider = first.providerID === exa.providerID ? exa : parallel
       yield* Effect.forEach(
-        [TestWebSearch.httpError(401), TestWebSearch.httpError(500), new Error("timeout")],
+        [TestWebSearch.httpError(404), TestWebSearch.httpError(500), new Error("timeout")],
         (cause) =>
           Effect.gen(function* () {
             provider.failure.cause = cause

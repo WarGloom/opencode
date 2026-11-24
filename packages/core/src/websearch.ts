@@ -210,10 +210,14 @@ const layer = Layer.effect(
             if (result._tag === "Success") return new Response({ providerID: provider.id, results: result.success })
             const cause = result.failure
             const error = new RequestError({ providerID: provider.id, cause })
-            if (choice !== "random" || !HttpClientError.isHttpClientError(cause) || cause.response?.status !== 429)
+            if (choice !== "random" || !HttpClientError.isHttpClientError(cause) || !cause.response)
+              return yield* error
+            const status = cause.response.status
+            if (status !== 429 && status !== 401 && status !== 402 && status !== 403)
               return yield* error
             const now = yield* Clock.currentTimeMillis
-            cooldown = { until: now + cooldownMillis(cause.response.headers["retry-after"], now), error }
+            const duration = status === 429 ? cooldownMillis(cause.response.headers["retry-after"], now) : authCooldownMillis
+            cooldown = { until: now + duration, error }
             cooldowns.set(provider.id, cooldown)
           }
           provider = randomProvider(yield* Clock.currentTimeMillis, affinity, attempted)
@@ -223,6 +227,8 @@ const layer = Layer.effect(
     })
   }),
 )
+
+const authCooldownMillis = 60 * 60 * 1000
 
 function cooldownMillis(value: string | undefined, now: number) {
   if (!value?.trim()) return 60_000
