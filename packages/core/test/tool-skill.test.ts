@@ -19,6 +19,7 @@ import { Plugin } from "@opencode/core/plugin"
 import { PluginSupervisor } from "@opencode/core/plugin/supervisor"
 import { SkillTool } from "@opencode/core/tool/plugin/skill"
 import { Tool } from "@opencode/core/tool"
+import { offlineModels } from "./fixture/models"
 import { tmpdirScoped } from "./fixture/tmpdir"
 import { tempGlobalLayer } from "./fixture/global"
 import { Image } from "@opencode/core/image"
@@ -33,7 +34,7 @@ import { registerIntegrationPolicy, setOrganizationPolicy } from "./fixture/poli
 const skillToolSupervisor = makeLocationNode({
   name: "test/skill-tool-plugins",
   layer: Layer.effectDiscard(registerToolPlugin(SkillTool.Plugin)),
-  deps: [Tool.node, Session.node],
+  deps: [Tool.node, Session.node, Skill.node],
 })
 
 const inSession = <A, E, R>(
@@ -59,6 +60,7 @@ const inSession = <A, E, R>(
           Global.node.replace(tempGlobalLayer),
           PluginSupervisor.node.replace(skillToolSupervisor),
           Image.node.replace(imagePassthrough),
+          offlineModels,
           ...replacements,
         ],
       ),

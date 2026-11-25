@@ -33,6 +33,7 @@ export const Plugin = {
   id: "opencode.tool.skill",
   effect: Effect.fn("SkillTool.Plugin")(function* (ctx: Context) {
     const sessions = yield* Session.Service
+    const skills = yield* Skill.Service
     yield* ctx.tool
       .transform((editor) =>
         editor.add({
@@ -43,6 +44,10 @@ export const Plugin = {
           output: Output,
           execute: (input, context) =>
             Effect.gen(function* () {
+              const skill = yield* skills
+                .resolve(input.id)
+                .pipe(Effect.mapError((error) => unableToLoad(input.id, error)))
+              if (!skill) return yield* unableToLoad(input.id)
               const activation = yield* sessions
                 .skill({
                   sessionID: context.sessionID,
@@ -51,7 +56,7 @@ export const Plugin = {
                   ),
                   messageID: context.messageID,
                   source: { kind: "tool", messageID: context.messageID, callID: context.id },
-                  skill: input.id,
+                  skill: skill.id,
                   resume: false,
                 })
                 .pipe(Effect.mapError((error) => unableToLoad(input.id, error)))
