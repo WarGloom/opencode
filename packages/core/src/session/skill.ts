@@ -74,16 +74,15 @@ export const prepare = Effect.fn("SessionSkill.prepare")(function* (input: Prepa
     const hooks = yield* PluginHooks.Service
     const skills = yield* Skill.Service
     const agent = (yield* agents.select(input.session.agent)).id
-    const info = yield* skills.resolve(input.skill)
+    const info = yield* skills.get(input.skill)
     if (!info) return yield* new SkillNotFoundError({ skill: input.skill })
-    const skill = { ...info, content: yield* skills.instructions(info.id) }
     // A delegated activation asks the authorizing parent once. The child's own rules can still deny, but never ask.
     if (input.authorization)
       yield* Effect.gen(function* () {
         const permission = yield* Permission.Service
         yield* permission.assertNotDenied({
           action: "skill",
-          resources: [skill.id],
+          resources: [info.id],
           sessionID: input.session.id,
           agent,
         })
@@ -92,8 +91,8 @@ export const prepare = Effect.fn("SessionSkill.prepare")(function* (input: Prepa
       const permission = yield* Permission.Service
       yield* permission.assert({
         action: "skill",
-        resources: [skill.id],
-        save: [skill.id],
+        resources: [info.id],
+        save: [info.id],
         sessionID: input.authorization?.session.id ?? input.session.id,
         agent: input.authorization?.agent ?? agent,
         source:
@@ -107,10 +106,11 @@ export const prepare = Effect.fn("SessionSkill.prepare")(function* (input: Prepa
       })
     })
     yield* input.authorization ? assertion.pipe(instances.provide(input.authorization.session)) : assertion
+    const skill = { ...info, content: yield* skills.instructions(info.id) }
     const files = yield* skills.files(skill.id)
     const expanded = yield* Skill.prepare(fs, skill, files).pipe(Effect.orDie)
     const revision = createHash("sha256")
-      .update(JSON.stringify([skill, Array.from(files ?? []).toSorted(([a], [b]) => a.localeCompare(b))]))
+      .update(JSON.stringify([skill, (files ?? []).toSorted()]))
       .digest("hex")
     const identity = {
       activationID: input.activationID,
