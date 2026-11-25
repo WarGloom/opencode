@@ -282,7 +282,11 @@ describe("SessionInstructions", () => {
             ],
             { concurrency: "unbounded" },
           )
-          expect(results[0]?.output).toMatchObject({ type: "text", offset: 1, lineCount: 2 })
+          expect(results[0]?.output).toMatchObject({
+            type: "text",
+            offset: 1,
+            content: expect.stringMatching(/^retained-body-v1\r?\nadditional-rule(?:\r?\n)?$/),
+          })
           const content = results[0]?.content
           const first = content?.[0]
           if (!content || !first) return yield* Effect.die(new Error("Missing native read body"))
@@ -376,7 +380,11 @@ describe("SessionInstructions", () => {
       yield* executeTool(registry, readCall(sessionID, "external", externalFile))
       yield* writeAgents(file, "x".repeat(60_000))
       const paged = yield* executeTool(registry, readCall(sessionID, "large", file))
-      expect(paged.output).toMatchObject({ type: "text", offset: 1, lineCount: 1 })
+      expect(paged.output).toMatchObject({
+        type: "text",
+        offset: 1,
+        content: `${"x".repeat(2000)}... (line truncated to 2000 chars)`,
+      })
       yield* writeAgents(file, "excluded-marker")
       yield* discovery.transform((editor) =>
         editor.add(new InstructionDiscovery.File({ path: file, content: "excluded-marker" })),
