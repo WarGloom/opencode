@@ -1,5 +1,6 @@
 export * as SkillFile from "./skill-file.js"
 
+import type { SkillEditor } from "@opencode/plugin/effect/skill"
 import path from "path"
 import { isRecord } from "@opencode/util/record"
 import { Result, Schema, type SchemaIssue, SchemaParser } from "effect"
@@ -32,7 +33,7 @@ export function preferLater(skills: ReadonlyArray<Skill.Info>): Skill.Info[] {
     .reverse()
 }
 
-export function register(editor: Skill.Editor, skills: ReadonlyArray<Skill.Info>) {
+export function register(editor: Pick<SkillEditor, "list" | "remove" | "add">, skills: ReadonlyArray<Skill.Info>) {
   const existing = editor.list().filter((skill) => path.isAbsolute(skill.path))
   const paths = new Map(existing.map((skill) => [skill.path, skill.id]))
   const names = new Map(existing.map((skill) => [skill.name, skill.id]))
