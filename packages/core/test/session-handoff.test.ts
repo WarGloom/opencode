@@ -247,7 +247,7 @@ for (const busy of [false, true]) {
   it.live(`delivers through the native coordinator with busy=${busy} without interrupting active work`, () =>
     Effect.gen(function* () {
       const db = (yield* Database.Service).db
-      const bus = yield* Bus.Service
+      const inbox = yield* SessionInbox.Service
       const started = yield* Deferred.make<void>()
       const release = yield* Deferred.make<void>()
       const coordinator = yield* SessionRunCoordinator.make({
@@ -256,10 +256,10 @@ for (const busy of [false, true]) {
             if (force) {
               yield* Deferred.succeed(started, undefined)
               yield* Deferred.await(release)
-              expect(yield* SessionInbox.promote(db, bus, id, "steer")).toBe(0)
+              expect(yield* inbox.promote(id, "steer")).toBe(0)
               return
             }
-            yield* SessionInbox.promote(db, bus, id, scope)
+            yield* inbox.promote(id, scope)
           }),
       })
       const f = yield* setup({ execution: { ...SessionExecution.noop, wake: coordinator.wake } })
@@ -415,7 +415,7 @@ it.live("native execution promotes the handoff in the recipient Location with it
                   source: { type: "tool", messageID, id: "permission-probe" },
                 })
                 .pipe(Effect.orDie)
-              yield* SessionInbox.promote(database.db, bus, session.id, input.promotable ?? "input")
+              yield* inbox.promote(session.id, input.promotable ?? "input")
               observed.push({ directory: current.directory, agent: selected.id, shellAllowed })
               return SessionRunner.DrainResult.Complete()
             }),

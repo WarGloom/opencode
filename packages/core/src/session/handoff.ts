@@ -94,7 +94,7 @@ export const make = Effect.gen(function* () {
         wakeScheduled: false,
       } satisfies HandoffReceipt
     })
-    return yield* SessionInbox.serialized(
+    return yield* inbox.serialized(
       input.target.sessionID,
       Effect.gen(function* () {
         const previous = yield* read

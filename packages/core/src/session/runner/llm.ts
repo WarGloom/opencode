@@ -59,7 +59,6 @@ const layer = Layer.effect(
     const db = (yield* Database.Service).db
     const inbox = yield* SessionInbox.Service
     const compaction = yield* SessionCompaction.Service
-    const inbox = yield* SessionInbox.Service
     const plugins = yield* Plugin.Service
     const hooks = yield* PluginHooks.Service
     const jobs = yield* Job.Service
@@ -348,7 +347,7 @@ const layer = Layer.effect(
                 hook: prepared.retry,
                 retry: proposed,
                 switchModel: (model, isOpen) =>
-                  SessionInbox.serialized(
+                  inbox.serialized(
                     sessionID,
                     Effect.uninterruptible(
                       Effect.gen(function* () {
@@ -577,7 +576,6 @@ export const node = makeLocationNode({
     SessionStore.node,
     SessionInbox.node,
     SessionCompaction.node,
-    SessionInbox.node,
     Plugin.node,
     PluginHooks.node,
     Job.node,

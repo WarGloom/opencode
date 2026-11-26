@@ -173,7 +173,7 @@ export const layer = Layer.effect(
       started: (sessionID) =>
         reportLifecycle(
           sessionID,
-          SessionInbox.serialized(sessionID, Effect.gen(function* () {
+          inbox.serialized(sessionID, Effect.gen(function* () {
             // Bind before the started publication yields to SQLite so a cancel arriving during
             // that window still matches this generation.
             const before = yield* jobs.currentGeneration(sessionID)
@@ -201,7 +201,7 @@ export const layer = Layer.effect(
             const attempt = journal.get(sessionID)
             const recovering = outcome.type === "interrupted" && outcome.reason === `recovery:${attempt?.record.id}`
             if (recovering) {
-              const held = yield* SessionInbox.serialized(sessionID, Effect.gen(function* () {
+              const held = yield* inbox.serialized(sessionID, Effect.gen(function* () {
                 if (attempt?.record.phase !== "held") return false
                 yield* bus.publish(SessionEvent.Execution.Interrupted, { sessionID, reason: "user" }, releaseOnCommit(sessionID))
                 subagentReport.hold(sessionID)
@@ -227,7 +227,7 @@ export const layer = Layer.effect(
     holder.coordinator = coordinator
 
     interruption = coordinator.interruption
-    const failRecovery = (attempt: SessionInterruptJournal.Attempt, error: string) => SessionInbox.serialized(SessionSchema.ID.make(attempt.record.sessionID), Effect.gen(function* () {
+    const failRecovery = (attempt: SessionInterruptJournal.Attempt, error: string) => inbox.serialized(SessionSchema.ID.make(attempt.record.sessionID), Effect.gen(function* () {
       if (attempt.record.phase !== "held") return
       const sessionID = SessionSchema.ID.make(attempt.record.sessionID)
       const [newest] = yield* store.messages({ sessionID, order: "desc", limit: 1 }).pipe(Effect.orDie)
@@ -282,7 +282,7 @@ export const layer = Layer.effect(
             const current = yield* jobs.currentGeneration(sessionID)
             if (current?.running) subagentReport.bind(sessionID, startedSeq, current.generation)
           }
-          const cancellation = yield* SessionInbox.serialized(sessionID, Effect.gen(function* () {
+          const cancellation = yield* inbox.serialized(sessionID, Effect.gen(function* () {
             const attempt = journal.get(sessionID)
             if (attempt?.record.phase !== "held") return { interrupted: yield* coordinator.interrupt(sessionID, "user") }
             yield* journal.finish(attempt, "cancelled", "Recovery revoked by cancellation")
@@ -318,7 +318,7 @@ export const layer = Layer.effect(
       wake: (sessionID) => reconcile.pipe(Effect.andThen(coordinator.wake(sessionID))),
       awaitIdle: coordinator.awaitIdle,
       recover: (input, callback) => Effect.acquireUseRelease(
-        SessionInbox.serialized(input.sessionID, Effect.gen(function* () {
+        inbox.serialized(input.sessionID, Effect.gen(function* () {
           const captured = yield* coordinator.capture(input.sessionID)
           if (!captured) return undefined
           const info = yield* jobs.get(input.sessionID)
@@ -335,7 +335,7 @@ export const layer = Layer.effect(
         (captured) => Effect.gen(function* () {
           if (!captured) return false
           yield* captured.settled
-          const boundary = yield* SessionInbox.serialized(input.sessionID, Effect.gen(function* () {
+          const boundary = yield* inbox.serialized(input.sessionID, Effect.gen(function* () {
             if (captured.attempt.record.phase !== "held") return undefined
             const [settled] = yield* store.messages({ sessionID: input.sessionID, order: "asc", type: "idle", limit: 1,
               ...(captured.watermark ? { cursor: { id: captured.watermark.id, direction: "next" as const } } : {}) })
