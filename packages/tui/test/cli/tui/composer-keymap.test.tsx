@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import { testRender } from "@opentui/solid"
-import { afterAll, expect, test } from "bun:test"
+import { afterAll, afterEach, expect, setSystemTime, test } from "bun:test"
 import { createEffect, createSignal, onMount, Show } from "solid-js"
 import type { JobInfo } from "@opencode/client"
 import { ConfigProvider } from "../../../src/config"
@@ -14,6 +14,7 @@ import { TuiAppProvider } from "../../../src/context/runtime"
 import { StorageProvider } from "../../../src/context/storage"
 import { ThemeProvider } from "../../../src/context/theme"
 import { Composer } from "../../../src/routes/session/composer"
+import { WaitingJobs } from "../../../src/routes/session/waiting-jobs"
 import { DialogProvider } from "../../../src/ui/dialog"
 import { ToastProvider } from "../../../src/ui/toast"
 import { tmpdir } from "../../fixture/fixture"
@@ -30,6 +31,7 @@ const sessions = {
 
 const state = await tmpdir()
 afterAll(() => state[Symbol.asyncDispose]())
+afterEach(() => setSystemTime())
 
 const shells = [shell("sh-a", "bun test"), shell("sh-b", "bun dev"), shell("sh-c", "python3 - <<'PY'\nimport json")]
 
@@ -41,9 +43,11 @@ async function renderComposer(
     readonly open?: () => boolean
     readonly mode?: "light" | "dark"
     readonly jobs?: JobInfo[]
+    readonly waiting?: boolean
   } = {},
 ) {
   const events = createEventStream()
+  const [waitingSession, setWaitingSession] = createSignal("parent")
   const interrupted: string[] = []
   const removed: string[] = []
   const viewed: string[] = []
@@ -118,6 +122,9 @@ async function renderComposer(
     })
     return (
       <>
+        <Show when={options.waiting}>
+          <WaitingJobs sessionID={waitingSession()} />
+        </Show>
         {options.focusedTextarea && <textarea focused={true} initialValue="draft" />}
         {/* Mirrors the app, which keys the session route by sessionID and remounts it on navigation. */}
         <Show when={route.data.type === "session" ? route.data.sessionID : undefined} keyed>
@@ -174,6 +181,7 @@ async function renderComposer(
   return {
     app,
     data,
+    setWaitingSession,
     events,
     switched: switched.promise,
     interrupted,
@@ -185,6 +193,52 @@ async function renderComposer(
     listReads: () => listReads,
   }
 }
+
+test.each(["light", "dark"] as const)("session waiting status follows own running jobs and session activity in %s mode", async (mode) => {
+  setSystemTime(new Date(2_000_000))
+  const shell: JobInfo = {
+    kind: "shell", id: "job_root_shell", shellID: "sh_root", command: "test", sessionID: "parent",
+    status: "running", time: { started: Date.now() - 125_000 },
+  }
+  const script: JobInfo = {
+    kind: "codemode", id: "job_root_script", sessionID: "parent", status: "running", time: { started: Date.now() },
+  }
+  const child: JobInfo = { ...script, id: "job_child_script", sessionID: "child-c" }
+  const busy: JobInfo = { ...script, id: "job_busy_script", sessionID: "child-a" }
+  const composer = await renderComposer("subagents", {}, { jobs: [shell, script, child, busy], waiting: true, mode })
+  try {
+    expect(composer.app.captureCharFrame()).toMatch(/Waiting for 1 shell, 1 script · 2m/)
+    composer.app.resize(44, 20)
+    await composer.app.renderOnce()
+    const narrow = composer.app.captureCharFrame().split("\n")
+    const line = narrow.findIndex((row) => row.includes("Waiting for 1 shell, 1 script"))
+    expect(line).toBeGreaterThanOrEqual(0)
+    expect(narrow[line + 1]).not.toContain("resumes")
+    composer.app.resize(100, 20)
+    composer.setWaitingSession("child-a")
+    await composer.app.renderOnce()
+    expect(composer.app.captureCharFrame()).not.toContain("Waiting for")
+    composer.setWaitingSession("parent")
+    await composer.app.renderOnce()
+    composer.app.renderer.start()
+    const second: JobInfo = { ...script, id: "job_root_script_2" }
+    composer.events.emit({ id: "evt_start", created: 1, type: "experimental.job.updated", data: { info: second } })
+    await composer.app.waitForFrame((frame) => frame.includes("2 scripts"))
+    const secondShell: JobInfo = { ...shell, id: "job_root_shell_2", shellID: "sh_root_2" }
+    composer.events.emit({ id: "evt_shell_start", created: 1, type: "experimental.job.updated", data: { info: secondShell } })
+    await composer.app.waitForFrame((frame) => frame.includes("2 shells, 2 scripts"))
+    composer.events.emit({ id: "evt_shell_end", created: 1, type: "experimental.job.updated", data: { info: { ...secondShell, status: "completed" } } })
+    await composer.app.waitForFrame((frame) => frame.includes("1 shell, 2 scripts"))
+    composer.events.emit({ id: "evt_complete", created: 2, type: "experimental.job.updated", data: { info: { ...script, status: "completed" } } })
+    await composer.app.waitForFrame((frame) => frame.includes("1 shell, 1 script"))
+    composer.events.emit({ id: "evt_cancel", created: 3, type: "experimental.job.updated", data: { info: { ...second, status: "cancelled" } } })
+    await composer.app.waitForFrame((frame) => frame.includes("Waiting for 1 shell ·"))
+    composer.events.emit({ id: "evt_finish", created: 4, type: "experimental.job.updated", data: { info: { ...shell, status: "completed" } } })
+    await composer.app.waitForFrame((frame) => !frame.includes("Waiting for"))
+  } finally {
+    composer.app.renderer.destroy()
+  }
+})
 
 test.each(["light", "dark"] as const)("idle subagents show their own running jobs and update in %s mode", async (mode) => {
   const shell: JobInfo = {

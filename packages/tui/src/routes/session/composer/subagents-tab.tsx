@@ -14,6 +14,7 @@ import { Keymap } from "../../../context/keymap"
 import { useComposerTab } from "./context"
 import { withTimestampedFallback } from "@opencode/util/session-title-fallback"
 import { ownedJobs, sessionFamily } from "../../../util/session"
+import { waitingJobs, waitingSummary } from "../waiting-jobs"
 
 interface SubagentEntry {
   sessionID: string
@@ -69,9 +70,7 @@ export function SubagentsTab(props: { sessionID: string }) {
           title: agentMatch ? title.replace(agentMatch[0], "").trim() || title : title,
           status: data.session.status(session.id),
           jobs: ownedJobs(jobs, session.id, (id) => data.session.get(id)?.parentID).map((job) => job.id),
-          waitingJobs: jobs.filter(
-            (job) => job.sessionID === session.id && (job.kind === "shell" || job.kind === "codemode"),
-          ),
+          waitingJobs: waitingJobs(jobs, session.id),
           current: session.id === route.sessionID,
           prefix,
           model: model && `${model.model} ${model.provider}${session.model?.variant ? ` · ${session.model.variant}` : ""}`,
@@ -236,12 +235,7 @@ export function SubagentsTab(props: { sessionID: string }) {
               const status = createMemo(() => {
                 if (entry.status === "running") return "Running"
                 if (entry.status === "idle" && entry.waitingJobs.length) {
-                  const shell = entry.waitingJobs.filter((job) => job.kind === "shell").length
-                  const script = entry.waitingJobs.length - shell
-                  const kinds = [shell && `${shell} shell`, script && `${script} script`].filter(Boolean).join(", ")
-                  const ms = Math.max(0, now() - Math.min(...entry.waitingJobs.map((job) => job.time.started)))
-                  const elapsed = ms < 60_000 ? `${Math.floor(ms / 1000)}s` : Locale.duration(ms)
-                  return `waiting: ${kinds} · ${elapsed}`
+                  return `waiting: ${waitingSummary(entry.waitingJobs, now())}`
                 }
                 return ""
               })

@@ -132,6 +132,7 @@ import { containsAnchor, createTimelineAnchors, groupID } from "./anchors"
 import { rowsAfter, rowsBefore, rowWeight } from "./mount-budget"
 import { findMatches, findParts, findPattern, sameFindMatch, type FindMatch } from "./find"
 import { FindBar, FindText, useFindHighlight } from "./find-view"
+import { WaitingJobs } from "./waiting-jobs"
 export { InlineToolRow } from "./message-parts"
 export { toolDisplay } from "./message-parts"
 
@@ -1715,6 +1716,7 @@ export function Session(props: {
                   )}
                 </For>
                 <BackgroundToolHint messages={messages()} />
+                <WaitingJobs sessionID={route.sessionID} />
                 <Show when={session()?.revert?.messageID}>
                   <RevertMessage
                     count={messagesFromRevert().filter((message) => message.type === "user").length}
