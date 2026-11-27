@@ -1,6 +1,6 @@
 import { describe, expect, spyOn } from "bun:test"
 import type { FileSystem } from "@opencode/core/filesystem"
-import { Cause, DateTime, Deferred, Effect, Exit, Fiber, Layer, LayerMap, Schema, Stream } from "effect"
+import { Cause, DateTime, Deferred, Effect, Exit, Fiber, Layer, Schema, Stream } from "effect"
 import path from "path"
 import { pathToFileURL } from "url"
 import { eq } from "drizzle-orm"

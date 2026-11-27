@@ -185,6 +185,7 @@ describe("CommandPlugin.Plugin", () => {
       yield* CommandPlugin.Plugin.effect(
         host({
           command: {
+            hook: () => Effect.die("unused command.hook"),
             list: () => Effect.die("unused command.list"),
             transform: command.transform,
             reload: command.reload,
@@ -208,7 +209,13 @@ describe("CommandPlugin.Plugin", () => {
       const run = (text: string) =>
         command.execute({
           name: "docs:explain",
-          invocation: { sessionID: Session.ID.make("ses_test"), prompt: { text }, delivery: "steer" },
+          invocation: {
+            invocationID: Command.InvocationID.create(),
+            agent: Agent.ID.make("build"),
+            sessionID: Session.ID.make("ses_test"),
+            prompt: { text },
+            delivery: "steer",
+          },
         })
 
       yield* run("files")
