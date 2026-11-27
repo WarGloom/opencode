@@ -99,21 +99,32 @@ const make = Effect.gen(function* () {
   const notifications = new Set<string>()
   const ending = new Set<string>()
   const revisions = new Map<string, number>()
+  const leadEpisodes = new Map<Session.ID, { readonly since: number }>()
+  const sleepUntil = Effect.fnUntraced(function* (since: number, minutes: number) {
+    const now = yield* Clock.currentTimeMillis
+    yield* Effect.sleep(Duration.millis(Math.max(0, since + minutes * 60_000 - now)))
+  })
   const noticeWhileHeld = Effect.fnUntraced(function* (held: {
     readonly child: Session.Info
     readonly parentID: Session.ID
-    readonly assistantID: SessionMessage.ID
+    readonly assistantID: SessionMessage.ID | undefined
     readonly since: number
     readonly started: Deferred.Deferred<void>
+    readonly scope: Scope.Scope
   }) {
+    const childID = held.child.id
     const ownRunning = jobs.backgroundJobs.pipe(
       Effect.map((items) =>
         items.filter(
           (item) =>
-            item.sessionID === held.child.id &&
+            item.sessionID === childID &&
             item.status === "running" &&
             (item.kind === "shell" || item.kind === "codemode"),
         ),
+      ),
+      // An outbox row left by a previous server is not a live job until it is reattached.
+      Effect.flatMap((items) =>
+        Effect.filter(items, (item) => jobs.get(item.id).pipe(Effect.map((info) => info?.status === "running"))),
       ),
     )
     const running = yield* ownRunning
@@ -124,42 +135,75 @@ const make = Effect.gen(function* () {
     )
     const reminder = experimental?.subagent_job_reminder_minutes ?? 7
     const leadNote = experimental?.subagent_job_lead_note_minutes ?? 20
-    if (reminder === 0 && leadNote === 0) return
+    const waitForJobs = (items: typeof running) =>
+      Effect.forEach(items, (job) => jobs.wait({ id: job.id }), { concurrency: "unbounded", discard: true })
 
-    const send = Effect.fnUntraced(function* (kind: "reminder" | "lead-note", minutes: number) {
-      if (minutes === 0) return
-      const now = yield* Clock.currentTimeMillis
-      yield* Effect.sleep(Duration.millis(Math.max(0, held.since + minutes * 60_000 - now)))
+    if (leadNote !== 0 && !leadEpisodes.has(childID)) {
+      const episode = { since: held.since }
+      const noJobs = Effect.gen(function* () {
+        let current = running
+        while (current.length > 0) {
+          yield* waitForJobs(current)
+          current = yield* ownRunning
+        }
+      })
+      const notifyLead = Effect.gen(function* () {
+        yield* sleepUntil(episode.since, leadNote)
+        const current = yield* ownRunning
+        if (current.length === 0) return
+        const now = yield* Clock.currentTimeMillis
+        const minutes = Math.floor((now - episode.since) / 60_000)
+        const labels = current.map((job) => `${job.id} (${JSON.stringify(job.title ?? job.kind)})`).join(", ")
+        yield* sessions.synthetic({
+          id: SessionMessage.ID.make(`msg_subagent_job_lead_note_${childID}_${episode.since}`),
+          sessionID: held.parentID,
+          description: "Subagent still waiting on jobs",
+          text: `Subagent ${childID} is still waiting on jobs ${labels} after ${minutes} minutes.`,
+          metadata: { notice: "subagent-job-lead-note", childID, jobIDs: current.map((job) => job.id) },
+        })
+      })
+      // Keep the episode until the last own job ends, even after the lead note or another child turn.
+      yield* Effect.sync(() => leadEpisodes.set(childID, episode)).pipe(
+        Effect.andThen(
+          Effect.raceFirst(
+            noJobs,
+            notifyLead.pipe(
+              Effect.ignoreCause({ log: "Warn", message: "Failed to send held subagent job lead note" }),
+              Effect.andThen(Effect.never),
+            ),
+          ).pipe(
+            Effect.ensuring(Effect.sync(() => leadEpisodes.delete(childID))),
+            Effect.interruptible,
+            Effect.forkIn(held.scope, { startImmediately: true }),
+          ),
+        ),
+        Effect.uninterruptible,
+      )
+    }
+
+    const assistantID = held.assistantID
+    if (reminder === 0 || assistantID === undefined) return
+    const remindChild = Effect.gen(function* () {
+      yield* sleepUntil(held.since, reminder)
       const current = yield* ownRunning
-      if (current.length === 0 || (yield* execution.isActive(held.child.id))) return
+      if (current.length === 0 || (yield* execution.isActive(childID))) return
       const elapsed = yield* Clock.currentTimeMillis
-      const description = kind === "reminder" ? "Background job reminder" : "Subagent still waiting on jobs"
-      const text =
-        kind === "reminder"
-          ? [
-              "Your background jobs are still running:",
-              ...current.map(
-                (job) =>
-                  `- ${job.id} (${job.kind}, ${Math.floor(Math.max(0, elapsed - job.time.started) / 1_000)}s): ${JSON.stringify(job.title ?? job.kind)}`,
-              ),
-              "Check whether each job is still making progress. Stop any hung job. If the jobs are legitimately busy, end your turn and let them continue.",
-            ].join("\n")
-          : `Subagent ${held.child.id} is still waiting on jobs ${current.map((job) => job.id).join(", ")} after ${Math.floor((elapsed - held.since) / 60_000)} minutes.`
-      // Stable per assistant turn: recovering the same idle boundary cannot admit either notice again.
       yield* sessions.synthetic({
-        id: SessionMessage.ID.make(`msg_subagent_job_${kind}_${held.assistantID}`),
-        sessionID: kind === "reminder" ? held.child.id : held.parentID,
-        description,
-        text,
-        metadata: { notice: `subagent-job-${kind}`, childID: held.child.id, jobIDs: current.map((job) => job.id) },
-        ...(kind === "lead-note" ? { delivery: "queue", resume: false } : {}),
+        id: SessionMessage.ID.make(`msg_subagent_job_reminder_${assistantID}`),
+        sessionID: childID,
+        description: "Background job reminder",
+        text: [
+          "Your background jobs are still running:",
+          ...current.map(
+            (job) =>
+              `- ${job.id} (${job.kind}, ${Math.floor(Math.max(0, elapsed - job.time.started) / 1_000)}s): ${JSON.stringify(job.title ?? job.kind)}`,
+          ),
+          "Check whether each job is still making progress. Stop any hung job. If the jobs are legitimately busy, end your turn and let them continue.",
+        ].join("\n"),
+        metadata: { notice: "subagent-job-reminder", childID, jobIDs: current.map((job) => job.id) },
       })
     })
-    yield* Effect.raceAllFirst([
-      Deferred.await(held.started),
-      Effect.forEach(running, (job) => jobs.wait({ id: job.id }), { concurrency: "unbounded", discard: true }),
-      Effect.all([send("reminder", reminder), send("lead-note", leadNote)], { concurrency: 2, discard: true }),
-    ])
+    yield* Effect.raceAllFirst([Deferred.await(held.started), waitForJobs(running), remindChild])
   })
   const restorePrompts = Effect.fnUntraced(function* (
     recovery: Pick<Recovery, "pluginID" | "generation" | "parentSessionID" | "childSessionID">,
@@ -379,6 +423,7 @@ const make = Effect.gen(function* () {
                   )
                   .pipe(Effect.asVoid),
         run: Effect.gen(function* () {
+          const noticeScope = yield* Effect.scope
           const startedSeq =
             (yield* execution.periodStartSeq(recovery.childSessionID)) ??
             (yield* Bus.latestSequence(db, recovery.childSessionID))
@@ -499,13 +544,14 @@ const make = Effect.gen(function* () {
                 }),
               )
               if (result === "await-start" || (result && "held" in result)) {
-                if (result !== "await-start" && result.assistantID)
+                if (result !== "await-start")
                   yield* noticeWhileHeld({
                     child: result.held,
                     parentID: recovery.parentSessionID,
                     assistantID: result.assistantID,
                     since,
                     started,
+                    scope: noticeScope,
                   }).pipe(Effect.ignoreCause({ log: "Warn", message: "Failed to send held subagent job notices" }))
                 yield* Deferred.await(started)
                 return undefined
@@ -517,6 +563,7 @@ const make = Effect.gen(function* () {
             return result.value
           }
         }).pipe(
+          Effect.scoped,
           Effect.onInterrupt(() =>
             jobs
               .isCancelled(recovery.childSessionID)

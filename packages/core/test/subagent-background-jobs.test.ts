@@ -112,12 +112,13 @@ const heldChild = Effect.fnUntraced(function* (config?: ConfigExperimental.Info)
   const locations = yield* LocationServiceMap.Service
   const registry = yield* Tool.Service.pipe(Effect.provide(locations.get(parent.location)))
   const finish = yield* Deferred.make<void>()
+  const replacement = yield* Deferred.make<void>()
   yield* registry.transform((editor) =>
     editor.add({
       name: "hold",
       description: "Wait for release",
-      input: Schema.Struct({}),
-      execute: () => Deferred.await(finish).pipe(Effect.as({ content: "done" })),
+      input: Schema.Struct({ replacement: Schema.optionalKey(Schema.Boolean) }),
+      execute: (input) => Deferred.await(input.replacement ? replacement : finish).pipe(Effect.as({ content: "done" })),
     }),
   )
   yield* sessions.setPermissions({
@@ -148,9 +149,9 @@ const heldChild = Effect.fnUntraced(function* (config?: ConfigExperimental.Info)
       messages.filter((item) => item.type === "synthetic" && item.metadata?.notice === "subagent-job-reminder"),
     ),
   )
-  const leadNotes = sessions.inbox(parent.id).pipe(
-    Effect.map((items) =>
-      items.filter((item) => item.type === "synthetic" && item.payload.metadata?.notice === "subagent-job-lead-note"),
+  const leadNotes = sessions.context(parent.id).pipe(
+    Effect.map((messages) =>
+      messages.filter((item) => item.type === "synthetic" && item.metadata?.notice === "subagent-job-lead-note"),
     ),
   )
   return { ...fixture, run, job, reminders, leadNotes, finish: Deferred.succeed(finish, undefined), subagent }
@@ -158,7 +159,7 @@ const heldChild = Effect.fnUntraced(function* (config?: ConfigExperimental.Info)
 
 admissionTests.effect("wakes only the child once at the seven-minute threshold", () =>
   Effect.gen(function* () {
-    const held = yield* heldChild()
+    const held = yield* heldChild({ subagent_job_lead_note_minutes: 0 })
     const next = yield* held.llm.gate()
     yield* TestClock.adjust("419999 millis")
     expect(yield* held.reminders).toEqual([])
@@ -190,25 +191,64 @@ admissionTests.effect("starts a fresh reminder interval when the child resumes a
   }),
 )
 
-admissionTests.effect("queues one nonterminal lead note at twenty minutes while the child is held", () =>
+admissionTests.effect("wakes the parent once at twenty episode minutes despite two child reminders", () =>
+  Effect.gen(function* () {
+    const held = yield* heldChild()
+    yield* TestClock.adjust("7 minutes")
+    yield* held.sessions.wait(held.run.childSessionID)
+    expect(yield* held.reminders).toHaveLength(1)
+    yield* TestClock.adjust("7 minutes")
+    yield* held.sessions.wait(held.run.childSessionID)
+    expect(yield* held.reminders).toHaveLength(2)
+    yield* TestClock.adjust("359999 millis")
+    expect(yield* held.leadNotes).toEqual([])
+    yield* TestClock.adjust("1 millis")
+    yield* held.sessions.wait(held.parent.id)
+    expect(yield* held.leadNotes).toEqual([
+      expect.objectContaining({
+        metadata: { notice: "subagent-job-lead-note", childID: held.run.childSessionID, jobIDs: [held.job.id] },
+        text: expect.stringContaining(`${held.job.id} (${JSON.stringify(held.job.title)}) after 20 minutes`),
+      }),
+    ])
+    yield* TestClock.adjust("21 minutes")
+    yield* held.sessions.wait(held.parent.id)
+    expect(yield* held.leadNotes).toHaveLength(1)
+    expect((yield* held.subagent.get({ run: held.run }))?.status).toBe("running")
+  }),
+)
+
+admissionTests.effect("starts a fresh lead episode when the child replaces its last job during a turn", () =>
   Effect.gen(function* () {
     const held = yield* heldChild({ subagent_job_reminder_minutes: 0 })
+    const jobs = yield* Job.Service
+    yield* TestClock.adjust("19 minutes")
+    const next = yield* held.llm.gate()
+    yield* held.llm.push(
+      TestLLM.toolCall("replacement-script", "execute", {
+        code: "return await tools.hold({ replacement: true })",
+        background: true,
+      }),
+      TestLLM.stop(),
+    )
+    yield* held.sessions.synthetic({ sessionID: held.run.childSessionID, text: "Start replacement work" })
+    yield* next.started.pipe(Effect.timeout("5 seconds"), TestClock.withLive)
+    yield* held.finish
+    yield* jobs.wait({ id: held.job.id })
+    yield* next.release
+    yield* held.sessions.wait(held.run.childSessionID)
+    const replacement = (yield* jobs.backgroundJobs).find(
+      (item) => item.sessionID === held.run.childSessionID && item.status === "running" && item.id !== held.job.id,
+    )
+    if (!replacement) throw new Error("Child did not start a replacement job")
     yield* TestClock.adjust("1199999 millis")
     expect(yield* held.leadNotes).toEqual([])
     yield* TestClock.adjust("1 millis")
+    yield* held.sessions.wait(held.parent.id)
     expect(yield* held.leadNotes).toEqual([
       expect.objectContaining({
-        delivery: "queue",
-        payload: expect.objectContaining({
-          metadata: { notice: "subagent-job-lead-note", childID: held.run.childSessionID, jobIDs: [held.job.id] },
-          text: expect.stringContaining("20 minutes"),
-        }),
+        metadata: { notice: "subagent-job-lead-note", childID: held.run.childSessionID, jobIDs: [replacement.id] },
       }),
     ])
-    yield* TestClock.adjust("40 minutes")
-    expect(yield* held.leadNotes).toHaveLength(1)
-    expect(yield* held.reminders).toEqual([])
-    expect((yield* held.subagent.get({ run: held.run }))?.status).toBe("running")
   }),
 )
 
@@ -230,6 +270,7 @@ admissionTests.effect("disables both notices with zero without releasing the hel
     yield* TestClock.adjust("1 hour")
     expect(yield* held.reminders).toEqual([])
     expect(yield* held.leadNotes).toEqual([])
+    expect(yield* held.sessions.inbox(held.parent.id)).toEqual([])
     expect((yield* held.subagent.get({ run: held.run }))?.status).toBe("running")
   }),
 )
