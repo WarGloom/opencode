@@ -1,11 +1,13 @@
 export * as SubagentJob from "./subagent-job.js"
 
-import { Cause, Context, Deferred, Effect, Exit, Layer, Option, Scope } from "effect"
+import { Cause, Clock, Context, Deferred, Duration, Effect, Exit, Layer, Option, Scope } from "effect"
 import { Node } from "@opencode/util/effect/app-node"
 import type { LayerNode } from "@opencode/util/effect/layer-node"
 import { Job } from "../job.js"
 import { Bus } from "../bus.js"
 import { Database } from "../database/database.js"
+import { Config } from "../config.js"
+import { Instance } from "../instance/service.js"
 import { Session } from "../session.js"
 import { SessionExecution } from "./execution.js"
 import { SessionStore } from "./store.js"
@@ -79,6 +81,7 @@ const make = Effect.gen(function* () {
   const jobs = yield* Job.Service
   const admissions = yield* SubagentAdmissionStore.Service
   const execution = yield* SessionExecution.Service
+  const instances = yield* Instance.Service
   const store = yield* SessionStore.Service
   const { db } = yield* Database.Service
   const bus = yield* Bus.Service
@@ -96,6 +99,68 @@ const make = Effect.gen(function* () {
   const notifications = new Set<string>()
   const ending = new Set<string>()
   const revisions = new Map<string, number>()
+  const noticeWhileHeld = Effect.fnUntraced(function* (held: {
+    readonly child: Session.Info
+    readonly parentID: Session.ID
+    readonly assistantID: SessionMessage.ID
+    readonly since: number
+    readonly started: Deferred.Deferred<void>
+  }) {
+    const ownRunning = jobs.backgroundJobs.pipe(
+      Effect.map((items) =>
+        items.filter(
+          (item) =>
+            item.sessionID === held.child.id &&
+            item.status === "running" &&
+            (item.kind === "shell" || item.kind === "codemode"),
+        ),
+      ),
+    )
+    const running = yield* ownRunning
+    if (running.length === 0) return
+    const experimental = yield* Config.Service.use((config) => config.entries()).pipe(
+      instances.provide(held.child),
+      Effect.map((entries) => Config.latest(entries, "experimental")),
+    )
+    const reminder = experimental?.subagent_job_reminder_minutes ?? 7
+    const leadNote = experimental?.subagent_job_lead_note_minutes ?? 20
+    if (reminder === 0 && leadNote === 0) return
+
+    const send = Effect.fnUntraced(function* (kind: "reminder" | "lead-note", minutes: number) {
+      if (minutes === 0) return
+      const now = yield* Clock.currentTimeMillis
+      yield* Effect.sleep(Duration.millis(Math.max(0, held.since + minutes * 60_000 - now)))
+      const current = yield* ownRunning
+      if (current.length === 0 || (yield* execution.isActive(held.child.id))) return
+      const elapsed = yield* Clock.currentTimeMillis
+      const description = kind === "reminder" ? "Background job reminder" : "Subagent still waiting on jobs"
+      const text =
+        kind === "reminder"
+          ? [
+              "Your background jobs are still running:",
+              ...current.map(
+                (job) =>
+                  `- ${job.id} (${job.kind}, ${Math.floor(Math.max(0, elapsed - job.time.started) / 1_000)}s): ${JSON.stringify(job.title ?? job.kind)}`,
+              ),
+              "Check whether each job is still making progress. Stop any hung job. If the jobs are legitimately busy, end your turn and let them continue.",
+            ].join("\n")
+          : `Subagent ${held.child.id} is still waiting on jobs ${current.map((job) => job.id).join(", ")} after ${Math.floor((elapsed - held.since) / 60_000)} minutes.`
+      // Stable per assistant turn: recovering the same idle boundary cannot admit either notice again.
+      yield* sessions.synthetic({
+        id: SessionMessage.ID.make(`msg_subagent_job_${kind}_${held.assistantID}`),
+        sessionID: kind === "reminder" ? held.child.id : held.parentID,
+        description,
+        text,
+        metadata: { notice: `subagent-job-${kind}`, childID: held.child.id, jobIDs: current.map((job) => job.id) },
+        ...(kind === "lead-note" ? { delivery: "queue", resume: false } : {}),
+      })
+    })
+    yield* Effect.raceAllFirst([
+      Deferred.await(held.started),
+      Effect.forEach(running, (job) => jobs.wait({ id: job.id }), { concurrency: "unbounded", discard: true }),
+      Effect.all([send("reminder", reminder), send("lead-note", leadNote)], { concurrency: 2, discard: true }),
+    ])
+  })
   const restorePrompts = Effect.fnUntraced(function* (
     recovery: Pick<Recovery, "pluginID" | "generation" | "parentSessionID" | "childSessionID">,
   ) {
@@ -340,6 +405,7 @@ const make = Effect.gen(function* () {
             )
             const result = yield* Effect.gen(function* () {
               yield* sessions.wait(recovery.childSessionID)
+              const since = yield* Clock.currentTimeMillis
               const recoveryResult = yield* execution.recovery(recovery.childSessionID, generation).pipe(Effect.result)
               recovered = (recoveryResult._tag === "Success" && recoveryResult.success === "committed") || recovered
               const result = yield* admissions.serialized(
@@ -395,7 +461,7 @@ const make = Effect.gen(function* () {
                     )
                     // Keep the generation open until the job notifier wakes the child. Include finished jobs
                     // whose notice is not yet admitted; the notifier consumes the row only after waking.
-                    if (outstanding) return "await-start" as const
+                    if (outstanding) return { held: child, assistantID: assistant?.id }
                     if ((yield* execution.isActive(child.id)) || (yield* Deferred.isDone(started))) return undefined
                   }
                   if (info !== undefined) ending.add(info.generation)
@@ -432,7 +498,15 @@ const make = Effect.gen(function* () {
                   return Exit.succeed("")
                 }),
               )
-              if (result === "await-start") {
+              if (result === "await-start" || (result && "held" in result)) {
+                if (result !== "await-start" && result.assistantID)
+                  yield* noticeWhileHeld({
+                    child: result.held,
+                    parentID: recovery.parentSessionID,
+                    assistantID: result.assistantID,
+                    since,
+                    started,
+                  }).pipe(Effect.ignoreCause({ log: "Warn", message: "Failed to send held subagent job notices" }))
                 yield* Deferred.await(started)
                 return undefined
               }
@@ -528,6 +602,7 @@ export const node: LayerNode.Provider<Service, never, typeof Node.tags.values.gl
     Job.node,
     SubagentAdmissionStore.node,
     SessionExecution.node,
+    Instance.node,
     SessionStore.node,
     Database.node,
     Bus.node,

@@ -6,6 +6,8 @@ import { LocationServiceMap } from "@opencode/core/location-service-map"
 import { SessionEvent } from "@opencode/core/session/event"
 import { Tool } from "@opencode/core/tool"
 import { Deferred, Effect, Schema } from "effect"
+import { TestClock } from "effect/testing"
+import type { ConfigExperimental } from "@opencode/schema/config/experimental"
 import { admissionFixtureWithConfig, admissionTests } from "./fixture/subagent-admission"
 
 for (const scenario of ["shell completes", "Code Mode completes", "Code Mode cancels", "child cancels"] as const) {
@@ -101,3 +103,133 @@ for (const scenario of ["shell completes", "Code Mode completes", "Code Mode can
     }),
   )
 }
+
+const heldChild = Effect.fnUntraced(function* (config?: ConfigExperimental.Info) {
+  const fixture = yield* admissionFixtureWithConfig({ full_codemode: true, ...config })
+  const { sessions, host, input, parent, llm } = fixture
+  const subagent = host.experimental.subagent
+  const jobs = yield* Job.Service
+  const locations = yield* LocationServiceMap.Service
+  const registry = yield* Tool.Service.pipe(Effect.provide(locations.get(parent.location)))
+  const finish = yield* Deferred.make<void>()
+  yield* registry.transform((editor) =>
+    editor.add({
+      name: "hold",
+      description: "Wait for release",
+      input: Schema.Struct({}),
+      execute: () => Deferred.await(finish).pipe(Effect.as({ content: "done" })),
+    }),
+  )
+  yield* sessions.setPermissions({
+    sessionID: parent.id,
+    permissions: [{ action: "subagent", resource: "reviewer", effect: "allow" }],
+  })
+  const prepared = yield* subagent.prepare({ ...input, admissionID: "held-job", target: { kind: "create" } })
+  yield* llm.push(
+    TestLLM.toolCall("call-script", "execute", { code: "return await tools.hold({})", background: true }),
+    TestLLM.stop(),
+  )
+  const started = yield* subagent.start({
+    admissionID: prepared.admissionID,
+    prompt: { text: "Start a background job" },
+    delivery: "queue",
+    mode: "background",
+    completion: "parent",
+  })
+  if (!started.run) throw new Error("Native start omitted its run reference")
+  const run = started.run
+  yield* sessions.wait(run.childSessionID)
+  const job = (yield* jobs.backgroundJobs).find(
+    (item) => item.kind === "codemode" && item.sessionID === run.childSessionID && item.status === "running",
+  )
+  if (!job) throw new Error("Child did not start a Code Mode job")
+  const reminders = sessions.context(run.childSessionID).pipe(
+    Effect.map((messages) =>
+      messages.filter((item) => item.type === "synthetic" && item.metadata?.notice === "subagent-job-reminder"),
+    ),
+  )
+  const leadNotes = sessions.inbox(parent.id).pipe(
+    Effect.map((items) =>
+      items.filter((item) => item.type === "synthetic" && item.payload.metadata?.notice === "subagent-job-lead-note"),
+    ),
+  )
+  return { ...fixture, run, job, reminders, leadNotes, finish: Deferred.succeed(finish, undefined), subagent }
+})
+
+admissionTests.effect("wakes only the child once at the seven-minute threshold", () =>
+  Effect.gen(function* () {
+    const held = yield* heldChild()
+    const next = yield* held.llm.gate()
+    yield* TestClock.adjust("419999 millis")
+    expect(yield* held.reminders).toEqual([])
+    yield* TestClock.adjust("1 millis")
+    yield* next.started.pipe(Effect.timeout("5 seconds"), TestClock.withLive)
+    yield* TestClock.adjust("30 minutes")
+    expect(yield* held.reminders).toEqual([
+      expect.objectContaining({
+        metadata: { notice: "subagent-job-reminder", childID: held.run.childSessionID, jobIDs: [held.job.id] },
+        text: expect.stringContaining(`${held.job.id} (codemode, 420s): ${JSON.stringify(held.job.title)}`),
+      }),
+    ])
+    expect(yield* held.sessions.inbox(held.parent.id)).toEqual([])
+    yield* next.release
+  }),
+)
+
+admissionTests.effect("starts a fresh reminder interval when the child resumes and goes idle again", () =>
+  Effect.gen(function* () {
+    const held = yield* heldChild({ subagent_job_reminder_minutes: 2 })
+    yield* TestClock.adjust("1 minute")
+    yield* held.sessions.synthetic({ sessionID: held.run.childSessionID, text: "New input" })
+    yield* held.sessions.wait(held.run.childSessionID)
+    yield* TestClock.adjust("1 minute")
+    expect(yield* held.reminders).toEqual([])
+    yield* TestClock.adjust("1 minute")
+    yield* held.sessions.wait(held.run.childSessionID)
+    expect(yield* held.reminders).toHaveLength(1)
+  }),
+)
+
+admissionTests.effect("queues one nonterminal lead note at twenty minutes while the child is held", () =>
+  Effect.gen(function* () {
+    const held = yield* heldChild({ subagent_job_reminder_minutes: 0 })
+    yield* TestClock.adjust("1199999 millis")
+    expect(yield* held.leadNotes).toEqual([])
+    yield* TestClock.adjust("1 millis")
+    expect(yield* held.leadNotes).toEqual([
+      expect.objectContaining({
+        delivery: "queue",
+        payload: expect.objectContaining({
+          metadata: { notice: "subagent-job-lead-note", childID: held.run.childSessionID, jobIDs: [held.job.id] },
+          text: expect.stringContaining("20 minutes"),
+        }),
+      }),
+    ])
+    yield* TestClock.adjust("40 minutes")
+    expect(yield* held.leadNotes).toHaveLength(1)
+    expect(yield* held.reminders).toEqual([])
+    expect((yield* held.subagent.get({ run: held.run }))?.status).toBe("running")
+  }),
+)
+
+admissionTests.effect("settles normally and cancels pending notices when the last job ends", () =>
+  Effect.gen(function* () {
+    const held = yield* heldChild()
+    yield* TestClock.adjust("6 minutes")
+    yield* held.finish
+    expect((yield* held.subagent.wait({ run: held.run })).receipt.status).toBe("completed")
+    yield* TestClock.adjust("30 minutes")
+    expect(yield* held.reminders).toEqual([])
+    expect(yield* held.leadNotes).toEqual([])
+  }),
+)
+
+admissionTests.effect("disables both notices with zero without releasing the held child", () =>
+  Effect.gen(function* () {
+    const held = yield* heldChild({ subagent_job_reminder_minutes: 0, subagent_job_lead_note_minutes: 0 })
+    yield* TestClock.adjust("1 hour")
+    expect(yield* held.reminders).toEqual([])
+    expect(yield* held.leadNotes).toEqual([])
+    expect((yield* held.subagent.get({ run: held.run }))?.status).toBe("running")
+  }),
+)
