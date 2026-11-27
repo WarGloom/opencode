@@ -60,6 +60,12 @@ export class Info extends Schema.Class<Info>("ConfigExperimental.Info")({
   subagent_depth: NonNegativeInt.pipe(optional).annotate({
     description: "Maximum subagent nesting depth. Defaults to 1.",
   }),
+  subagent_job_reminder_minutes: NonNegativeInt.pipe(optional).annotate({
+    description: "Minutes a subagent waits on its own jobs before it receives a reminder. Defaults to 7; 0 disables it.",
+  }),
+  subagent_job_lead_note_minutes: NonNegativeInt.pipe(optional).annotate({
+    description: "Minutes a subagent waits on its own jobs before its parent receives a note. Defaults to 20; 0 disables it.",
+  }),
   location_idle_timeout: Schema.Union([Schema.DurationFromString, Schema.Literal(false)])
     .pipe(optional)
     .annotate({
