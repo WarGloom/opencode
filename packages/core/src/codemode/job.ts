@@ -109,11 +109,13 @@ export const make = Effect.fnUntraced(function* (
         yield* progress.withPermit(Deferred.succeed(detached, undefined))
         yield* Effect.gen(function* () {
           const { info } = yield* jobs.wait({ id })
-          // Session removal cancels the job and removes its outbox row.
-          if (!info || info.status === "cancelled") return
+          if (!info) return
+          // Session removal owns cleanup and must not wake the session. A caller cancel or a script interruption
+          // still needs a notice; in those cases the executing fiber might not have resolved its result yet.
+          if (info.status === "cancelled" && info.error === undefined && !(yield* jobs.isCancelled(id))) return
           // Synthetic messages carry text. Keep the script's file results accessible without putting base64 in its inbox.
-          const exit = yield* Deferred.await(result).pipe(Effect.exit)
-          const files = Exit.isSuccess(exit) ? exit.value.content.filter((part) => part.type === "file") : []
+          const exit = info.status === "cancelled" ? undefined : yield* Deferred.await(result).pipe(Effect.exit)
+          const files = exit && Exit.isSuccess(exit) ? exit.value.content.filter((part) => part.type === "file") : []
           const paths = yield* Effect.forEach(files, (file) => {
             const prefix = `data:${file.mime};base64,`
             if (!file.uri.startsWith(prefix)) return Effect.succeed(file.uri)

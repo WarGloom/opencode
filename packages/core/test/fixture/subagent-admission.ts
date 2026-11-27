@@ -57,11 +57,12 @@ export const admissionTests = testEffect(
   ])),
 )
 
-export const admissionFixture = Effect.gen(function* () {
+export const admissionFixtureWithConfig = Effect.fnUntraced(function* (experimental?: { readonly full_codemode: boolean }) {
   const dir = yield* tmpdirScoped()
   yield* Effect.promise(() => Bun.write(`${dir.path}/opencode.json`, JSON.stringify({
     agents: { reviewer: { mode: "subagent" } },
     permissions: [{ action: "*", resource: "*", effect: "allow" }],
+    experimental,
   })))
   yield* Effect.promise(() => Bun.write(`${dir.path}/.opencode/skills/review-guide/SKILL.md`, "---\nname: review-guide\ndescription: Review guidance\n---\nReview with $ARGUMENTS\n"))
   const sessions = yield* Session.Service
@@ -102,6 +103,8 @@ export const admissionFixture = Effect.gen(function* () {
   }
   return { sessions, host, input, bus, parent, llm, invokingMessageID }
 })
+
+export const admissionFixture = admissionFixtureWithConfig()
 
 export const runningAdmission = Effect.gen(function* () {
   const fixture = yield* admissionFixture

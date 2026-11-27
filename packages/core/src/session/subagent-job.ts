@@ -388,6 +388,16 @@ const make = Effect.gen(function* () {
                       return "await-start" as const
                     }
                   }
+                  if (recovery.pluginID !== undefined && !resumeFailed && child.outcome === "succeeded") {
+                    const outstanding = (yield* jobs.pendingBackground).some(
+                      ({ recovery: work }) =>
+                        (work.kind === "shell" || work.kind === "codemode") && work.sessionID === child.id,
+                    )
+                    // Keep the generation open until the job notifier wakes the child. Include finished jobs
+                    // whose notice is not yet admitted; the notifier consumes the row only after waking.
+                    if (outstanding) return "await-start" as const
+                    if ((yield* execution.isActive(child.id)) || (yield* Deferred.isDone(started))) return undefined
+                  }
                   if (info !== undefined) ending.add(info.generation)
                   if (resumeFailed) return Exit.failCause(resumed.cause)
                   if (child.outcome === "failed" || child.outcome === "interrupted")
