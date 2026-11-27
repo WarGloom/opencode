@@ -2,6 +2,7 @@
 import { testRender } from "@opentui/solid"
 import { afterAll, expect, test } from "bun:test"
 import { createEffect, createSignal, onMount, Show } from "solid-js"
+import type { JobInfo } from "@opencode/client"
 import { ConfigProvider } from "../../../src/config"
 import type { TuiKeybind } from "../../../src/config/keybind"
 import { ClientProvider } from "../../../src/context/client"
@@ -35,7 +36,12 @@ const shells = [shell("sh-a", "bun test"), shell("sh-b", "bun dev"), shell("sh-c
 async function renderComposer(
   defaultTab: "subagents" | "shell",
   keybinds: Partial<TuiKeybind.Keybinds>,
-  options: { readonly focusedTextarea?: boolean; readonly open?: () => boolean; readonly mode?: "light" | "dark" } = {},
+  options: {
+    readonly focusedTextarea?: boolean
+    readonly open?: () => boolean
+    readonly mode?: "light" | "dark"
+    readonly jobs?: JobInfo[]
+  } = {},
 ) {
   const events = createEventStream()
   const interrupted: string[] = []
@@ -56,6 +62,7 @@ async function renderComposer(
     ] })
     if (url.pathname === "/api/session/active")
       return json({ data: { "child-a": { type: "running" }, "child-b": { type: "running" } } })
+    if (url.pathname === "/api/experimental/job") return json({ data: options.jobs ?? [] })
     const sessionID = url.pathname.match(/^\/api\/session\/([^/]+)$/)?.[1]
     if (sessionID && sessionID in sessions) return json({ data: sessions[sessionID as keyof typeof sessions] })
     const interruptID = url.pathname.match(/^\/api\/session\/([^/]+)\/interrupt$/)?.[1]
@@ -104,6 +111,7 @@ async function renderComposer(
         data.session.sync("child-c"),
         data.location.sync({ directory }),
         data.shell.sync(),
+        data.job.sync("parent"),
       ])
         .then(() => wait(() => data.session.status("child-a") === "running"))
         .then(() => ready.resolve(data), ready.reject)
@@ -177,6 +185,57 @@ async function renderComposer(
     listReads: () => listReads,
   }
 }
+
+test.each(["light", "dark"] as const)("idle subagents show their own running jobs and update in %s mode", async (mode) => {
+  const shell: JobInfo = {
+    kind: "shell",
+    id: "job_shell",
+    shellID: "sh_child",
+    command: "bun test",
+    sessionID: "child-c",
+    status: "running",
+    time: { started: Date.now() - 65_000 },
+  }
+  const script: JobInfo = {
+    kind: "codemode",
+    id: "job_script",
+    sessionID: "child-c",
+    status: "running",
+    time: { started: Date.now() },
+  }
+  const active: JobInfo = { ...script, id: "job_active", sessionID: "child-a" }
+  const composer = await renderComposer("subagents", {}, { jobs: [shell, script, active], mode })
+  try {
+    const before = composer.app.captureCharFrame()
+    expect(before).toContain("First")
+    expect(before).toContain("Running")
+    expect(before).toContain("Third")
+    expect(before).toMatch(/waiting: 1 shell, 1 script.*1m/)
+    expect(before.split("\n").find((line) => line.includes("First"))).not.toContain("waiting:")
+    composer.app.resize(44, 20)
+    await composer.app.renderOnce()
+    expect(composer.app.captureCharFrame()).toContain("waiting: 1 shell, 1 script")
+
+    composer.app.renderer.start()
+    composer.events.emit({
+      id: "evt_script_done",
+      created: 1,
+      type: "experimental.job.updated",
+      data: { info: { ...script, status: "completed" } },
+    })
+    await composer.app.waitForFrame((frame) => frame.includes("waiting: 1 shell ·"))
+    expect(composer.app.captureCharFrame()).not.toContain("1 script")
+    composer.events.emit({
+      id: "evt_shell_stopped",
+      created: 2,
+      type: "experimental.job.updated",
+      data: { info: { ...shell, status: "cancelled" } },
+    })
+    expect(await composer.app.waitForFrame((frame) => !frame.includes("Third"))).not.toContain("waiting:")
+  } finally {
+    composer.app.renderer.destroy()
+  }
+})
 
 test.each(["light", "dark"] as const)("subagent rows show model changes in %s mode", async (mode) => {
   const composer = await renderComposer("subagents", {}, { mode })

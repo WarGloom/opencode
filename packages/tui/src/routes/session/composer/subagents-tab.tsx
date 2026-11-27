@@ -1,8 +1,8 @@
-import { createMemo, For, Show, createEffect, onMount, onCleanup } from "solid-js"
+import { createMemo, createSignal, For, Show, createEffect, onMount, onCleanup } from "solid-js"
 import { createStore } from "solid-js/store"
 import { TextAttributes, ScrollBoxRenderable } from "@opentui/core"
 import { useRenderer } from "@opentui/solid"
-import type { SessionInfo } from "@opencode/client"
+import type { JobInfo, SessionInfo } from "@opencode/client"
 import { useRoute, useRouteData } from "../../../context/route"
 import { useData } from "../../../context/data"
 import { useClient } from "../../../context/client"
@@ -22,6 +22,7 @@ interface SubagentEntry {
   status: string
   // Running jobs in its tree. A subagent stays active while any of them runs.
   jobs: string[]
+  waitingJobs: JobInfo[]
   current: boolean
   prefix: string
   model?: string
@@ -39,6 +40,7 @@ export function SubagentsTab(props: { sessionID: string }) {
 
   const session = createMemo(() => data.session.get(props.sessionID))
   const [store, setStore] = createStore({ selected: 0 })
+  const [now, setNow] = createSignal(Date.now())
   // The session route remounts on navigation, so the filter lives in TUI memory and only ctrl+a changes it.
   const [filter, updateFilter] = useStorage().memory("subagents-filter", { initial: { active: true } })
 
@@ -67,6 +69,9 @@ export function SubagentsTab(props: { sessionID: string }) {
           title: agentMatch ? title.replace(agentMatch[0], "").trim() || title : title,
           status: data.session.status(session.id),
           jobs: ownedJobs(jobs, session.id, (id) => data.session.get(id)?.parentID).map((job) => job.id),
+          waitingJobs: jobs.filter(
+            (job) => job.sessionID === session.id && (job.kind === "shell" || job.kind === "codemode"),
+          ),
           current: session.id === route.sessionID,
           prefix,
           model: model && `${model.model} ${model.provider}${session.model?.variant ? ` · ${session.model.variant}` : ""}`,
@@ -82,6 +87,13 @@ export function SubagentsTab(props: { sessionID: string }) {
   let scroll: ScrollBoxRenderable | undefined
 
   const selectedEntry = createMemo(() => entries()[store.selected])
+
+  createEffect(() => {
+    if (!composer.active("subagents")) return
+    setNow(Date.now())
+    const timer = setInterval(() => setNow(Date.now()), 1_000)
+    onCleanup(() => clearInterval(timer))
+  })
 
   createEffect(() => {
     const active = composer.active("subagents")
@@ -223,6 +235,14 @@ export function SubagentsTab(props: { sessionID: string }) {
               const active = createMemo(() => index() === store.selected)
               const status = createMemo(() => {
                 if (entry.status === "running") return "Running"
+                if (entry.status === "idle" && entry.waitingJobs.length) {
+                  const shell = entry.waitingJobs.filter((job) => job.kind === "shell").length
+                  const script = entry.waitingJobs.length - shell
+                  const kinds = [shell && `${shell} shell`, script && `${script} script`].filter(Boolean).join(", ")
+                  const ms = Math.max(0, now() - Math.min(...entry.waitingJobs.map((job) => job.time.started)))
+                  const elapsed = ms < 60_000 ? `${Math.floor(ms / 1000)}s` : Locale.duration(ms)
+                  return `waiting: ${kinds} · ${elapsed}`
+                }
                 return ""
               })
               return (
