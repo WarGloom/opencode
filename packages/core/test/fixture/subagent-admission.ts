@@ -1,6 +1,7 @@
 import { Effect, Layer } from "effect"
 import { LanguageModel } from "@opencode/ai/effect"
 import { OpenAIChat } from "@opencode/ai/protocols"
+import type { ConfigExperimental } from "@opencode/schema/config/experimental"
 import { TestLLM } from "@opencode/ai/testing"
 import { Agent } from "@opencode/core/agent"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
@@ -57,7 +58,7 @@ export const admissionTests = testEffect(
   ])),
 )
 
-export const admissionFixtureWithConfig = Effect.fnUntraced(function* (experimental?: { readonly full_codemode: boolean }) {
+export const admissionFixtureWithConfig = Effect.fnUntraced(function* (experimental?: ConfigExperimental.Info) {
   const dir = yield* tmpdirScoped()
   yield* Effect.promise(() => Bun.write(`${dir.path}/opencode.json`, JSON.stringify({
     agents: { reviewer: { mode: "subagent" } },
